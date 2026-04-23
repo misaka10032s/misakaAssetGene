@@ -45,7 +45,8 @@ workers/*
 !workers/manifest.json
 
 # Models and generated artifacts
-models/
+.model/*
+!.model/.gitignore
 *.ckpt
 *.safetensors
 

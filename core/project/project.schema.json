@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MisakaAssetGene Project Schema",
+  "type": "object",
+  "required": ["name", "type", "synopsis"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]+$"
+    },
+    "type": {
+      "type": "string",
+      "minLength": 1,
+      "examples": ["RPG", "Visual Novel", "Narrative Puzzle Adventure"]
+    },
+    "synopsis": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

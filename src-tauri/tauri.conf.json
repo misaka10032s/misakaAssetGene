@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MisakaAssetGene",
+  "version": "0.1.0",
+  "identifier": "io.github.misaka10032s.misakaassetgene",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run start:dev",
+    "devUrl": "http://127.0.0.1:7501",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "MisakaAssetGene",
+        "width": 1440,
+        "height": 900
+      }
+    ]
+  }
+}

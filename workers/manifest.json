@@ -1,4 +1,74 @@
 {
   "schema_version": 1,
-  "workers": []
+  "workers": {
+    "comfyui": {
+      "repo": "https://github.com/comfyanonymous/ComfyUI.git",
+      "recommended": {
+        "commit": "abc123",
+        "tag": "v0.3.15",
+        "verified_at": "2026-04-10",
+        "note": "Stable baseline for image workflows."
+      },
+      "known_good": [
+        {
+          "commit": "abc123",
+          "tag": "v0.3.15",
+          "date": "2026-03-20",
+          "note": "Stable"
+        }
+      ],
+      "python": "3.11",
+      "install_cmd": "uv pip install -r requirements.txt",
+      "start_cmd": "python main.py --port 8188 --listen 127.0.0.1",
+      "health_check": "http://127.0.0.1:8188/system_stats",
+      "smoke_test": "scripts/smoke/comfyui.py",
+      "vram_requirement_mb": 4000
+    },
+    "audiocraft": {
+      "repo": "https://github.com/facebookresearch/audiocraft.git",
+      "recommended": {
+        "commit": "def456",
+        "tag": "v1.3.0",
+        "verified_at": "2026-04-10",
+        "note": "Baseline for MusicGen."
+      },
+      "known_good": [
+        {
+          "commit": "def456",
+          "tag": "v1.3.0",
+          "date": "2026-03-20",
+          "note": "Stable"
+        }
+      ],
+      "python": "3.11",
+      "install_cmd": "uv pip install -e .",
+      "start_cmd": "python -m audiocraft.server",
+      "health_check": "http://127.0.0.1:8190/healthz",
+      "smoke_test": "scripts/smoke/audiocraft.py",
+      "vram_requirement_mb": 6000
+    },
+    "gpt-sovits": {
+      "repo": "https://github.com/RVC-Boss/GPT-SoVITS.git",
+      "recommended": {
+        "commit": "ghi789",
+        "tag": "v2.1",
+        "verified_at": "2026-04-10",
+        "note": "Baseline for TTS and voice cloning."
+      },
+      "known_good": [
+        {
+          "commit": "ghi789",
+          "tag": "v2.1",
+          "date": "2026-03-20",
+          "note": "Stable"
+        }
+      ],
+      "python": "3.11",
+      "install_cmd": "uv pip install -r requirements.txt",
+      "start_cmd": "python api_v2.py --port 9880",
+      "health_check": "http://127.0.0.1:9880/healthz",
+      "smoke_test": "scripts/smoke/gpt_sovits.py",
+      "vram_requirement_mb": 4000
+    }
+  }
 }

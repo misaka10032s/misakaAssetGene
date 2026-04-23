@@ -1,4 +1,44 @@
 {
   "schema_version": 1,
-  "tools": []
+  "tools": {
+    "uv": {
+      "version": "0.5.18",
+      "platforms": {
+        "windows-x64": {
+          "url": "https://github.com/astral-sh/uv/releases/download/0.5.18/uv-x86_64-pc-windows-msvc.zip",
+          "sha256": "replace-me",
+          "extract": "uv.exe"
+        },
+        "macos-arm64": {
+          "url": "https://github.com/astral-sh/uv/releases/download/0.5.18/uv-aarch64-apple-darwin.tar.gz",
+          "sha256": "replace-me"
+        },
+        "linux-x64": {
+          "url": "https://github.com/astral-sh/uv/releases/download/0.5.18/uv-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "replace-me"
+        }
+      },
+      "changelog_url": "https://github.com/astral-sh/uv/releases/tag/0.5.18",
+      "self_update_cmd": "uv self update"
+    },
+    "ffmpeg": {
+      "version": "7.1.0",
+      "platforms": {
+        "windows-x64": {
+          "url": "https://example.invalid/ffmpeg/windows-x64.zip",
+          "sha256": "replace-me",
+          "extract": "ffmpeg.exe"
+        },
+        "macos-arm64": {
+          "url": "https://example.invalid/ffmpeg/macos-arm64.tar.gz",
+          "sha256": "replace-me"
+        },
+        "linux-x64": {
+          "url": "https://example.invalid/ffmpeg/linux-x64.tar.gz",
+          "sha256": "replace-me"
+        }
+      },
+      "changelog_url": "https://ffmpeg.org/download.html"
+    }
+  }
 }

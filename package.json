@@ -1,0 +1,35 @@
+{
+  "name": "misaka-asset-gene",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "powershell -ExecutionPolicy Bypass -File .\\scripts\\setup.ps1",
+    "dev": "cross-env VITE_MISAKA_ENV=dev vite --mode development --config frontend/vite.config.ts",
+    "dev:core": "cross-env MISAKA_ENV=dev .venv\\Scripts\\python -m uvicorn core.main:app --reload --port 7500",
+    "start:dev": "cross-env MISAKA_ENV=dev VITE_MISAKA_ENV=dev .venv\\Scripts\\python scripts\\dev_stack.py",
+    "desktop:dev": "tauri dev",
+    "desktop:info": "tauri info",
+    "doctor": "cross-env MISAKA_ENV=dev .venv\\Scripts\\python scripts\\doctor.py",
+    "manager": "cross-env MISAKA_ENV=dev .venv\\Scripts\\python scripts\\lib\\manager.py",
+    "build": "cross-env VITE_MISAKA_ENV=production vite build --mode production --config frontend/vite.config.ts",
+    "typecheck": "cross-env VITE_MISAKA_ENV=dev vue-tsc --project frontend/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "pinia": "^2.3.1",
+    "vue": "^3.5.13",
+    "vue-i18n": "^9.14.4",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@unocss/reset": "^66.1.0",
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/node": "^22.15.18",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "cross-env": "^7.0.3",
+    "typescript": "^5.8.3",
+    "unocss": "^66.1.0",
+    "vite": "^5.4.18",
+    "vue-tsc": "^2.2.10"
+  }
+}

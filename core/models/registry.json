@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "categories": {
+    "consultant_llm": [
+      {
+        "name": "Qwen3.6-14B-Instruct",
+        "version": "3.6.0",
+        "license": "Apache-2.0",
+        "commercial": true,
+        "vram_min_gb": 12,
+        "download_url": "hf://Qwen/Qwen3.6-14B-Instruct-GGUF"
+      }
+    ],
+    "image_checkpoint": [
+      {
+        "name": "Flux.1-dev",
+        "license": "Flux",
+        "commercial": false
+      }
+    ],
+    "music": [
+      {
+        "name": "MusicGen",
+        "license": "CC-BY-NC-4.0"
+      }
+    ],
+    "tts": [
+      {
+        "name": "GPT-SoVITS",
+        "license": "Apache-2.0"
+      }
+    ],
+    "video": [
+      {
+        "name": "Wan 2.1",
+        "license": "custom"
+      }
+    ]
+  }
+}
