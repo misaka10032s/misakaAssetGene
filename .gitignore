@@ -1,0 +1,56 @@
+# Claude local overrides
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Node / Tauri
+node_modules/
+frontend/node_modules/
+.pnpm-store/
+src-tauri/target/
+target/
+*.tsbuildinfo
+
+# User data and caches
+projects/
+.cache/
+logs/
+tmp/
+temp/
+
+# Managed external dependencies
+tools/*
+!tools/.gitignore
+!tools/manifest.json
+workers/*
+!workers/.gitignore
+!workers/manifest.json
+
+# Models and generated artifacts
+models/
+*.ckpt
+*.safetensors
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
