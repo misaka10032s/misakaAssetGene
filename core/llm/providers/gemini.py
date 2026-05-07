@@ -45,7 +45,10 @@ def optimize_synopsis(settings: Settings, prompt: str) -> SynopsisOptimizeResult
                     {
                         "parts": [{"text": prompt}],
                     }
-                ]
+                ],
+                "generationConfig": {
+                    "temperature": 0.2,
+                },
             },
         )
         response.raise_for_status()

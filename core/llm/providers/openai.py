@@ -45,6 +45,7 @@ def optimize_synopsis(settings: Settings, prompt: str) -> SynopsisOptimizeResult
             },
             json={
                 "model": settings.openai_model,
+                "temperature": 0.2,
                 "messages": [{"role": "user", "content": prompt}],
             },
         )

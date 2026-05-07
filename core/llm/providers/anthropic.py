@@ -53,6 +53,7 @@ def optimize_synopsis(settings: Settings, prompt: str) -> SynopsisOptimizeResult
             json={
                 "model": settings.anthropic_model,
                 "max_tokens": 300,
+                "temperature": 0.2,
                 "messages": [
                     {
                         "role": "user",

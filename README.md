@@ -28,6 +28,7 @@ npm run start:dev
 - `npm run dev:core`：只啟動 FastAPI Core API
 - `npm run build`：建置前端產物到 `dist/`
 - `npm run manager`：查看整合管理資訊
+- 前端 dev 模式內建 Vue component inspector：按右下角 inspector 按鈕，或按 `Ctrl+Shift` 切換後點選元件，可直接用 VS Code 開啟對應檔案與行數
 
 ### 模型路徑
 
@@ -65,6 +66,7 @@ npm run start:dev
 - `npm run dev:core`: start the FastAPI Core API only
 - `npm run build`: build the frontend into `dist/`
 - `npm run manager`: inspect integration metadata
+- Frontend dev mode now includes a Vue component inspector: use the bottom-right inspector button, or press `Ctrl+Shift` to toggle it, then click a component to open the matching file and line in VS Code
 
 ### Model paths
 
@@ -102,6 +104,7 @@ npm run start:dev
 - `npm run dev:core`: FastAPI Core API のみ起動
 - `npm run build`: フロントエンドを `dist/` にビルド
 - `npm run manager`: 統合メタデータを確認
+- フロントエンドの dev モードには Vue component inspector を組み込み済みです。右下の inspector ボタン、または `Ctrl+Shift` で切り替えてからコンポーネントをクリックすると、VS Code で対応ファイルと行を開けます
 
 ### モデルパス
 

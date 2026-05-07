@@ -4,20 +4,26 @@ import type {
   ApiResponse,
   ClarifyPayload,
   ClarifyResult,
+  ConversationHistoryData,
   CreateProjectPayload,
   HealthData,
-  IntegrationSnapshot,
-  LocalLlmStatus,
-  ModelDownloadPayload,
-  ModelDownloadResult,
-  ProjectListData,
-  ProjectSchemaData,
-  ProjectSummary,
-  ProjectTypeData,
-  SelectProjectPayload,
-  SynopsisOptimizePayload,
-  SynopsisOptimizeResult,
-} from "@/types/api";
+    IntegrationSnapshot,
+    LocalLlmStatus,
+    ModelDownloadPayload,
+    ModelDownloadResult,
+    ProjectLicenseReport,
+    ProjectListData,
+    ProjectSchemaData,
+    ProjectSummary,
+    TrainingWorkspaceData,
+    ProjectVersionGraph,
+    ProjectTypeData,
+    ProjectWorkspaceData,
+    SelectProjectPayload,
+    SynopsisOptimizePayload,
+    SynopsisOptimizeResult,
+    WorkerSmokeResult,
+  } from "@/types/api";
 import { MessageKey } from "@/types/enums";
 
 class ApiClientError extends Error {
@@ -29,6 +35,20 @@ class ApiClientError extends Error {
     this.messageKey = messageKey;
     this.detail = detail;
   }
+}
+
+const devStartupRetryAttempts = 25;
+const devStartupRetryDelayMs = 1000;
+
+function isSafeRetryableRequest(init?: RequestInit): boolean {
+  const method = (init?.method ?? "GET").toUpperCase();
+  return method === "GET";
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
 }
 
 /**
@@ -46,19 +66,48 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   }
 
-  const response = await fetch(`${appEnv.apiBaseUrl}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  });
+  const url = `${appEnv.apiBaseUrl}${path}`;
+  const maxAttempts = isDevDiagnostics && isSafeRetryableRequest(init) ? devStartupRetryAttempts : 1;
+  let response: Response | null = null;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const useFormData = init?.body instanceof FormData;
+      response = await fetch(url, {
+        headers: {
+          ...(useFormData ? {} : { "Content-Type": "application/json" }),
+          ...(init?.headers ?? {}),
+        },
+        ...init,
+      });
+      break;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts) {
+        throw error;
+      }
+      if (isDevDiagnostics) {
+        console.warn("[misaka.api] retrying startup request", {
+          method: init?.method ?? "GET",
+          url,
+          attempt,
+          maxAttempts,
+        });
+      }
+      await sleep(devStartupRetryDelayMs);
+    }
+  }
+
+  if (response === null) {
+    throw lastError instanceof Error ? lastError : new Error(`Request failed: ${url}`);
+  }
 
   if (!response.ok) {
     if (isDevDiagnostics) {
       console.error("[misaka.api] failed", {
         method: init?.method ?? "GET",
-        url: `${appEnv.apiBaseUrl}${path}`,
+        url,
         status: response.status,
       });
     }
@@ -69,7 +118,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (isDevDiagnostics) {
     console.info("[misaka.api] ok", {
       method: init?.method ?? "GET",
-      url: `${appEnv.apiBaseUrl}${path}`,
+      url,
       status: response.status,
     });
   }
@@ -110,6 +159,10 @@ export const apiClient = {
       body: JSON.stringify(payload),
     }),
   /**
+   * Loads a single project by id.
+   */
+  getProject: (projectId: string) => request<{ project: ProjectSummary }>(`/api/v1/projects/${projectId}`),
+  /**
    * Loads the backend project schema document.
    */
   projectSchema: () => request<ProjectSchemaData>("/api/v1/project-schema"),
@@ -130,9 +183,107 @@ export const apiClient = {
       body: JSON.stringify(payload),
     }),
   /**
+   * Loads persisted consultant conversation entries for a project.
+   */
+  projectConversation: (projectId: string) => request<ConversationHistoryData>(`/api/v1/projects/${projectId}/conversation`),
+  /**
+   * Loads a paginated slice of project conversation history.
+   */
+  projectConversationPage: (projectId: string, offset = 0, limit = 40) =>
+    request<ConversationHistoryData>(`/api/v1/projects/${projectId}/conversation?offset=${offset}&limit=${limit}`),
+  /**
+   * Loads project jobs and assets.
+   */
+  projectWorkspace: (projectId: string) => request<ProjectWorkspaceData>(`/api/v1/projects/${projectId}/workspace`),
+  /**
+   * Loads the version graph for a project.
+   */
+  projectVersionGraph: (projectId: string) => request<ProjectVersionGraph>(`/api/v1/projects/${projectId}/versions`),
+  /**
+   * Loads the project license report.
+   */
+  projectLicenseReport: (projectId: string) => request<ProjectLicenseReport>(`/api/v1/projects/${projectId}/license-report`),
+  /**
+   * Loads project training jobs.
+   */
+  projectTrainingWorkspace: (projectId: string) => request<TrainingWorkspaceData>(`/api/v1/projects/${projectId}/training`),
+  /**
+   * Creates a training job scaffold.
+   */
+  createProjectTrainingJob: (projectId: string, payload: { title: string; modality: string; dataset_path: string; worker?: string | null }) =>
+    request<TrainingWorkspaceData>(`/api/v1/projects/${projectId}/training`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Executes a single project job and returns refreshed workspace data.
+   */
+  executeProjectJob: (projectId: string, jobId: string) =>
+    request<ProjectWorkspaceData>(`/api/v1/projects/${projectId}/jobs/${jobId}/execute`, {
+      method: "POST",
+    }),
+  /**
+   * Executes all ready jobs, or a provided subset, and returns the refreshed workspace.
+   */
+  executeReadyProjectJobs: (projectId: string, jobIds: string[] = []) =>
+    request<ProjectWorkspaceData>(`/api/v1/projects/${projectId}/jobs/execute-ready`, {
+      method: "POST",
+      body: JSON.stringify({ job_ids: jobIds }),
+    }),
+  /**
+   * Updates execution settings for a workspace job.
+   */
+  updateProjectJob: (projectId: string, jobId: string, payload: { worker: string | null; recipe: string | null; source_asset_id: string | null; mask_asset_id: string | null }) =>
+    request<ProjectWorkspaceData>(`/api/v1/projects/${projectId}/jobs/${jobId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Imports a project asset file and returns the refreshed workspace.
+   */
+  importProjectAsset: (
+    projectId: string,
+    payload: { file: File; modality: string; asset_type: string; title: string; description?: string },
+  ) => {
+    const formData = new FormData();
+    formData.set("file", payload.file);
+    formData.set("modality", payload.modality);
+    formData.set("asset_type", payload.asset_type);
+    formData.set("title", payload.title);
+    formData.set("description", payload.description ?? "");
+    return request<ProjectWorkspaceData>(`/api/v1/projects/${projectId}/assets/import`, {
+      method: "POST",
+      body: formData,
+    });
+  },
+  /**
+   * Sends a consultant request scoped to a project and persists the result.
+   */
+  clarifyProject: (projectId: string, payload: ClarifyPayload) =>
+    request<ClarifyResult>(`/api/v1/projects/${projectId}/consultant/clarify`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  /**
    * Loads the integration snapshot for tools, workers, and providers.
    */
   integration: () => request<IntegrationSnapshot>("/api/v1/integration"),
+  /**
+   * Clones or syncs a worker repository to the recommended revision.
+   */
+  installWorker: (workerName: string) => request<void>(`/api/v1/workers/${workerName}/install`, { method: "POST" }),
+  /**
+   * Starts a worker server.
+   */
+  startWorker: (workerName: string) => request<void>(`/api/v1/workers/${workerName}/start`, { method: "POST" }),
+  /**
+   * Stops a worker server.
+   */
+  stopWorker: (workerName: string) => request<void>(`/api/v1/workers/${workerName}/stop`, { method: "POST" }),
+  /**
+   * Runs a worker smoke test.
+   */
+  smokeWorker: (workerName: string) => request<WorkerSmokeResult>(`/api/v1/workers/${workerName}/smoke`, { method: "POST" }),
   /**
    * Loads the local LLM server status.
    */
@@ -149,5 +300,7 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  exportProjectDownloadUrl: (projectId: string, resolveRefs = true) =>
+    `${appEnv.apiBaseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/export/download?resolve_refs=${resolveRefs ? "true" : "false"}`,
   ApiClientError,
 };

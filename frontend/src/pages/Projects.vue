@@ -1,51 +1,77 @@
 <script setup lang="ts">
-import { reactive } from "vue";
+import { computed, reactive, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import { useRouter } from "vue-router";
 
 import { useAppStore } from "@/stores/app";
 import { useWindowSize } from "@/composables/useWindowSize";
 import type { CreateProjectPayload } from "@/types/api";
+import { PageKey, ProviderStatus } from "@/types/enums";
 
 const appStore = useAppStore();
+const router = useRouter();
 const { splitGridClass } = useWindowSize();
 const { t } = useI18n();
-const form = reactive<CreateProjectPayload>({
-  name: "",
-  type: "RPG",
-  synopsis: "",
+const form = reactive<CreateProjectPayload>({ ...appStore.projectDraft });
+const hasReadySynopsisProvider = computed<boolean>(() =>
+  appStore.integration.providers.some((provider) => provider.status === ProviderStatus.READY),
+);
+const hasFilledSynopsisInputs = computed<boolean>(() => Boolean(form.name.trim() && form.type.trim() && form.synopsis.trim()));
+const canOptimizeSynopsis = computed<boolean>(() => hasReadySynopsisProvider.value && hasFilledSynopsisInputs.value);
+const optimizeHintKey = computed<string>(() => {
+  if (!appStore.integration.providers.length) {
+    return "project.optimizeLoading";
+  }
+  if (!hasReadySynopsisProvider.value) {
+    return "project.optimizeUnavailable";
+  }
+  if (!hasFilledSynopsisInputs.value) {
+    return "project.optimizeIncomplete";
+  }
+  return "project.optimizeReady";
 });
 
-/**
- * Creates a project and resets the editable fields.
- */
+watch(
+  form,
+  (value) => {
+    appStore.updateProjectDraft(value);
+  },
+  { deep: true },
+);
+
 async function createProject(): Promise<void> {
-  await appStore.createProject({ ...form });
-  form.name = "";
-  form.synopsis = "";
-}
-
-/**
- * Switches the active project selection.
- *
- * @param projectName - The project name to activate.
- */
-async function switchProject(projectName: string): Promise<void> {
-  await appStore.selectProject(projectName);
-}
-
-/**
- * Requests an optimized synopsis draft.
- */
-async function optimizeSynopsis(): Promise<void> {
-  if (!form.name.trim() || !form.type.trim() || !form.synopsis.trim()) {
+  try {
+    const createdProject = await appStore.createProject({ ...form });
+    await appStore.selectProject(createdProject.id);
+    form.name = appStore.projectDraft.name;
+    form.type = appStore.projectDraft.type;
+    form.synopsis = appStore.projectDraft.synopsis;
+    await router.push({ name: PageKey.PROJECT, params: { projectId: createdProject.id } });
+  } catch {
     return;
   }
-  await appStore.optimizeSynopsis(form.name, form.type, form.synopsis);
 }
 
-/**
- * Replaces the synopsis with the optimized draft.
- */
+async function switchProject(projectId: string): Promise<void> {
+  try {
+    await appStore.selectProject(projectId);
+    await router.push({ name: PageKey.PROJECT, params: { projectId } });
+  } catch {
+    return;
+  }
+}
+
+async function optimizeSynopsis(): Promise<void> {
+  if (!canOptimizeSynopsis.value) {
+    return;
+  }
+  try {
+    await appStore.optimizeSynopsis(form.name, form.type, form.synopsis);
+  } catch {
+    return;
+  }
+}
+
 function applySynopsisSuggestion(): void {
   if (!appStore.synopsisSuggestion) {
     return;
@@ -53,9 +79,6 @@ function applySynopsisSuggestion(): void {
   form.synopsis = appStore.synopsisSuggestion.optimized_synopsis;
 }
 
-/**
- * Appends the optimized synopsis below the current text for manual merging.
- */
 function mergeSynopsisSuggestion(): void {
   if (!appStore.synopsisSuggestion) {
     return;
@@ -63,12 +86,6 @@ function mergeSynopsisSuggestion(): void {
   form.synopsis = `${form.synopsis.trim()}\n\n${appStore.synopsisSuggestion.optimized_synopsis}`.trim();
 }
 
-/**
- * Resolves a localized label for suggested project types and falls back to raw text for custom values.
- *
- * @param projectType - The stored project type string.
- * @returns A presentable label for the UI.
- */
 function getProjectTypeLabel(projectType: string): string {
   return appStore.projectTypes.includes(projectType) ? t(`projectType.${projectType}`) : projectType;
 }
@@ -104,15 +121,23 @@ function getProjectTypeLabel(projectType: string): string {
         <button class="app-button" @click="createProject">
           {{ $t("project.createAction") }}
         </button>
-        <button class="app-button-secondary" :disabled="!form.name.trim() || !form.type.trim() || !form.synopsis.trim()" @click="optimizeSynopsis">
+        <button class="app-button-secondary" :disabled="!canOptimizeSynopsis" @click="optimizeSynopsis">
           {{ $t("project.optimizeAction") }}
         </button>
       </div>
+      <p class="mt-3 app-muted">
+        {{ $t(optimizeHintKey) }}
+      </p>
 
       <div v-if="appStore.synopsisSuggestion" class="mt-4 rounded-xl border border-app-border bg-app-surfaceAlt p-4">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <h3 class="font-semibold text-app-text">{{ $t("project.optimizedTitle") }}</h3>
-          <span class="app-muted">{{ appStore.synopsisSuggestion.provider ?? appStore.synopsisSuggestion.strategy }}</span>
+          <div class="flex items-center gap-2">
+            <span class="app-muted">{{ appStore.synopsisSuggestion.provider ?? appStore.synopsisSuggestion.strategy }}</span>
+            <button class="app-button-secondary" type="button" @click="appStore.closeSynopsisSuggestion()">
+              {{ $t("app.close") }}
+            </button>
+          </div>
         </div>
         <p class="mt-3 whitespace-pre-wrap text-sm text-app-text">{{ appStore.synopsisSuggestion.optimized_synopsis }}</p>
         <div class="mt-4 flex flex-wrap gap-2">
@@ -131,17 +156,17 @@ function getProjectTypeLabel(projectType: string): string {
         <h2 class="app-section-title">{{ $t("project.listTitle") }}</h2>
         <p v-if="!appStore.projects.length" class="app-muted">{{ $t("project.empty") }}</p>
         <ul v-else class="grid gap-3">
-          <li v-for="project in appStore.projects" :key="project.name" class="rounded-xl border border-app-border bg-app-surfaceAlt p-3">
+          <li v-for="project in appStore.projects" :key="project.id" class="rounded-xl border border-app-border bg-app-surfaceAlt p-3">
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <strong class="text-app-text">{{ project.name }}</strong>
                 <span class="ml-2 app-muted">{{ getProjectTypeLabel(project.type) }}</span>
               </div>
               <div class="flex items-center gap-2">
-                <span v-if="appStore.currentProjectName === project.name" class="app-muted text-app-primary">
+                <span v-if="appStore.currentProjectId === project.id" class="app-muted text-app-primary">
                   {{ $t("project.currentTag") }}
                 </span>
-                <button class="app-button-secondary" @click="switchProject(project.name)">
+                <button class="app-button-secondary" @click="switchProject(project.id)">
                   {{ $t("project.switchAction") }}
                 </button>
               </div>
@@ -151,10 +176,11 @@ function getProjectTypeLabel(projectType: string): string {
         </ul>
       </div>
 
-      <div class="app-panel">
-        <h2 class="app-section-title">{{ $t("project.schemaTitle") }}</h2>
-        <pre class="whitespace-pre-wrap break-all text-xs text-app-muted">{{ appStore.projectSchema }}</pre>
-      </div>
+      <details class="app-panel">
+        <summary class="cursor-pointer text-app-text">{{ $t("project.schemaTitle") }}</summary>
+        <p class="mt-3 app-muted">{{ $t("project.schemaDescription") }}</p>
+        <pre class="mt-3 whitespace-pre-wrap break-all text-xs text-app-muted">{{ appStore.projectSchema }}</pre>
+      </details>
     </div>
   </section>
 </template>

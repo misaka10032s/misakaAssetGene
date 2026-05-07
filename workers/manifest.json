@@ -2,19 +2,21 @@
   "schema_version": 1,
   "workers": {
     "comfyui": {
-      "repo": "https://github.com/comfyanonymous/ComfyUI.git",
+      "display_name": "ComfyUI",
+      "directory": "comfyui",
+      "repo": "https://github.com/Comfy-Org/ComfyUI.git",
       "recommended": {
-        "commit": "abc123",
-        "tag": "v0.3.15",
-        "verified_at": "2026-04-10",
-        "note": "Stable baseline for image workflows."
+        "commit": "abf3d56f27948b122dbcba35847b59e5ff299030",
+        "tag": "latest-2026-04-23",
+        "verified_at": "2026-04-24",
+        "note": "Primary image and video workflow backend."
       },
       "known_good": [
         {
-          "commit": "abc123",
-          "tag": "v0.3.15",
-          "date": "2026-03-20",
-          "note": "Stable"
+          "commit": "abf3d56f27948b122dbcba35847b59e5ff299030",
+          "tag": "latest-2026-04-23",
+          "date": "2026-04-23",
+          "note": "Active upstream build."
         }
       ],
       "python": "3.11",
@@ -24,51 +26,135 @@
       "smoke_test": "scripts/smoke/comfyui.py",
       "vram_requirement_mb": 4000
     },
-    "audiocraft": {
-      "repo": "https://github.com/facebookresearch/audiocraft.git",
+    "ace-step": {
+      "display_name": "ACE-Step-1.5",
+      "directory": "ace-step-1.5",
+      "repo": "https://github.com/ace-step/ACE-Step-1.5.git",
+      "auto_start": true,
       "recommended": {
-        "commit": "def456",
-        "tag": "v1.3.0",
-        "verified_at": "2026-04-10",
-        "note": "Baseline for MusicGen."
+        "commit": "d61c7acb9565624de77d88415195c11823d1ec0d",
+        "tag": "latest-2026-04-23",
+        "verified_at": "2026-04-24",
+        "note": "Primary local music generation backend."
       },
       "known_good": [
         {
-          "commit": "def456",
-          "tag": "v1.3.0",
-          "date": "2026-03-20",
-          "note": "Stable"
+          "commit": "d61c7acb9565624de77d88415195c11823d1ec0d",
+          "tag": "latest-2026-04-23",
+          "date": "2026-04-23",
+          "note": "Active upstream build."
         }
       ],
       "python": "3.11",
       "install_cmd": "uv pip install -e .",
-      "start_cmd": "python -m audiocraft.server",
-      "health_check": "http://127.0.0.1:8190/healthz",
-      "smoke_test": "scripts/smoke/audiocraft.py",
+      "start_cmd": "python -m acestep.api.server_cli --host 127.0.0.1 --port 8190 --no-init",
+      "health_check": "http://127.0.0.1:8190/health",
+      "smoke_test": "scripts/smoke/ace_step.py",
       "vram_requirement_mb": 6000
     },
-    "gpt-sovits": {
-      "repo": "https://github.com/RVC-Boss/GPT-SoVITS.git",
+    "stable-audio-tools": {
+      "display_name": "stable-audio-tools",
+      "directory": "stable-audio-tools",
+      "repo": "https://github.com/Stability-AI/stable-audio-tools.git",
+      "auto_start": false,
       "recommended": {
-        "commit": "ghi789",
-        "tag": "v2.1",
-        "verified_at": "2026-04-10",
-        "note": "Baseline for TTS and voice cloning."
+        "commit": "50049e379e2fe8e35bffc99e57f23ade1c3471b7",
+        "tag": "latest-2026-02-14",
+        "verified_at": "2026-04-24",
+        "note": "Audio and SFX fallback backend."
       },
       "known_good": [
         {
-          "commit": "ghi789",
-          "tag": "v2.1",
-          "date": "2026-03-20",
-          "note": "Stable"
+          "commit": "50049e379e2fe8e35bffc99e57f23ade1c3471b7",
+          "tag": "latest-2026-02-14",
+          "date": "2026-02-14",
+          "note": "2026-maintained audio tools baseline."
+        }
+      ],
+      "python": "3.11",
+      "install_cmd": "uv pip install -e .",
+      "start_cmd": "python run_gradio.py",
+      "health_check": "http://127.0.0.1:7860/",
+      "smoke_test": "scripts/smoke/stable_audio_tools.py",
+      "vram_requirement_mb": 6000
+    },
+    "voxcpm": {
+      "display_name": "VoxCPM",
+      "directory": "voxcpm",
+      "repo": "https://github.com/OpenBMB/VoxCPM.git",
+      "auto_start": true,
+      "recommended": {
+        "commit": "cd79a647fab96f11a1c7f350cec11385b011ede4",
+        "tag": "latest-2026-04-21",
+        "verified_at": "2026-04-24",
+        "note": "Primary TTS backend."
+      },
+      "known_good": [
+        {
+          "commit": "cd79a647fab96f11a1c7f350cec11385b011ede4",
+          "tag": "latest-2026-04-21",
+          "date": "2026-04-21",
+          "note": "Active upstream build."
+        }
+      ],
+      "python": "3.11",
+      "install_cmd": "uv pip install -e .",
+      "start_cmd": "python app.py --port 8790",
+      "health_check": "http://127.0.0.1:8790/",
+      "smoke_test": "scripts/smoke/voxcpm.py",
+      "vram_requirement_mb": 5000
+    },
+    "gpt-sovits": {
+      "display_name": "GPT-SoVITS",
+      "directory": "gpt-sovits",
+      "repo": "https://github.com/RVC-Boss/GPT-SoVITS.git",
+      "auto_start": true,
+      "recommended": {
+        "commit": "ea2d2a81667239d37615697e8f0056e35bab2db6",
+        "tag": "latest-2026-04-19",
+        "verified_at": "2026-04-24",
+        "note": "TTS and few-shot voice cloning backend."
+      },
+      "known_good": [
+        {
+          "commit": "ea2d2a81667239d37615697e8f0056e35bab2db6",
+          "tag": "latest-2026-04-19",
+          "date": "2026-04-19",
+          "note": "Active upstream build."
         }
       ],
       "python": "3.11",
       "install_cmd": "uv pip install -r requirements.txt",
-      "start_cmd": "python api_v2.py --port 9880",
-      "health_check": "http://127.0.0.1:9880/healthz",
+      "start_cmd": "python api_v2.py -a 127.0.0.1 -p 9880",
+      "health_check": "http://127.0.0.1:9880/docs",
       "smoke_test": "scripts/smoke/gpt_sovits.py",
       "vram_requirement_mb": 4000
+    },
+    "ultimate-rvc": {
+      "display_name": "ultimate-rvc",
+      "directory": "ultimate-rvc",
+      "repo": "https://github.com/JackismyShephard/ultimate-rvc.git",
+      "auto_start": true,
+      "recommended": {
+        "commit": "e6519bc3d7e118d0fbb3643a817904b2bd8e3c79",
+        "tag": "latest-2026-04-01",
+        "verified_at": "2026-04-24",
+        "note": "Primary voice conversion backend."
+      },
+      "known_good": [
+        {
+          "commit": "e6519bc3d7e118d0fbb3643a817904b2bd8e3c79",
+          "tag": "latest-2026-04-01",
+          "date": "2026-04-01",
+          "note": "Active upstream build."
+        }
+      ],
+      "python": "3.13",
+      "install_cmd": "uv pip install .",
+      "start_cmd": "python -m ultimate_rvc.web.main start-app --listen --listen-host 127.0.0.1 --listen-port 8791",
+      "health_check": "http://127.0.0.1:8791/",
+      "smoke_test": "scripts/smoke/ultimate_rvc.py",
+      "vram_requirement_mb": 5000
     }
   }
 }

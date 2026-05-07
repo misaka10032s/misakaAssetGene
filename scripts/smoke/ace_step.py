@@ -12,9 +12,9 @@ def main() -> int:
         response = httpx.get(health_url, timeout=5.0)
         response.raise_for_status()
     except httpx.HTTPError as error:
-        print(json.dumps({"ok": False, "detail": f"GPT-SoVITS health check failed: {error}"}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "detail": f"ACE-Step health check failed: {error}"}, ensure_ascii=False))
         return 1
-    print(json.dumps({"ok": True, "detail": "GPT-SoVITS health check succeeded."}, ensure_ascii=False))
+    print(json.dumps({"ok": True, "detail": "ACE-Step health check succeeded."}, ensure_ascii=False))
     return 0
 
 

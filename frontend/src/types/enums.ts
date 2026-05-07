@@ -6,6 +6,8 @@ export enum AppLocale {
 
 export enum PageKey {
   PROJECTS = "projects",
+  PROJECT = "project",
+  VERSIONS = "versions",
   STUDIO = "studio",
   ASSETS = "assets",
   SETTINGS = "settings",
@@ -24,6 +26,7 @@ export enum NetworkStatus {
 }
 
 export enum Modality {
+  TEXT = "text",
   MUSIC = "music",
   IMAGE = "image",
   VOICE = "voice",
@@ -68,4 +71,13 @@ export enum ProviderStatus {
   CONFIGURED = "configured",
   UNAVAILABLE = "unavailable",
   DISABLED = "disabled",
+}
+
+export enum GenerationJobStatus {
+  PLANNED = "planned",
+  READY = "ready",
+  BLOCKED = "blocked",
+  RUNNING = "running",
+  COMPLETED = "completed",
+  FAILED = "failed",
 }

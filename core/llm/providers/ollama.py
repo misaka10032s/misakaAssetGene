@@ -6,16 +6,19 @@ from core.config import Settings
 from core.models.schemas import ProviderMode, ProviderName, ProviderSnapshot, ProviderStatus, SynopsisOptimizeResult
 
 
+def list_models(settings: Settings) -> list[str]:
+    response = httpx.get(f"{settings.misaka_ollama_base_url.rstrip('/')}/api/tags", timeout=2.0)
+    response.raise_for_status()
+    payload = response.json()
+    return [str(model.get("name") or "").strip() for model in payload.get("models") or [] if model.get("name")]
+
+
 def build_snapshot(settings: Settings) -> ProviderSnapshot:
     status = ProviderStatus.CONFIGURED if settings.misaka_ollama_base_url else ProviderStatus.DISABLED
     configured = bool(settings.misaka_ollama_base_url)
     if configured:
         try:
-            response = httpx.get(f"{settings.misaka_ollama_base_url.rstrip('/')}/api/tags", timeout=2.0)
-            if response.is_success:
-                status = ProviderStatus.READY
-            else:
-                status = ProviderStatus.UNAVAILABLE
+            status = ProviderStatus.READY if list_models(settings) else ProviderStatus.CONFIGURED
         except httpx.HTTPError:
             status = ProviderStatus.UNAVAILABLE
 
@@ -33,13 +36,25 @@ def optimize_synopsis(settings: Settings, prompt: str) -> SynopsisOptimizeResult
     if snapshot.status is not ProviderStatus.READY:
         return None
     try:
+        available_models = list_models(settings)
+        if not available_models:
+            return None
+        selected_model = settings.misaka_ollama_model if settings.misaka_ollama_model in available_models else available_models[0]
         response = httpx.post(
             f"{settings.misaka_ollama_base_url.rstrip('/')}/api/generate",
             timeout=10.0,
             json={
-                "model": settings.misaka_ollama_model,
+                "model": selected_model,
+                "system": (
+                    "You improve project synopsis text. Keep the original language. "
+                    "Do not invent facts. Return one paragraph only."
+                ),
                 "prompt": prompt,
                 "stream": False,
+                "options": {
+                    "temperature": 0.2,
+                    "num_predict": 160,
+                },
             },
         )
         response.raise_for_status()

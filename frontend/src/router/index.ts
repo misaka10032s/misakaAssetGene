@@ -1,9 +1,10 @@
 import { createRouter, createWebHistory } from "vue-router";
 
 import AssetsPage from "@/pages/Assets.vue";
-import ChatPage from "@/pages/Chat.vue";
 import IntegrationManagerPage from "@/pages/IntegrationManager.vue";
+import ProjectWorkspacePage from "@/pages/ProjectWorkspace.vue";
 import ProjectsPage from "@/pages/Projects.vue";
+import VersionTreePage from "@/pages/VersionTree.vue";
 import { PageKey } from "@/types/enums";
 
 export const router = createRouter({
@@ -19,13 +20,22 @@ export const router = createRouter({
       component: ProjectsPage,
     },
     {
-      path: "/studio",
-      name: PageKey.STUDIO,
-      component: ChatPage,
+      path: "/project/:projectId",
+      name: PageKey.PROJECT,
+      component: ProjectWorkspacePage,
+    },
+    {
+      path: "/project/:projectId/versions",
+      name: PageKey.VERSIONS,
+      component: VersionTreePage,
     },
     {
       path: "/chat",
-      redirect: { name: PageKey.STUDIO },
+      redirect: { name: PageKey.PROJECTS },
+    },
+    {
+      path: "/studio",
+      redirect: { name: PageKey.PROJECTS },
     },
     {
       path: "/assets",

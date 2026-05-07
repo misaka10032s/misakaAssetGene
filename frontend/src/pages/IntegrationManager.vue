@@ -12,8 +12,12 @@ const modelForm = reactive({
 });
 
 onMounted(() => {
-  void appStore.loadIntegrationSnapshot();
-  void appStore.loadLocalLlmStatus();
+  if (!appStore.integration.tools.length && !appStore.integration.workers.length) {
+    void appStore.loadIntegrationSnapshot();
+  }
+  if (!appStore.localLlmStatus) {
+    void appStore.loadLocalLlmStatus();
+  }
 });
 
 /**
@@ -33,6 +37,27 @@ async function downloadModel(): Promise<void> {
   await appStore.downloadLocalModel(modelForm.url);
   modelForm.url = "";
 }
+
+/**
+ * Installs or syncs a worker repository to the recommended revision.
+ *
+ * @param workerName - The worker identifier.
+ */
+async function installWorker(workerName: string): Promise<void> {
+  await appStore.installWorker(workerName);
+}
+
+async function startWorker(workerName: string): Promise<void> {
+  await appStore.startWorker(workerName);
+}
+
+async function stopWorker(workerName: string): Promise<void> {
+  await appStore.stopWorker(workerName);
+}
+
+async function smokeWorker(workerName: string): Promise<void> {
+  await appStore.smokeWorker(workerName);
+}
 </script>
 
 <template>
@@ -40,6 +65,22 @@ async function downloadModel(): Promise<void> {
     <div class="app-panel xl:col-span-3">
       <h2 class="app-section-title">{{ $t("settings.title") }}</h2>
       <p class="app-muted">{{ $t("settings.intro") }}</p>
+      <div class="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        <div class="rounded-xl border border-app-border bg-app-surfaceAlt p-3">
+          <p class="app-muted">{{ $t("settings.networkMode") }}</p>
+          <p class="mt-1 font-semibold text-app-text">{{ appStore.integration.network.mode }}</p>
+        </div>
+        <div class="rounded-xl border border-app-border bg-app-surfaceAlt p-3">
+          <p class="app-muted">{{ $t("settings.networkReachability") }}</p>
+          <p class="mt-1 font-semibold text-app-text">
+            {{ appStore.integration.network.reachable ? $t("settings.ready") : $t("settings.unavailable") }}
+          </p>
+        </div>
+        <div class="rounded-xl border border-app-border bg-app-surfaceAlt p-3">
+          <p class="app-muted">{{ $t("settings.networkSummary") }}</p>
+          <p class="mt-1 text-sm text-app-text">{{ appStore.integration.network.summary || "-" }}</p>
+        </div>
+      </div>
     </div>
 
     <div class="app-panel">
@@ -88,9 +129,62 @@ async function downloadModel(): Promise<void> {
 
     <div class="app-panel">
       <h2 class="app-section-title">{{ $t("settings.workers") }}</h2>
-      <ul>
-        <li v-for="worker in appStore.integration.workers" :key="worker.name">
-          {{ worker.name }} — {{ worker.reference }}
+      <ul class="grid gap-3">
+        <li v-for="worker in appStore.integration.workers" :key="worker.name" class="rounded-xl border border-app-border bg-app-surfaceAlt p-3">
+          <div class="font-semibold text-app-text">{{ worker.display_name }}</div>
+          <div class="break-all app-muted">{{ worker.repo }}</div>
+          <div class="mt-2 text-sm text-app-text">
+            {{ $t("settings.installedState") }}:
+            <span :class="worker.is_installed ? 'text-app-success' : 'text-app-warning'">
+              {{ worker.is_installed ? $t("settings.installed") : $t("settings.notInstalled") }}
+            </span>
+          </div>
+          <div class="mt-1 text-sm text-app-text">
+            {{ $t("settings.runningState") }}:
+            <span :class="worker.is_running ? 'text-app-success' : 'text-app-warning'">
+              {{ worker.is_running ? $t("settings.running") : $t("settings.stopped") }}
+            </span>
+          </div>
+          <div class="mt-1 text-sm text-app-text">
+            {{ $t("settings.runtimeState") }}:
+            <span class="text-app-primary">{{ worker.runtime_state }}</span>
+          </div>
+          <div class="mt-2 break-all app-muted">{{ $t("settings.recommendedWorker") }}: {{ worker.recommended_reference }}</div>
+          <div class="break-all app-muted">
+            {{ $t("settings.installedWorker") }}: {{ worker.installed_reference ?? $t("settings.notInstalled") }}
+          </div>
+          <div class="break-all app-muted">{{ $t("settings.workerPath") }}: {{ worker.path }}</div>
+          <div class="break-all app-muted">{{ $t("settings.vramRequirement") }}: {{ worker.vram_requirement_mb }} MB</div>
+          <div v-if="worker.last_job_at" class="break-all app-muted">{{ $t("settings.lastJobAt") }}: {{ worker.last_job_at }}</div>
+          <div v-if="worker.health_check" class="break-all app-muted">{{ worker.health_check }}</div>
+          <div v-if="worker.readiness_note" class="mt-2 text-sm text-app-warning">
+            {{ $t("settings.readinessNote") }}: {{ worker.readiness_note }}
+          </div>
+          <div v-if="worker.managed_pid" class="mt-1 app-muted">
+            {{ $t("settings.managedPid") }}: {{ worker.managed_pid }}
+          </div>
+          <div class="mt-4 flex flex-wrap gap-2">
+            <button class="app-button-secondary" @click="installWorker(worker.name)">
+              {{ worker.is_installed ? $t("settings.resyncWorkerAction") : $t("settings.installWorkerAction") }}
+            </button>
+            <button class="app-button-secondary" :disabled="!worker.is_installed || worker.is_running" @click="startWorker(worker.name)">
+              {{ $t("settings.startWorkerAction") }}
+            </button>
+            <button class="app-button-secondary" :disabled="!worker.is_running" @click="stopWorker(worker.name)">
+              {{ $t("settings.stopWorkerAction") }}
+            </button>
+            <button class="app-button-secondary" :disabled="!worker.is_installed" @click="smokeWorker(worker.name)">
+              {{ $t("settings.smokeWorkerAction") }}
+            </button>
+          </div>
+          <div v-if="appStore.workerSmokeResults[worker.name]" class="mt-3 text-sm text-app-text">
+            {{ $t("settings.smokeResult") }}:
+            {{
+              appStore.workerSmokeResults[worker.name].ok
+                ? $t("settings.ready")
+                : appStore.workerSmokeResults[worker.name].detail
+            }}
+          </div>
         </li>
       </ul>
     </div>

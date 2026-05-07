@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     misaka_api_port: int = Field(default=7500, alias="MISAKA_API_PORT")
     misaka_api_base: str = Field(default="http://127.0.0.1:7500", alias="MISAKA_API_BASE")
     misaka_frontend_port: int = Field(default=7501, alias="MISAKA_FRONTEND_PORT")
+    misaka_network_mode: str = Field(default="auto", alias="MISAKA_NETWORK_MODE")
     misaka_cors_origin_regex: str = Field(
         default=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
         alias="MISAKA_CORS_ORIGIN_REGEX",

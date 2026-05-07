@@ -15,7 +15,10 @@ const form = reactive<ClarifyPayload>({
  * Requests clarification questions for the selected modality.
  */
 async function requestClarification(): Promise<void> {
-  await appStore.requestClarification({ ...form });
+  if (!appStore.currentProjectId) {
+    return;
+  }
+  await appStore.requestProjectClarification(appStore.currentProjectId, { ...form });
 }
 </script>
 
