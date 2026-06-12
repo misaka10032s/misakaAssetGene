@@ -4,6 +4,10 @@ import type {
   ApiResponse,
   ClarifyPayload,
   ClarifyResult,
+  ConsultantSession,
+  ConsultantSessionAdvancePayload,
+  ConsultantSessionData,
+  ConsultantSessionStartPayload,
   ConversationHistoryData,
   CreateProjectPayload,
   HealthData,
@@ -261,6 +265,27 @@ export const apiClient = {
    */
   clarifyProject: (projectId: string, payload: ClarifyPayload) =>
     request<ClarifyResult>(`/api/v1/projects/${projectId}/consultant/clarify`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Resumes the latest unfinished consultant session for a project, if any.
+   */
+  resumeConsultantSession: (projectId: string) =>
+    request<{ session: ConsultantSession | null }>(`/api/v1/projects/${projectId}/consultant/session`),
+  /**
+   * Starts (or resumes by id) a persisted consultant session.
+   */
+  startConsultantSession: (projectId: string, payload: ConsultantSessionStartPayload) =>
+    request<ConsultantSessionData>(`/api/v1/projects/${projectId}/consultant/session`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Advances a consultant session by one state transition.
+   */
+  advanceConsultantSession: (projectId: string, payload: ConsultantSessionAdvancePayload) =>
+    request<ConsultantSessionData>(`/api/v1/projects/${projectId}/consultant/session/advance`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),

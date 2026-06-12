@@ -8,6 +8,7 @@ import type {
   ClarifyPayload,
   ClarifyResult,
   ConsultantPlanRecord,
+  ConsultantSession,
   ConversationEntry,
   CreateProjectPayload,
   GenerationJob,
@@ -58,6 +59,7 @@ export const useAppStore = defineStore("app", () => {
   const projectTypes = ref<string[]>([]);
   const networkStatus = ref<NetworkStatus>(NetworkStatus.BOOTSTRAPPING);
   const consultantResponse = ref<ClarifyResult | null>(null);
+  const consultantSessions = ref<Record<string, ConsultantSession>>({});
   const synopsisSuggestion = ref<SynopsisOptimizeResult | null>(null);
   const integration = ref<IntegrationSnapshot>({
     tools: [],
@@ -410,6 +412,48 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
+  async function resumeConsultantSession(projectId: string): Promise<ConsultantSession | null> {
+    const response = await apiClient.resumeConsultantSession(projectId);
+    if (response.session) {
+      consultantSessions.value = {
+        ...consultantSessions.value,
+        [projectId]: response.session,
+      };
+    }
+    return response.session;
+  }
+
+  async function startConsultantSession(
+    projectId: string,
+    payload: { prompt: string; modality?: string | null; session_id?: string | null },
+  ): Promise<ConsultantSession> {
+    const response = await apiClient.startConsultantSession(projectId, payload);
+    consultantSessions.value = {
+      ...consultantSessions.value,
+      [projectId]: response.session,
+    };
+    consultantResponse.value = response.result;
+    await Promise.all([loadProjectConversation(projectId, true), loadProjectWorkspace(projectId)]);
+    lastMessageKey.value = MessageKey.SUCCESS_ADD0;
+    errorMessageKey.value = null;
+    return response.session;
+  }
+
+  async function advanceConsultantSession(
+    projectId: string,
+    payload: { session_id: string; prompt?: string; slots?: Record<string, unknown>; accept?: boolean },
+  ): Promise<ConsultantSession> {
+    const response = await apiClient.advanceConsultantSession(projectId, payload);
+    consultantSessions.value = {
+      ...consultantSessions.value,
+      [projectId]: response.session,
+    };
+    consultantResponse.value = response.result;
+    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
+    errorMessageKey.value = null;
+    return response.session;
+  }
+
   async function optimizeSynopsis(projectName: string, projectType: string, synopsis: string): Promise<void> {
     try {
       synopsisSuggestion.value = await apiClient.optimizeSynopsis({
@@ -568,6 +612,7 @@ export const useAppStore = defineStore("app", () => {
   return {
     assetDrawerOpen,
     consultantResponse,
+    consultantSessions,
     currentProject,
     currentProjectId,
     currentProjectName,
@@ -613,9 +658,12 @@ export const useAppStore = defineStore("app", () => {
     loadProjectVersionGraph,
     loadProjectWorkspace,
     loadProjects,
+    advanceConsultantSession,
     optimizeSynopsis,
     requestProjectClarification,
+    resumeConsultantSession,
     selectProject,
+    startConsultantSession,
     setAssetDrawerOpen,
     smokeWorker,
     startLocalLlm,

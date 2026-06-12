@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { reactive } from "vue";
+import { computed, onMounted, reactive } from "vue";
 
 import { useAppStore } from "@/stores/app";
-import type { ClarifyPayload } from "@/types/api";
+import type { ClarifyPayload, ConsultantSession } from "@/types/api";
 import { Modality } from "@/types/enums";
 
 const appStore = useAppStore();
@@ -12,14 +12,34 @@ const form = reactive<ClarifyPayload>({
 });
 
 /**
- * Requests clarification questions for the selected modality.
+ * Current persisted consultant session for the active project, if any.
+ */
+const currentSession = computed<ConsultantSession | null>(() => {
+  const projectId = appStore.currentProjectId;
+  return projectId ? appStore.consultantSessions[projectId] ?? null : null;
+});
+
+/**
+ * Starts (or resumes) a persisted consultant session for the active project.
  */
 async function requestClarification(): Promise<void> {
-  if (!appStore.currentProjectId) {
+  const projectId = appStore.currentProjectId;
+  if (!projectId) {
     return;
   }
-  await appStore.requestProjectClarification(appStore.currentProjectId, { ...form });
+  await appStore.startConsultantSession(projectId, {
+    prompt: form.prompt,
+    modality: form.modality ?? null,
+    session_id: currentSession.value?.session_id ?? null,
+  });
 }
+
+onMounted(async () => {
+  const projectId = appStore.currentProjectId;
+  if (projectId) {
+    await appStore.resumeConsultantSession(projectId);
+  }
+});
 </script>
 
 <template>
@@ -48,6 +68,10 @@ async function requestClarification(): Promise<void> {
       <button class="app-button" :disabled="!appStore.currentProjectName" @click="requestClarification">
         {{ $t("chat.submit") }}
       </button>
+
+      <p v-if="currentSession" class="text-sm app-muted">
+        {{ $t("chat.consultantState") }}: <span class="font-semibold text-app-text">{{ currentSession.state }}</span>
+      </p>
 
       <div v-if="appStore.consultantResponse" class="rounded-xl border border-app-border bg-app-surfaceAlt p-4">
         <h3 class="font-semibold text-app-text">{{ $t("chat.responseTitle") }}</h3>

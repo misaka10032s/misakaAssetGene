@@ -73,6 +73,15 @@ export enum ProviderStatus {
   DISABLED = "disabled",
 }
 
+export enum ConsultantState {
+  INTAKE = "intake",
+  CLARIFY = "clarify",
+  SUMMARY = "summary",
+  GENERATE = "generate",
+  REFINE = "refine",
+  ACCEPT = "accept",
+}
+
 export enum GenerationJobStatus {
   PLANNED = "planned",
   READY = "ready",

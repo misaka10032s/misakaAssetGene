@@ -1,4 +1,5 @@
 import {
+  ConsultantState,
   GenerationJobStatus,
   MessageKey,
   Modality,
@@ -73,6 +74,38 @@ export interface ClarifyResult {
   template_loaded: boolean;
   next_step: string;
   analysis: ConsultantAnalysis | null;
+}
+
+export interface ConsultantSession {
+  session_id: string;
+  project_id: string;
+  modality: Modality | null;
+  state: ConsultantState;
+  checklist_status: Record<string, boolean>;
+  slots: Record<string, unknown>;
+  plan: ConsultantAnalysis | null;
+  last_result: ClarifyResult | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ConsultantSessionData {
+  session: ConsultantSession;
+  result: ClarifyResult | null;
+  missing_slots: string[];
+}
+
+export interface ConsultantSessionStartPayload {
+  session_id?: string | null;
+  modality?: Modality | null;
+  prompt: string;
+}
+
+export interface ConsultantSessionAdvancePayload {
+  session_id: string;
+  prompt?: string;
+  slots?: Record<string, unknown>;
+  accept?: boolean;
 }
 
 export interface ConversationEntry {
