@@ -50,6 +50,7 @@ from core.models.schemas import (
 )
 from core.network.service import NetworkStateService
 from core.project.export import ProjectExportService
+from core.project.portability import ZipImportError, import_project_zip
 from core.project.manager import (
     PROJECT_TYPES,
     ProjectConflictError,
@@ -670,3 +671,41 @@ def download_local_llm_model(payload: ModelDownloadRequest) -> ApiResponse:
         raise HTTPException(status_code=400, detail=str(error)) from error
     invalidate_integration_snapshot_cache()
     return success_response(MessageKey.SUCCESS_ADD0, result.model_dump())
+
+
+@app.post("/api/v1/projects/import", response_model=ApiResponse)
+async def import_project(
+    file: UploadFile = File(...),
+) -> ApiResponse:
+    """Import a project from a *.misaka.zip archive (spec §5.5).
+
+    The uploaded zip must contain export.manifest.json produced by the export
+    endpoint. Zip-slip, manifest schema, and size sanity checks are enforced.
+    If a project with the same id or name already exists, the import is assigned
+    a new id and the original id is recorded as origin_id in project.json.
+    """
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/import filename=%s", file.filename)
+
+    import tempfile
+
+    content = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+
+    try:
+        result = import_project_zip(tmp_path, PROJECTS_ROOT)
+    except ZipImportError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    if IS_DEV:
+        logger.info(
+            "Project import complete: id=%s collision_resolved=%s",
+            result["project_id"],
+            result["collision_resolved"],
+        )
+
+    return success_response(MessageKey.SUCCESS_ADD0, result)
