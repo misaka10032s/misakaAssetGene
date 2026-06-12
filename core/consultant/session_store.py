@@ -51,8 +51,12 @@ class SessionStore:
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        # busy_timeout (ms) lets concurrent writes retry before raising OperationalError.
+        # WAL mode allows one writer and multiple concurrent readers without blocking.
+        connection = sqlite3.connect(self.db_path, timeout=5.0)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=5000")
         return connection
 
     def _init_schema(self) -> None:

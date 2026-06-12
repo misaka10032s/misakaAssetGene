@@ -134,3 +134,23 @@ def test_legacy_clarify_still_works(tmp_path: Path) -> None:
     result = engine.clarify(ClarifyRequest(prompt="生成 BGM", modality=Modality.MUSIC))
     assert result.modality is Modality.MUSIC
     assert result.analysis is not None
+
+
+def test_advance_session_slot_whitelist_discards_unknown_keys(tmp_path: Path) -> None:
+    """Unknown slot keys must be silently dropped; valid keys must be merged."""
+    engine = _engine(tmp_path)
+    started = engine.start_session(
+        "proj",
+        ClarifyRequest(prompt="畫出角色立繪", modality=Modality.IMAGE),
+    )
+    session_id = started.session.session_id
+
+    # Mix valid IMAGE slots with an unknown key that should be discarded.
+    step = engine.advance_session(
+        "proj", session_id,
+        ClarifyRequest(prompt="(continue)", modality=Modality.IMAGE),
+        slots={"usage": "portrait", "__evil_key": "malicious_value"},
+    )
+    assert "usage" in step.session.slots
+    assert step.session.slots["usage"] == "portrait"
+    assert "__evil_key" not in step.session.slots, "unknown slot key must be discarded"

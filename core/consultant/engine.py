@@ -109,9 +109,21 @@ class ConsultantEngine:
         slots: dict[str, object],
         accept: bool,
     ) -> ConsultantSessionData:
-        # Merge newly supplied slots into the session record.
+        # Merge newly supplied slots into the session record, whitelisting only
+        # keys defined in the modality's required checklist. Unknown keys are
+        # logged and discarded to prevent uncontrolled state growth.
         if slots:
-            session.slots = {**session.slots, **slots}
+            effective_mod = request.modality or session.modality
+            allowed_keys = set(state_machine.required_slots_for(effective_mod))
+            unknown = {k: v for k, v in slots.items() if k not in allowed_keys}
+            if unknown:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "advance_session: ignoring unknown slot keys %s for modality=%s",
+                    list(unknown.keys()),
+                    effective_mod.value if effective_mod else "unknown",
+                )
+            session.slots = {**session.slots, **{k: v for k, v in slots.items() if k in allowed_keys}}
 
         modality = request.modality or session.modality
         # Run the planner so we always have a fresh analysis to reason over.

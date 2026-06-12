@@ -9,6 +9,8 @@ import type {
   ClarifyResult,
   ConsultantPlanRecord,
   ConsultantSession,
+  ConsultantSessionAdvancePayload,
+  ConsultantSessionStartPayload,
   ConversationEntry,
   CreateProjectPayload,
   GenerationJob,
@@ -425,7 +427,7 @@ export const useAppStore = defineStore("app", () => {
 
   async function startConsultantSession(
     projectId: string,
-    payload: { prompt: string; modality?: string | null; session_id?: string | null },
+    payload: ConsultantSessionStartPayload,
   ): Promise<ConsultantSession> {
     const response = await apiClient.startConsultantSession(projectId, payload);
     consultantSessions.value = {
@@ -441,7 +443,7 @@ export const useAppStore = defineStore("app", () => {
 
   async function advanceConsultantSession(
     projectId: string,
-    payload: { session_id: string; prompt?: string; slots?: Record<string, unknown>; accept?: boolean },
+    payload: ConsultantSessionAdvancePayload,
   ): Promise<ConsultantSession> {
     const response = await apiClient.advanceConsultantSession(projectId, payload);
     consultantSessions.value = {
