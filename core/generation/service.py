@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
@@ -19,7 +20,9 @@ from core.models.schemas import (
     JobExecutionPatch,
     Modality,
     ProjectWorkspaceData,
+    RefineRequest,
 )
+from core.generation import refine as refine_planner
 from core.project.manager import ProjectManager
 from core.integration.workers import WorkersService
 from core.models.schemas import (
@@ -29,6 +32,13 @@ from core.models.schemas import (
     ProjectVersionGraph,
     ProjectVersionNode,
 )
+
+
+def _prompt_hash(prompt: str | None) -> str | None:
+    """Stable sha256 of the prompt, written into asset metadata (spec §8.1)."""
+    if not prompt:
+        return None
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
 
 class GenerationService:
@@ -126,6 +136,97 @@ class GenerationService:
         self._write_jobs(project_dir, jobs)
         return ProjectWorkspaceData(jobs=jobs, assets=assets, plans=plans)
 
+    def refine_asset(self, project_id: str, parent_asset_id: str, request: RefineRequest) -> ProjectWorkspaceData:
+        """Create a refine job from a parent image version (spec §5.11 / §6.2).
+
+        The §6.2 decision tree selects the minimal sufficient strategy; the job
+        records parent-child lineage, the chosen recipe/params, the prompt
+        delta and the rationale. ``metadata_only`` edits never touch a worker
+        and complete immediately. All other strategies become a READY (or
+        worker-BLOCKED) generation job that the existing execute path runs.
+        """
+        _, project_dir = self.project_manager.get_project(project_id)
+        jobs = self._read_jobs(project_dir)
+        assets = self._read_assets(project_dir)
+        plans = self._read_plans(project_dir)
+
+        parent = next((item for item in assets if item.id == parent_asset_id), None)
+        if parent is None:
+            raise FileNotFoundError(f"Parent asset not found: {parent_asset_id}")
+        if parent.modality is not Modality.IMAGE:
+            raise ValueError("Refine is only supported for image assets in M2.")
+
+        plan = refine_planner.plan_refine(request)
+        now = datetime.now(timezone.utc)
+        title = request.title or f"{parent.title} (refine)"
+
+        # Cheapest rung: metadata-only edits mutate the parent record's lineage
+        # markers without re-rendering anything (spec §6.2 first rung).
+        if plan.recipe is None:
+            metadata_job = GenerationJob(
+                id=uuid.uuid4().hex,
+                project_id=project_id,
+                title=title,
+                modality=Modality.IMAGE,
+                asset_type="image",
+                status=GenerationJobStatus.COMPLETED,
+                prompt=request.instruction,
+                summary=plan.reason,
+                worker=None,
+                recipe=None,
+                source_asset_id=parent_asset_id,
+                parent_asset_id=parent_asset_id,
+                refine_strategy=plan.strategy,
+                refine_reason=plan.reason,
+                prompt_delta=plan.prompt_delta,
+                param_delta=plan.param_delta,
+                progress=100,
+                progress_label="Metadata updated",
+                created_at=now,
+                updated_at=now,
+            )
+            jobs.append(metadata_job)
+            self._write_jobs(project_dir, jobs)
+            return ProjectWorkspaceData(jobs=jobs, assets=assets, plans=plans)
+
+        if plan.requires_mask and not request.mask_asset_id:
+            blocking_reason = "Inpaint refine requires a mask. Paint or select a region first."
+        else:
+            blocking_reason = self._build_worker_blocking_reason("comfyui")
+
+        decomposition_steps = [
+            ConsultantPlanStep(title=step.stage.value, detail=step.prompt, worker="comfyui")
+            for step in plan.decomposition
+        ]
+
+        refine_job = GenerationJob(
+            id=uuid.uuid4().hex,
+            project_id=project_id,
+            title=title,
+            modality=Modality.IMAGE,
+            asset_type="image",
+            status=GenerationJobStatus.BLOCKED if blocking_reason else GenerationJobStatus.READY,
+            prompt=request.instruction,
+            summary=plan.reason,
+            worker="comfyui",
+            recipe=plan.recipe,
+            source_asset_id=parent_asset_id,
+            mask_asset_id=request.mask_asset_id,
+            parent_asset_id=parent_asset_id,
+            refine_strategy=plan.strategy,
+            refine_reason=plan.reason,
+            prompt_delta=plan.prompt_delta,
+            param_delta=plan.param_delta,
+            params=plan.params,
+            blocking_reason=blocking_reason,
+            steps=decomposition_steps,
+            created_at=now,
+            updated_at=now,
+        )
+        jobs.append(refine_job)
+        self._write_jobs(project_dir, jobs)
+        return ProjectWorkspaceData(jobs=jobs, assets=assets, plans=plans)
+
     def import_asset(
         self,
         project_id: str,
@@ -195,6 +296,16 @@ class GenerationService:
             )
             if asset.job_id:
                 edges.append(ProjectVersionEdge(source=f"job:{asset.job_id}", target=asset_node_id, relation="output"))
+            # Parent-child refine lineage (spec §5.11 / §8.1): draw a direct
+            # edge from the parent version to this refined version.
+            if asset.parent_version_id:
+                edges.append(
+                    ProjectVersionEdge(
+                        source=f"asset:{asset.parent_version_id}",
+                        target=asset_node_id,
+                        relation="refine",
+                    )
+                )
 
         nodes.sort(key=lambda node: node.created_at)
         return ProjectVersionGraph(nodes=nodes, edges=edges)
@@ -277,6 +388,17 @@ class GenerationService:
             title=artifact.title,
             path=str(target_path.relative_to(project_dir)),
             description=artifact.description,
+            # Parent-child lineage (spec §5.11 / §8.1). On a refine job the
+            # produced asset points back at the parent version and records the
+            # strategy, mask source, prompt delta and param delta it used.
+            parent_version_id=job.parent_asset_id if job else None,
+            refine_strategy=job.refine_strategy if job else None,
+            mask_asset_id=job.mask_asset_id if job else None,
+            prompt_delta=job.prompt_delta if job else None,
+            param_delta=dict(job.param_delta) if job else {},
+            backend=job.worker if job else None,
+            params=dict(job.params) if job else {},
+            prompt_hash=_prompt_hash(job.prompt) if job else None,
             created_at=datetime.now(timezone.utc),
         )
 

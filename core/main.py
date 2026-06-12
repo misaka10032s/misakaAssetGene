@@ -42,6 +42,7 @@ from core.models.schemas import (
     ProjectListData,
     ProjectVersionGraph,
     ProjectSelectRequest,
+    RefineRequest,
     SynopsisOptimizeRequest,
     TrainingJobCreateRequest,
     TrainingWorkspaceData,
@@ -458,6 +459,22 @@ async def import_project_asset(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return success_response(MessageKey.SUCCESS_ADD0, payload.model_dump(mode="json"))
+
+
+@app.post("/api/v1/projects/{project_id}/assets/{asset_id}/refine", response_model=ApiResponse)
+def refine_project_asset(project_id: str, asset_id: str, payload: RefineRequest) -> ApiResponse:
+    """Create a refine job from an existing image version (spec §5.11 / §6.2)."""
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/%s/assets/%s/refine", project_id, asset_id)
+    try:
+        result = generation_service.refine_asset(project_id, asset_id, payload)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return success_response(MessageKey.SUCCESS_ADD0, result.model_dump(mode="json"))
 
 
 @app.get("/api/v1/integration", response_model=ApiResponse)

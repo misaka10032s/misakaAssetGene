@@ -67,3 +67,22 @@ def test_illegal_transition_raises() -> None:
         state_machine.assert_transition(ConsultantState.INTAKE, ConsultantState.GENERATE)
     # Reset to Intake is always allowed.
     state_machine.assert_transition(ConsultantState.GENERATE, ConsultantState.INTAKE)
+
+
+def test_refine_target_state_maps_strategy() -> None:
+    from core.models.schemas import RefineStrategy
+
+    # Metadata-only edits do not re-render, so the dialog stays in Refine.
+    assert state_machine.refine_target_state(RefineStrategy.METADATA_ONLY) is ConsultantState.REFINE
+    # Render-bearing strategies re-enter Generate to run the refine job.
+    for strategy in (
+        RefineStrategy.PARAM_RETUNE,
+        RefineStrategy.IMG2IMG,
+        RefineStrategy.INPAINT,
+        RefineStrategy.FULL_REGEN,
+    ):
+        assert state_machine.refine_target_state(strategy) is ConsultantState.GENERATE
+    # Accept always ends the loop, and the Refine edges remain legal.
+    assert state_machine.refine_target_state(RefineStrategy.IMG2IMG, accept=True) is ConsultantState.ACCEPT
+    state_machine.assert_transition(ConsultantState.REFINE, ConsultantState.GENERATE)
+    state_machine.assert_transition(ConsultantState.REFINE, ConsultantState.ACCEPT)

@@ -8,7 +8,7 @@ dialog in Clarify until the required slots are filled.
 
 from __future__ import annotations
 
-from core.models.schemas import ConsultantState, Modality
+from core.models.schemas import ConsultantState, Modality, RefineStrategy
 
 # Required checklist slot keys per modality. These mirror the hard-coded domain
 # checklist from spec §4.2 and the question prompts in ``checklists.py``. Each
@@ -79,6 +79,25 @@ def assert_transition(current: ConsultantState, target: ConsultantState) -> None
     """Raise :class:`InvalidTransitionError` if the transition is illegal."""
     if not can_transition(current, target):
         raise InvalidTransitionError(f"Illegal consultant transition: {current.value} -> {target.value}")
+
+
+def refine_target_state(strategy: RefineStrategy, *, accept: bool = False) -> ConsultantState:
+    """Map a §6.2 refine strategy onto the §4.1 dialog state transition.
+
+    The Generate -> Refine -> (Generate | Accept) loop is driven by the refine
+    strategy chosen for the request:
+
+    - An explicit ``accept`` always ends the loop at Accept.
+    - ``metadata_only`` does not re-render, so the dialog stays in Refine
+      awaiting the next instruction.
+    - Every render-bearing strategy (param retune / img2img / inpaint /
+      full regen) re-enters Generate to run the produced refine job.
+    """
+    if accept:
+        return ConsultantState.ACCEPT
+    if strategy is RefineStrategy.METADATA_ONLY:
+        return ConsultantState.REFINE
+    return ConsultantState.GENERATE
 
 
 def next_state(
