@@ -239,6 +239,51 @@ class ClarifyResult(BaseModel):
     analysis: ConsultantAnalysis | None = None
 
 
+class ConsultantState(str, Enum):
+    """Explicit consultant dialog lifecycle states (spec §4.1)."""
+
+    INTAKE = "intake"
+    CLARIFY = "clarify"
+    SUMMARY = "summary"
+    GENERATE = "generate"
+    REFINE = "refine"
+    ACCEPT = "accept"
+
+
+class ConsultantSession(BaseModel):
+    """Server-side persisted consultant session (spec §4.1.1)."""
+
+    session_id: str
+    project_id: str
+    modality: Modality | None = None
+    state: ConsultantState = ConsultantState.INTAKE
+    checklist_status: dict[str, bool] = Field(default_factory=dict)
+    slots: dict[str, Any] = Field(default_factory=dict)
+    plan: ConsultantAnalysis | None = None
+    last_result: ClarifyResult | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConsultantSessionStartRequest(BaseModel):
+    session_id: str | None = None
+    modality: Modality | None = None
+    prompt: str = Field(min_length=1)
+
+
+class ConsultantSessionAdvanceRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    prompt: str = ""
+    slots: dict[str, Any] = Field(default_factory=dict)
+    accept: bool = False
+
+
+class ConsultantSessionData(BaseModel):
+    session: ConsultantSession
+    result: ClarifyResult | None = None
+    missing_slots: list[str] = Field(default_factory=list)
+
+
 class GenerationJobStatus(str, Enum):
     PLANNED = "planned"
     READY = "ready"
