@@ -26,6 +26,8 @@ from core.models.schemas import (
     ApiResponse,
     BatchExecuteRequest,
     ClarifyRequest,
+    ConsultantSessionAdvanceRequest,
+    ConsultantSessionStartRequest,
     ConversationHistoryData,
     HealthData,
     IntegrationSnapshot,
@@ -80,7 +82,14 @@ app.add_middleware(
 )
 
 project_manager = ProjectManager(PROJECTS_ROOT)
-consultant_engine = ConsultantEngine()
+
+
+def _resolve_project_dir_for_sessions(project_id: str) -> Path:
+    _, project_dir = project_manager.get_project(project_id)
+    return project_dir
+
+
+consultant_engine = ConsultantEngine(sessions_path_resolver=_resolve_project_dir_for_sessions)
 tools_service = ToolsService(REPO_ROOT / "tools" / "manifest.json")
 workers_service = WorkersService(REPO_ROOT / "workers" / "manifest.json")
 model_registry_service = ModelRegistryService(REPO_ROOT / "core" / "models" / "registry.json")
@@ -301,6 +310,72 @@ def clarify_project(project_id: str, payload: ClarifyRequest) -> ApiResponse:
     )
     generation_service.record_plan(project_id, payload.prompt, result)
     return success_response(MessageKey.SUCCESS_FETCH0, result.model_dump(mode="json"))
+
+
+@app.get("/api/v1/projects/{project_id}/consultant/session", response_model=ApiResponse)
+def resume_consultant_session(project_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/consultant/session", project_id)
+    try:
+        project_manager.get_project(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    session = consultant_engine.resume_session(project_id)
+    return success_response(
+        MessageKey.SUCCESS_FETCH0,
+        {"session": session.model_dump(mode="json") if session else None},
+    )
+
+
+@app.post("/api/v1/projects/{project_id}/consultant/session", response_model=ApiResponse)
+def start_consultant_session(project_id: str, payload: ConsultantSessionStartRequest) -> ApiResponse:
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/%s/consultant/session", project_id)
+    try:
+        project, _ = project_manager.get_project(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    session_data = consultant_engine.start_session(
+        project_id,
+        ClarifyRequest(
+            prompt=payload.prompt,
+            modality=payload.modality,
+            project_name=project.name,
+            project_type=project.type,
+            project_synopsis=project.synopsis,
+        ),
+        session_id=payload.session_id,
+    )
+    return success_response(MessageKey.SUCCESS_ADD0, session_data.model_dump(mode="json"))
+
+
+@app.post("/api/v1/projects/{project_id}/consultant/session/advance", response_model=ApiResponse)
+def advance_consultant_session(project_id: str, payload: ConsultantSessionAdvanceRequest) -> ApiResponse:
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/%s/consultant/session/advance id=%s", project_id, payload.session_id)
+    try:
+        project, _ = project_manager.get_project(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    try:
+        session_data = consultant_engine.advance_session(
+            project_id,
+            payload.session_id,
+            ClarifyRequest(
+                prompt=payload.prompt or "(continue)",
+                modality=None,
+                project_name=project.name,
+                project_type=project.type,
+                project_synopsis=project.synopsis,
+            ),
+            slots=payload.slots,
+            accept=payload.accept,
+        )
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return success_response(MessageKey.SUCCESS_SWITCH0, session_data.model_dump(mode="json"))
 
 
 @app.get("/api/v1/projects/{project_id}/workspace", response_model=ApiResponse)
