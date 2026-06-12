@@ -56,3 +56,29 @@
 - 已新增 `.gitignore`、`CONTRIBUTING.md`、`LICENSE`。
 
 **狀態：已完成**
+
+---
+
+## 5. 2026-06-12 — PM 決策記錄
+
+以下為專案負責人 2026-06-12 正式決策事項，已同步更新至 `spec.md` v0.9 與 `.plan/DEVELOPMENT_PLAN.md`。
+
+### 5.1 顧問 session 狀態 → SQLite 持久化
+**問題**：顧問 checklist loop（§4.1）的狀態在 app 重啟後是否保留？  
+**結論**：**已完成決策**。Session 狀態必須 server-side 持久化於 `memory.sqlite`（`sessions` 表）；stateless per-call 明確拒絕；屬 M2 範疇。詳見 spec §4.1.1。
+
+### 5.2 M4 完整對應 spec §7.1.1
+**問題**：M4 訓練整合的範疇是否包含完整多角色 LoRA 工作流？  
+**結論**：**已完成決策**。M4 = 完整 §7.1.1（character sheets、dataset packs、training recipes、LoRA stack presets）+ kohya_ss LoRA + TTS fine-tune + Portable Release + Setup 錯誤 AI 解釋。已更新 `.plan/DEVELOPMENT_PLAN.md`。
+
+### 5.3 `project_profile` schema 缺口修正
+**問題**：spec §5.9 定義 `project_profile` 但 `project.schema.json` 缺少此欄位。  
+**結論**：**已完成**。`project_profile` 已加入 schema 為 optional enum 欄位（game / novel / character_factory / mixed_ip），backward compatible，現有 project.json 無需遷移。
+
+### 5.4 流程節奏
+**結論**：每個里程碑須有使用者驗收 checkpoint；實作走 implementer → independent reviewer chain。已寫入 `.plan/DEVELOPMENT_PLAN.md §2.3`。
+
+### 5.5 里程碑 ↔ Spec Gap 對齊
+**結論**：M2–M5 的 bullet 點已重新對齊至各 spec gap（§5.11、§5.12/§4.1.1、§5.13、§5.14、§6.2、§7.1.1、§8.2）。詳見 `.plan/DEVELOPMENT_PLAN.md §4`。
+
+**狀態：已完成**

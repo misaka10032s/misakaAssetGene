@@ -20,6 +20,11 @@
     },
     "synopsis": {
       "type": "string"
+    },
+    "project_profile": {
+      "type": "string",
+      "enum": ["game", "novel", "character_factory", "mixed_ip"],
+      "description": "Production paradigm for this project (spec §5.9). Optional — backward compatible, no migration required. Added 2026-06-12."
     }
   },
   "additionalProperties": false
