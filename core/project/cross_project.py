@@ -173,24 +173,75 @@ def update_origins_json(
 ) -> None:
     """Update _external/origins.json with a new or updated origin entry under an exclusive lock.
 
-    origins.json schema: {"<source_project_id>/<relative_asset_path>": {<metadata>}}
+    origins.json schema (spec §5.6.1):
+    {
+      "schema_version": 1,
+      "entries": [
+        {
+          "local_path": "_external/<source_project_id>/<relative_asset_path>",
+          "origin": {
+            "project": "<source_project_id>",
+            "asset_path": "<relative_asset_path>",
+            "version": "<version or ''>",
+            "version_id": "<uuid or ''>",
+            "sha256": "<hash or ''>"
+          },
+          "copied_at": "<ISO-8601 timestamp>"
+        }
+      ]
+    }
+
+    The §5.6.2 resolver depends on the entries list and sha256 field.
     """
+    import datetime
+
     origins_path = dest_project_dir / "_external" / "origins.json"
     lock_path = _external_lock_path(dest_project_dir)
-    key = f"{source_project_id}/{relative_asset_path}"
+    local_path = f"_external/{source_project_id}/{relative_asset_path}"
 
     with _acquire_file_lock(lock_path, timeout=lock_timeout):
         if origins_path.exists():
             try:
-                origins = json.loads(origins_path.read_text(encoding="utf-8"))
+                doc = json.loads(origins_path.read_text(encoding="utf-8"))
+                # Validate schema_version; discard unrecognised formats.
+                if not isinstance(doc, dict) or doc.get("schema_version") != 1:
+                    doc = {"schema_version": 1, "entries": []}
             except (json.JSONDecodeError, OSError):
-                origins = {}
+                doc = {"schema_version": 1, "entries": []}
         else:
-            origins = {}
+            doc = {"schema_version": 1, "entries": []}
 
-        origins[key] = {**origin_metadata, "source_project_id": source_project_id}
+        entries: list[dict] = doc.get("entries", [])
+        if not isinstance(entries, list):
+            entries = []
+
+        # Build the new/updated entry per §5.6.1.
+        new_entry = {
+            "local_path": local_path,
+            "origin": {
+                "project": source_project_id,
+                "asset_path": relative_asset_path,
+                "version": origin_metadata.get("version", ""),
+                "version_id": origin_metadata.get("version_id", ""),
+                "sha256": origin_metadata.get("sha256", ""),
+            },
+            "copied_at": origin_metadata.get(
+                "copied_at",
+                datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            ),
+        }
+
+        # Update existing entry for the same local_path or append.
+        for idx, entry in enumerate(entries):
+            if entry.get("local_path") == local_path:
+                entries[idx] = new_entry
+                break
+        else:
+            entries.append(new_entry)
+
+        doc["entries"] = entries
         origins_path.parent.mkdir(parents=True, exist_ok=True)
         origins_path.write_text(
-            json.dumps(origins, ensure_ascii=False, indent=2) + "\n",
+            json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )

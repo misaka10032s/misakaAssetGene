@@ -4,6 +4,11 @@ import threading
 import time
 from pathlib import Path
 
+# Maximum allowed upload size for project zip imports (spec §5.5 streaming guard).
+# Must be checked BEFORE reading into memory; this caps the raw compressed bytes.
+_UPLOAD_MAX_BYTES: int = 2 * 1024 ** 3  # 2 GiB
+_UPLOAD_CHUNK_SIZE: int = 256 * 1024     # 256 KiB per read chunk
+
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.encoders import jsonable_encoder
@@ -687,19 +692,45 @@ async def import_project(
     if IS_DEV:
         logger.info("POST /api/v1/projects/import filename=%s", file.filename)
 
+    # Validate filename extension early — reject anything that is not a .zip.
+    filename = file.filename or ""
+    if not filename.lower().endswith(".zip"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only .zip files are accepted for project import.",
+        )
+
     import tempfile
 
-    content = await file.read()
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-        tmp.write(content)
-        tmp_path = Path(tmp.name)
-
+    # Stream upload to a temp file in chunks; enforce a raw-size cap to prevent
+    # memory exhaustion before the uncompressed-size guard in import_project_zip.
+    tmp_path: Path | None = None
     try:
-        result = import_project_zip(tmp_path, PROJECTS_ROOT)
-    except ZipImportError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            received_bytes = 0
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                received_bytes += len(chunk)
+                if received_bytes > _UPLOAD_MAX_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            f"Upload exceeds maximum allowed size of "
+                            f"{_UPLOAD_MAX_BYTES // (1024 ** 2):,} MiB."
+                        ),
+                    )
+                tmp.write(chunk)
+
+        try:
+            result = import_project_zip(tmp_path, PROJECTS_ROOT)
+        except ZipImportError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
     finally:
-        tmp_path.unlink(missing_ok=True)
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
     if IS_DEV:
         logger.info(

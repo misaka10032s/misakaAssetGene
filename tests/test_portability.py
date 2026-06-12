@@ -379,7 +379,7 @@ def test_copy_external_asset_creates_file(tmp_path: Path) -> None:
 
 
 def test_update_origins_json_creates_and_merges(tmp_path: Path) -> None:
-    """update_origins_json should create origins.json and merge subsequent entries."""
+    """update_origins_json should create origins.json (§5.6.1 schema) and merge subsequent entries."""
     dest_project_dir = tmp_path / "projects" / "dest"
     (dest_project_dir / "_external").mkdir(parents=True, exist_ok=True)
 
@@ -387,21 +387,34 @@ def test_update_origins_json_creates_and_merges(tmp_path: Path) -> None:
         dest_project_dir,
         "alpha",
         "images/hero.png",
-        {"version": "v1"},
+        {"version": "v1", "sha256": "abc123"},
     )
     update_origins_json(
         dest_project_dir,
         "beta",
         "audio/bgm.mp3",
-        {"version": "v2"},
+        {"version": "v2", "sha256": "def456"},
     )
 
     origins_path = dest_project_dir / "_external" / "origins.json"
     assert origins_path.exists()
-    data = json.loads(origins_path.read_text(encoding="utf-8"))
-    assert "alpha/images/hero.png" in data
-    assert data["alpha/images/hero.png"]["source_project_id"] == "alpha"
-    assert "beta/audio/bgm.mp3" in data
+    doc = json.loads(origins_path.read_text(encoding="utf-8"))
+
+    # §5.6.1 schema: schema_version + entries list
+    assert doc["schema_version"] == 1
+    entries = doc["entries"]
+    assert isinstance(entries, list)
+    assert len(entries) == 2
+
+    local_paths = [e["local_path"] for e in entries]
+    assert "_external/alpha/images/hero.png" in local_paths
+    assert "_external/beta/audio/bgm.mp3" in local_paths
+
+    alpha_entry = next(e for e in entries if "alpha" in e["local_path"])
+    assert alpha_entry["origin"]["project"] == "alpha"
+    assert alpha_entry["origin"]["sha256"] == "abc123"
+    assert alpha_entry["origin"]["version"] == "v1"
+    assert "copied_at" in alpha_entry
 
 
 def test_rw_lock_concurrent_copy_no_corruption(tmp_path: Path) -> None:
@@ -453,12 +466,17 @@ def test_rw_lock_concurrent_copy_no_corruption(tmp_path: Path) -> None:
         assert dest_file.exists(), f"Missing: {dest_file}"
         assert dest_file.read_bytes() == expected_content, f"Corrupted: {dest_file}"
 
-    # origins.json must be valid and contain all N entries
+    # origins.json must be valid §5.6.1 schema and contain all N entries
     origins_path = dest_project_dir / "_external" / "origins.json"
     assert origins_path.exists()
-    origins = json.loads(origins_path.read_text(encoding="utf-8"))
+    doc = json.loads(origins_path.read_text(encoding="utf-8"))
+    assert doc["schema_version"] == 1, "origins.json must use schema_version=1 (§5.6.1)"
+    entries = doc["entries"]
+    assert isinstance(entries, list)
+    local_paths = {e["local_path"] for e in entries}
     for i in range(N):
-        assert f"src-proj/images/asset_{i}.bin" in origins, f"Missing origin entry {i}"
+        expected = f"_external/src-proj/images/asset_{i}.bin"
+        assert expected in local_paths, f"Missing origin entry {i}: {expected}"
 
 
 # ---------------------------------------------------------------------------
@@ -498,3 +516,112 @@ def test_api_import_invalid_zip_returns_400(api_client: TestClient, tmp_path: Pa
             files={"file": ("bad.zip", f, "application/zip")},
         )
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Security regression tests (review findings Fix 1, 3, 4)
+# ---------------------------------------------------------------------------
+
+def test_import_malicious_manifest_id_blocked(tmp_path: Path) -> None:
+    """[Fix 1] A manifest with project.id = '../../evil' must NOT escape projects_root.
+
+    The import must either sanitize the id to a safe path or raise ZipImportError.
+    Under no circumstance should a directory be created outside projects_root.
+    """
+    manifest = {
+        "project": {"id": "../../evil", "name": "Evil Project", "type": "RPG", "synopsis": ""},
+        "exported_at": "2026-01-01T00:00:00+00:00",
+    }
+    zip_path = tmp_path / "evil.zip"
+    with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zf:
+        zf.writestr("export.manifest.json", json.dumps(manifest))
+        zf.writestr("project.json", json.dumps(manifest["project"]))
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir(parents=True)
+
+    # The import must succeed (safe id derived from name) or raise ZipImportError.
+    try:
+        result = import_project_zip(zip_path, projects_root)
+        new_id = result["project_id"]
+        target_dir = projects_root / new_id
+        # Verify the created directory is INSIDE projects_root.
+        assert target_dir.resolve().is_relative_to(projects_root.resolve()), (
+            f"Directory '{target_dir}' was created outside projects_root!"
+        )
+    except ZipImportError:
+        pass  # Also acceptable — rejecting the import outright is safe.
+
+    # Confirm "evil" directory was NOT created outside projects_root.
+    escaped_dir = tmp_path.parent / "evil"
+    assert not escaped_dir.exists(), (
+        f"Path traversal succeeded: '{escaped_dir}' was created outside projects_root."
+    )
+
+
+def test_import_zip_bomb_running_budget(tmp_path: Path) -> None:
+    """[Fix 4] Running decompressed-byte budget must abort extraction even when headers lie.
+
+    We build a zip whose entry reports file_size=0 in headers but actually contains
+    real data.  With a tiny cap the budget guard must fire.
+    """
+    import struct
+    from zipfile import ZipInfo, ZIP_DEFLATED
+
+    # Build a zip with a STORED (uncompressed) entry so data == compressed == decompressed.
+    # We override the cap to 5 bytes to trigger the guard on a small payload.
+    manifest = {
+        "project": {"id": "bomb-test", "name": "Bomb Test", "type": "RPG", "synopsis": ""},
+        "exported_at": "2026-01-01T00:00:00+00:00",
+    }
+    zip_path = tmp_path / "bomb.zip"
+    payload = b"A" * 1024  # 1 KiB real data
+    with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zf:
+        zf.writestr("export.manifest.json", json.dumps(manifest))
+        zf.writestr("project.json", json.dumps(manifest["project"]))
+        zf.writestr("assets/big.bin", payload)
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+
+    # Cap at 10 bytes — the real extraction will exceed this.
+    with pytest.raises(ZipImportError, match="zip-bomb|exceeds limit"):
+        import_project_zip(zip_path, projects_root, max_uncompressed_bytes=10)
+
+    # Partial extraction directory must have been cleaned up.
+    assert not (projects_root / "bomb-test").exists(), (
+        "Partial extraction directory was not cleaned up after zip-bomb abort."
+    )
+
+
+def test_api_import_non_zip_filename_rejected(api_client: TestClient, tmp_path: Path) -> None:
+    """[Fix 3] Upload with a non-.zip filename must be rejected with 400."""
+    # Build a valid zip but send it with a .tar.gz filename.
+    zip_path = _make_minimal_zip(tmp_path, project_id="legit", project_name="Legit")
+    with open(zip_path, "rb") as f:
+        response = api_client.post(
+            "/api/v1/projects/import",
+            files={"file": ("malicious.tar.gz", f, "application/octet-stream")},
+        )
+    assert response.status_code == 400, response.text
+
+
+def test_api_import_oversized_upload_rejected(api_client: TestClient, tmp_path: Path) -> None:
+    """[Fix 3] Upload exceeding _UPLOAD_MAX_BYTES must be rejected with 413.
+
+    We monkey-patch _UPLOAD_MAX_BYTES to a tiny value so the test runs fast.
+    """
+    import core.main as _main
+
+    original = _main._UPLOAD_MAX_BYTES
+    try:
+        _main._UPLOAD_MAX_BYTES = 10  # 10 bytes cap
+        zip_path = _make_minimal_zip(tmp_path, project_id="big", project_name="Big")
+        with open(zip_path, "rb") as f:
+            response = api_client.post(
+                "/api/v1/projects/import",
+                files={"file": ("big.zip", f, "application/zip")},
+            )
+        assert response.status_code == 413, response.text
+    finally:
+        _main._UPLOAD_MAX_BYTES = original

@@ -156,12 +156,14 @@ def import_project_zip(
 
         _validate_manifest(manifest)
 
-        # 2. Size sanity check
-        total_uncompressed = sum(info.file_size for info in zf.infolist())
-        if total_uncompressed > max_uncompressed_bytes:
+        # 2. Size sanity check (header-based pre-flight; NOT trusted as the sole guard)
+        # A zip-bomb can understate entry sizes in headers, so we also enforce a
+        # running decompressed-byte budget during actual extraction (see step 4).
+        total_header_size = sum(info.file_size for info in zf.infolist())
+        if total_header_size > max_uncompressed_bytes:
             raise ZipImportError(
-                f"Archive uncompressed size {total_uncompressed:,} bytes exceeds "
-                f"limit of {max_uncompressed_bytes:,} bytes."
+                f"Archive uncompressed size {total_header_size:,} bytes (from headers) "
+                f"exceeds limit of {max_uncompressed_bytes:,} bytes."
             )
 
         # 3. Collision detection
@@ -183,24 +185,64 @@ def import_project_zip(
 
         collision_resolved = False
         origin_id: str | None = None
-        new_id = source_id
 
-        if source_id in existing_ids or source_name.lower() in existing_names:
+        # Sanitize source_id: re-normalize it through _build_project_id logic so
+        # path-traversal sequences like "../../evil" or "sub/dir" are stripped.
+        # If the id is already safe (round-trips unchanged) we keep it; otherwise
+        # we fall back to an id derived from the project name.
+        try:
+            sanitized_source_id = _build_project_id(source_id)
+        except ZipImportError:
+            sanitized_source_id = None
+
+        if sanitized_source_id == source_id:
+            # source_id is already filesystem-safe; use it as-is (no normalization needed).
+            safe_source_id = source_id
+        else:
+            # source_id contained unsafe characters — derive from project name instead.
+            safe_source_id = _build_project_id(source_name)
+
+        if safe_source_id in existing_ids or source_name.lower() in existing_names:
             collision_resolved = True
             origin_id = source_id
+            # Derive the collision-resolved id from the project name (same as before),
+            # then make it unique.  Do NOT reuse safe_source_id as the base — when only
+            # the name collides, safe_source_id may not be in existing_ids and would
+            # be returned unchanged, producing a "collision_resolved=True" result with
+            # the original id, which contradicts the caller's expectation.
             base_id = _build_project_id(source_name)
             new_id = _unique_id(base_id, existing_ids)
+        else:
+            new_id = safe_source_id
 
         target_dir = projects_root / new_id
+
+        # Guard: ensure target_dir is inside projects_root even after .resolve()
+        # This is the final backstop against any residual path traversal.
+        try:
+            target_dir.resolve().relative_to(projects_root.resolve())
+        except ValueError as exc:
+            raise ZipImportError(
+                f"Computed target directory '{target_dir}' would escape projects root. "
+                f"Rejecting malicious manifest id."
+            ) from exc
 
         if target_dir.exists():
             raise ZipImportError(
                 f"Target directory '{target_dir}' already exists. Aborting import."
             )
 
-        # 4. Extract files (with zip-slip protection on every entry)
+        # 4. Extract files (with zip-slip protection and running decompressed-byte budget)
+        # We do NOT trust entry headers for size enforcement — a zip-bomb can store
+        # tiny header sizes while decompressing to gigabytes.  Instead we stream each
+        # entry in chunks and count actual decompressed bytes, aborting and cleaning up
+        # if the running total exceeds max_uncompressed_bytes.
+        _CHUNK_SIZE = 256 * 1024  # 256 KiB per read chunk
         skip_entries = {"export.manifest.json", "license-report.json"}
         target_dir.mkdir(parents=True, exist_ok=False)
+
+        running_bytes = 0
+        import shutil
 
         try:
             for entry_name in name_list:
@@ -214,9 +256,23 @@ def import_project_zip(
 
                 dest = _safe_extract_path(entry_name, target_dir)
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(zf.read(entry_name))
+
+                # Stream entry in chunks, counting actual decompressed bytes.
+                with zf.open(entry_name) as entry_fh, open(dest, "wb") as out_fh:
+                    while True:
+                        chunk = entry_fh.read(_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        running_bytes += len(chunk)
+                        if running_bytes > max_uncompressed_bytes:
+                            out_fh.write(chunk)  # flush partial before raising
+                            raise ZipImportError(
+                                f"Archive real decompressed size exceeded limit of "
+                                f"{max_uncompressed_bytes:,} bytes (zip-bomb guard). "
+                                f"Aborting extraction."
+                            )
+                        out_fh.write(chunk)
         except ZipImportError:
-            import shutil
             shutil.rmtree(target_dir, ignore_errors=True)
             raise
 
