@@ -1,7 +1,7 @@
 # MisakaAssetGene — 專案規格書 (Spec)
 
-> **Version:** v0.8  
-> **Last Updated:** 2026-04-24  
+> **Version:** v0.9  
+> **Last Updated:** 2026-06-12  
 > 對話式 AI 創作顧問：整合圖像、文字台詞、聲音、影片的**生成 + 訓練**工作台，以專案為單位維持記憶與風格一致性，為不懂技術的個人創作者（遊戲開發、內容創作）而設計。
 
 ---
@@ -224,6 +224,13 @@ repo/
     ↓
 [Accept]  → 標記為 final，寫回 RAG 長期記憶
 ```
+
+#### 4.1.1 會話狀態持久化（決策：2026-06-12）
+> **決策**：顧問對話的 session 狀態**必須 server-side 持久化於 SQLite**（`memory.sqlite`，`conversations` / `sessions` 表）。不允許 stateless per-call 行為，「loop 直到 checklist 齊全」必須在 app 重啟後能繼續。此決策範疇屬 **M2**。
+
+- 儲存位置：各專案資料夾內的 `memory.sqlite`，與 RAG ingest 的 `conversations` namespace 共用同一 DB（見 §5.2）。
+- session 表至少記錄：`session_id`、`project_id`、`state`（Intake/Clarify/Summary/Generate/Refine/Accept）、`checklist_status`（JSON）、`created_at`、`updated_at`。
+- 重啟後恢復：Core Service 啟動時若專案有未完成 session，顧問 context 從上次 state 繼續，不強迫使用者重新說一次需求。
 
 對於圖像工作流，`[Refine]` 不可只等於「整張重生」；必須支援：
 - 以已生成圖片作為 parent version 繼續編修
@@ -720,7 +727,7 @@ Step 3: 故事設定 (選填但強烈建議 — 顧問會根據此提供更貼�
 | 混合 IP 工作室 | 角色 + 故事 + 宣傳 + 影音的一體化產線 |
 
 因此專案建立資料在 M1+ 應逐步補上：
-- `project_profile`：game / novel / character_factory / mixed_ip
+- `project_profile`：game / novel / character_factory / mixed_ip（**已加入 `project.schema.json`，為 optional 欄位，決策日：2026-06-12**；現有專案無需遷移）
 - `primary_outputs`：圖像 / 文字 / 語音 / 音樂 / 影片的優先順序
 - `entity_seeds`：角色、場景、服裝、風格等初始清單
 - `production_goal`：例如「快速訓練角色 LoRA 並量產多組合圖像與影音」
@@ -781,7 +788,7 @@ M0 前端工作台至少要有以下主要 route / workspace：
 因此，使用者輸入的專案名稱不應再被限制為只能使用英數底線；實際檔案路徑與 route 由 `id` 負責穩定化。
 
 ### 5.12 顧問解析與工作區任務
-> v0.9: 新增章節。
+> v0.9: 新增章節。顧問 session 狀態持久化決策見 §4.1.1（決策日：2026-06-12，屬 M2 範疇）。
 
 當使用者在 `/project/:projectId` 內提交需求時，顧問不可只回傳泛用 checklist；至少要轉成以下 structured planning 資料：
 
@@ -1762,6 +1769,16 @@ misakaAssetGene/
 ---
 
 ## Changelog
+
+### v0.9 (2026-06-12)
+- **決策記錄（2026-06-12 PM 決策）**
+  - **§4.1.1 新增**：顧問 session 狀態須以 SQLite (`memory.sqlite`) server-side 持久化；stateless per-call 明確拒絕；重啟後繼續 checklist loop；屬 M2 範疇。
+  - **§5.9 修改**：`project_profile` 已加入 `project.schema.json` 為 optional 欄位（backward compatible，無需遷移），enum 值為 game / novel / character_factory / mixed_ip。
+  - **§5.12 修改**：補充 session 持久化決策參照（§4.1.1，M2）。
+  - `.plan/DEVELOPMENT_PLAN.md` M4 範疇更新為完整 §7.1.1（character sheets、dataset packs、training recipes、LoRA stack presets）+ kohya_ss LoRA + TTS fine-tune end-to-end + Portable Release + Setup 錯誤 AI 解釋。
+  - `.plan/DEVELOPMENT_PLAN.md` M2–M5 里程碑 bullet 點與各 spec gap 對齊（§5.11、§5.12、§5.13、§5.14、§6.2）。
+  - `.plan/DEVELOPMENT_PLAN.md` 新增流程節奏條款：每個里程碑以使用者驗收為結尾，implementer → reviewer chain。
+  - `project.schema.json` 新增 `project_profile` optional 欄位（schema 層級變更，無實作）。
 
 ### v0.4 (2026-04-23)
 - **新增**

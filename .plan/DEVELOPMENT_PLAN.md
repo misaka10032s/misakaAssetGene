@@ -34,6 +34,16 @@
 
 ---
 
+## 2.3 流程節奏與驗收規範（Process Cadence）
+> 決策日：2026-06-12
+
+- **里程碑驗收閘**：每個里程碑（M0–M5）結束時，須經**使用者驗收 checkpoint** 才能進入下一里程碑。未通過驗收的功能需補齊後再關閉。
+- **實作 → 審查 chain**：每個里程碑的實作由 implementer agent 執行，完成後必須交由**獨立 reviewer agent** 進行 code review；implementer 不得自審。Reviewer 意見由 PM（main agent）彙整後回饋給 implementer 修正。
+- **規格優先**：任何實作前若需求與 `spec.md` 不一致，須先更新 spec（走 spec-discuss → update-spec 流程），再進行實作。
+- 本節規定適用於所有未完成的里程碑（M2 起）。
+
+---
+
 ## 3. 測試策略 (Testing Strategy)
 
 我們採用四層測試模型以確保軟體穩定性：
@@ -54,8 +64,30 @@
 ## 4. 專案里程碑 (Key Milestones)
 
 - **M0 (兩週)：** 基礎建設。Tauri + FastAPI 框架、專案結構、uv 環境自動下載。
-- **M1 (三週)：** 創作顧問原型。完成音樂模態 (MusicGen) 與 Cold Start 範例生成。
-- **M2 (四週)：** 核心與可攜性。完成 ComfyUI 整合、RAG 檢索、跨專案引用與專案 zip 匯入。
-- **M3 (四週)：** 離線與優化。完成離線三態偵測、VRAM 熱切換、所有 Worker 的 Smoke Test。
-- **M4 (四週)：** 訓練與打包。完成 LoRA/TTS 訓練整合、Portable Release 打包與 Setup 錯誤 AI 解釋。
-- **M5 (持續)：** 打磨。樹狀 UI 視覺化、License Report、跨專案引用廢棄遷移。
+- **M1 (三週)：** 創作顧問原型。完成音樂模態 (ACE-Step-1.5) 與 Cold Start 範例生成。
+- **M2 (四週)：** 核心與可攜性。
+  - ComfyUI 完整深度整合：inpaint / img2img e2e、§5.11 多階段精修、§6.2 修圖策略決策樹
+  - 顧問狀態機 SQLite 持久化（§5.12、§4.1.1）：session 表於 `memory.sqlite`，loop 直到 checklist 齊全跨重啟可繼續
+  - 專案可攜性：zip 匯入/匯出、relative path normalize
+  - 跨專案引用 RW Lock（§3 研究日誌條目 4）
+  - ChromaDB RAG ingest / retrieve
+- **M3 (四週)：** 離線與優化。
+  - 離線三態（Auto / Always Offline / Always Online）
+  - VRAM Warm 狀態（§3.4）
+  - Worker runtime readiness（install / start / stop / smoke / managed_pid / readiness_note，§5.13）
+  - Conversation 效能（分批載入、虛擬滾動，§5.14）
+  - 所有 Worker Smoke Test 全數通過
+- **M4 (四週)：** 訓練整合 + 打包。完整對應 spec §7.1.1：
+  - `character sheets`（角色名、外觀錨點、觸發詞、禁忌特徵、參考圖）
+  - `dataset packs`（蒐集來源、清洗狀態、tag、授權、切分方式）
+  - `training recipes`（底模、rank、epoch、optimizer、caption strategy）
+  - `lora stack presets`（角色 LoRA、服裝 LoRA、風格 LoRA 的常用組合）
+  - kohya_ss LoRA 整合 end-to-end
+  - GPT-SoVITS TTS fine-tune end-to-end
+  - Portable Release：Tauri bundle + embedded Python + 附帶 uv/ffmpeg
+  - Setup 錯誤 AI 解釋完整版（友善錯誤處理 §11.3）
+- **M5 (持續)：** 打磨。
+  - 版本樹狀 UI（升級為 parent-child 樹 + diff，§8.2 P1）
+  - License Report 完整版（§2 Feature Matrix）
+  - 跨專案引用廢棄遷移工具（把引用實體化為本地複本）
+  - 日誌脫敏完整實施（§3 RESEARCH_LOG 條目 5）
