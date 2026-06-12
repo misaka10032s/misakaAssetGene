@@ -226,9 +226,9 @@ repo/
 ```
 
 #### 4.1.1 會話狀態持久化（決策：2026-06-12）
-> **決策**：顧問對話的 session 狀態**必須 server-side 持久化於 SQLite**（`memory.sqlite`，`conversations` / `sessions` 表）。不允許 stateless per-call 行為，「loop 直到 checklist 齊全」必須在 app 重啟後能繼續。此決策範疇屬 **M2**。
+> **決策**：顧問對話的 session 狀態**必須 server-side 持久化於 SQLite**（`memory.sqlite`，`sessions` 表）。不允許 stateless per-call 行為，「loop 直到 checklist 齊全」必須在 app 重啟後能繼續。此決策範疇屬 **M2**。
 
-- 儲存位置：各專案資料夾內的 `memory.sqlite`，與 RAG ingest 的 `conversations` namespace 共用同一 DB（見 §5.2）。
+- 儲存位置：各專案資料夾內的 `memory.sqlite`，以獨立 `sessions` 表儲存顧問 session 狀態。
 - session 表至少記錄：`session_id`、`project_id`、`state`（Intake/Clarify/Summary/Generate/Refine/Accept）、`checklist_status`（JSON）、`created_at`、`updated_at`。
 - 重啟後恢復：Core Service 啟動時若專案有未完成 session，顧問 context 從上次 state 繼續，不強迫使用者重新說一次需求。
 
@@ -1546,7 +1546,7 @@ misakaAssetGene/
 6. 點 `[村莊夜晚]` 填入輸入框 → 送出
 7. 顧問走音樂 checklist，問 4–5 題
 8. 使用者回答 → 顧問產出 YAML 摘要 → 確認
-9. 後台呼叫 MusicGen，Chat 顯示進度
+9. 後台呼叫 ACE-Step-1.5，Chat 顯示進度
 10. 完成，UI 出現播放器，版本列表有 v1（tags: `bgm, town, calm, A-minor`）
 11. v2 滿意 → 點 favorite 星號 → 寫回 RAG
 
@@ -1778,6 +1778,7 @@ misakaAssetGene/
   - `.plan/DEVELOPMENT_PLAN.md` M4 範疇更新為完整 §7.1.1（character sheets、dataset packs、training recipes、LoRA stack presets）+ kohya_ss LoRA + TTS fine-tune end-to-end + Portable Release + Setup 錯誤 AI 解釋。
   - `.plan/DEVELOPMENT_PLAN.md` M2–M5 里程碑 bullet 點與各 spec gap 對齊（§5.11、§5.12、§5.13、§5.14、§6.2）。
   - `.plan/DEVELOPMENT_PLAN.md` 新增流程節奏條款：每個里程碑以使用者驗收為結尾，implementer → reviewer chain。
+  - `.plan/DEVELOPMENT_PLAN.md` M1 措辭修正：MusicGen → ACE-Step-1.5，與 spec §6.1 音樂主線工具對齊（同步修正 §13.1 user flow 範例）。
   - `project.schema.json` 新增 `project_profile` optional 欄位（schema 層級變更，無實作）。
 
 ### v0.4 (2026-04-23)
