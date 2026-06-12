@@ -12,8 +12,9 @@ from core.models.schemas import (
     AssetRecord,
     BatchExecuteRequest,
     ClarifyResult,
-    ConsultantPlanRecord,
     ConsultantDeliverable,
+    ConsultantPlanRecord,
+    ConsultantPlanStep,
     GenerationJob,
     GenerationRecipe,
     GenerationJobStatus,
@@ -163,6 +164,18 @@ class GenerationService:
         # Cheapest rung: metadata-only edits mutate the parent record's lineage
         # markers without re-rendering anything (spec §6.2 first rung).
         if plan.recipe is None:
+            # Apply the metadata delta to the parent AssetRecord and persist it.
+            parent_index = next(i for i, a in enumerate(assets) if a.id == parent_asset_id)
+            metadata_delta = self._extract_metadata_delta(request.instruction)
+            updated_tags = list(dict.fromkeys(parent.tags + metadata_delta.get("tags", [])))
+            updated_parent = parent.model_copy(update={
+                "tags": updated_tags,
+                "user_note": metadata_delta.get("user_note") or parent.user_note,
+                "is_favorite": metadata_delta.get("is_favorite", parent.is_favorite),
+            })
+            assets[parent_index] = updated_parent
+            self._write_assets(project_dir, assets)
+
             metadata_job = GenerationJob(
                 id=uuid.uuid4().hex,
                 project_id=project_id,
@@ -707,3 +720,32 @@ class GenerationService:
             + "\n",
             encoding="utf-8",
         )
+
+    @staticmethod
+    def _extract_metadata_delta(instruction: str) -> dict[str, object]:
+        """Parse a metadata-only refine instruction for tag, note and favorite signals.
+
+        Returns a dict with optional keys:
+          ``tags``        – list[str] of hashtag tokens found in the instruction
+          ``is_favorite`` – True if the instruction contains a favorite signal
+          ``user_note``   – the raw instruction text, used as a freeform note
+        """
+        import re as _re
+
+        lowered = instruction.lower()
+        delta: dict[str, object] = {}
+
+        # Collect #tag tokens (ASCII or CJK, allowing hyphens/underscores).
+        tags: list[str] = _re.findall(r"#([\w一-鿿\-_]+)", instruction)
+        if tags:
+            delta["tags"] = tags
+
+        # Favorite signal detection (zh-TW + en keywords).
+        favorite_keywords = ("最愛", "favorite", "favourite", "收藏")
+        if any(k in lowered for k in favorite_keywords):
+            delta["is_favorite"] = True
+
+        # Store instruction as a free-form note so the edit intent is preserved.
+        delta["user_note"] = instruction.strip()
+
+        return delta

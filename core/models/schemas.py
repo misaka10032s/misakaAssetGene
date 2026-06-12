@@ -376,6 +376,10 @@ class AssetRecord(BaseModel):
     prompt_hash: str | None = None
     backend: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+    # Metadata fields (spec §6.2 metadata-only tier). All optional / backward-compatible.
+    tags: list[str] = Field(default_factory=list)
+    user_note: str | None = None
+    is_favorite: bool = False
     created_at: datetime
 
 
