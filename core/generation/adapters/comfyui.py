@@ -35,7 +35,8 @@ def execute(context: AdapterContext) -> AdapterExecutionResult:
             positive_prompt=context.job.prompt,
             negative_prompt=DEFAULT_NEGATIVE_PROMPT,
             filename_prefix=filename_prefix,
-            seed=_stable_seed(prompt_id),
+            seed=_resolve_seed(context.job.params, prompt_id),
+            params=context.job.params or {},
             source_asset_path=context.source_asset_path,
             mask_asset_path=context.mask_asset_path,
         )
@@ -102,6 +103,34 @@ def _resolve_checkpoint_name(worker_path: Path) -> str:
     return checkpoint_files[0]
 
 
+def _sampler_inputs(
+    *,
+    params: dict,
+    seed: int,
+    default_denoise: float,
+    default_steps: int,
+    latent_ref: list,
+    model_ref: list,
+    positive_ref: list,
+    negative_ref: list,
+) -> dict:
+    """Build a KSampler ``inputs`` block, applying §6.2 tunable params on top
+    of recipe defaults. Unknown / absent params fall back to the defaults so
+    the workflow graph is always well-formed."""
+    return {
+        "cfg": params.get("cfg", 7),
+        "denoise": params.get("denoise", default_denoise),
+        "latent_image": latent_ref,
+        "model": model_ref,
+        "negative": negative_ref,
+        "positive": positive_ref,
+        "sampler_name": params.get("sampler_name") or params.get("sampler") or "euler",
+        "scheduler": params.get("scheduler", "normal"),
+        "seed": seed,
+        "steps": params.get("steps", default_steps),
+    }
+
+
 def _build_workflow(
     *,
     recipe: GenerationRecipe,
@@ -112,9 +141,11 @@ def _build_workflow(
     negative_prompt: str,
     filename_prefix: str,
     seed: int,
+    params: dict | None = None,
     source_asset_path: Path | None,
     mask_asset_path: Path | None,
 ) -> dict[str, dict]:
+    params = params or {}
     if recipe is GenerationRecipe.IMG2IMG:
         if source_asset_path is None:
             raise RuntimeError("img2img requires a source image asset.")
@@ -122,18 +153,16 @@ def _build_workflow(
         return {
             "3": {
                 "class_type": "KSampler",
-                "inputs": {
-                    "cfg": 7,
-                    "denoise": 0.45,
-                    "latent_image": ["11", 0],
-                    "model": ["4", 0],
-                    "negative": ["7", 0],
-                    "positive": ["6", 0],
-                    "sampler_name": "euler",
-                    "scheduler": "normal",
-                    "seed": seed,
-                    "steps": 24,
-                },
+                "inputs": _sampler_inputs(
+                    params=params,
+                    seed=seed,
+                    default_denoise=0.45,
+                    default_steps=24,
+                    latent_ref=["11", 0],
+                    model_ref=["4", 0],
+                    positive_ref=["6", 0],
+                    negative_ref=["7", 0],
+                ),
             },
             "4": {
                 "class_type": "CheckpointLoaderSimple",
@@ -168,22 +197,25 @@ def _build_workflow(
         if source_asset_path is None or mask_asset_path is None:
             raise RuntimeError("inpaint requires both source and mask assets.")
         source_name = _upload_input_asset(client, base_url, source_asset_path)
+        # The mask is a standalone image asset (not an alpha edit of the source),
+        # so it is uploaded as a normal input and read by ``LoadImageMask`` from
+        # its alpha/grayscale channel. ComfyUI's ``/upload/mask`` endpoint instead
+        # composites a mask into an *existing* image's alpha and requires an
+        # ``original_ref``; that path does not fit a separate-mask-asset flow.
         mask_name = _upload_input_asset(client, base_url, mask_asset_path)
         return {
             "3": {
                 "class_type": "KSampler",
-                "inputs": {
-                    "cfg": 7,
-                    "denoise": 0.65,
-                    "latent_image": ["13", 2],
-                    "model": ["4", 0],
-                    "negative": ["13", 1],
-                    "positive": ["13", 0],
-                    "sampler_name": "euler",
-                    "scheduler": "normal",
-                    "seed": seed,
-                    "steps": 28,
-                },
+                "inputs": _sampler_inputs(
+                    params=params,
+                    seed=seed,
+                    default_denoise=0.65,
+                    default_steps=28,
+                    latent_ref=["13", 2],
+                    model_ref=["4", 0],
+                    positive_ref=["13", 0],
+                    negative_ref=["13", 1],
+                ),
             },
             "4": {
                 "class_type": "CheckpointLoaderSimple",
@@ -202,8 +234,10 @@ def _build_workflow(
                 "inputs": {"image": source_name},
             },
             "11": {
+                # Read the mask from the red channel: a standalone white-on-black
+                # mask (RGB or grayscale, no alpha) marks the edit region in white.
                 "class_type": "LoadImageMask",
-                "inputs": {"image": mask_name, "channel": "alpha"},
+                "inputs": {"image": mask_name, "channel": "red"},
             },
             "13": {
                 "class_type": "InpaintModelConditioning",
@@ -213,6 +247,9 @@ def _build_workflow(
                     "vae": ["4", 2],
                     "pixels": ["10", 0],
                     "mask": ["11", 0],
+                    # Required by current ComfyUI: keep the unmasked latent as a
+                    # noise mask so only the masked region is denoised.
+                    "noise_mask": True,
                 },
             },
             "8": {
@@ -227,18 +264,16 @@ def _build_workflow(
     return {
         "3": {
             "class_type": "KSampler",
-            "inputs": {
-                "cfg": 7,
-                "denoise": 1,
-                "latent_image": ["5", 0],
-                "model": ["4", 0],
-                "negative": ["7", 0],
-                "positive": ["6", 0],
-                "sampler_name": "euler",
-                "scheduler": "normal",
-                "seed": seed,
-                "steps": 24,
-            },
+            "inputs": _sampler_inputs(
+                params=params,
+                seed=seed,
+                default_denoise=1,
+                default_steps=24,
+                latent_ref=["5", 0],
+                model_ref=["4", 0],
+                positive_ref=["6", 0],
+                negative_ref=["7", 0],
+            ),
         },
         "4": {
             "class_type": "CheckpointLoaderSimple",
@@ -250,8 +285,8 @@ def _build_workflow(
             "class_type": "EmptyLatentImage",
             "inputs": {
                 "batch_size": 1,
-                "height": 1024,
-                "width": 768,
+                "height": int(params.get("height", 1024)),
+                "width": int(params.get("width", 768)),
             },
         },
         "6": {
@@ -289,7 +324,23 @@ def _stable_seed(prompt_id: str) -> int:
     return int(prompt_id[:8], 16)
 
 
+def _resolve_seed(params: dict | None, prompt_id: str) -> int:
+    """Use an explicit §6.2 ``seed`` param when provided (so a refine can fix
+    or vary the seed deterministically), otherwise derive a stable seed."""
+    params = params or {}
+    seed = params.get("seed")
+    if seed is not None:
+        try:
+            return int(seed)
+        except (TypeError, ValueError):
+            pass
+    return _stable_seed(prompt_id)
+
+
 def _upload_input_asset(client: httpx.Client, base_url: str, asset_path: Path) -> str:
+    """Upload a source image or a standalone mask image into ComfyUI's input
+    space. Both go through ``/upload/image``; an inpaint mask is then read from
+    its red channel by ``LoadImageMask`` in the workflow graph (spec §5.11)."""
     with asset_path.open("rb") as file_handle:
         response = client.post(
             f"{base_url}/upload/image",

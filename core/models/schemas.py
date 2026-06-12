@@ -300,6 +300,30 @@ class GenerationRecipe(str, Enum):
     INPAINT = "inpaint"
 
 
+class RefineStrategy(str, Enum):
+    """Image/video refine strategy ladder (spec §6.2 decision tree).
+
+    Ordered from the cheapest, least destructive fix to the most expensive
+    full regeneration. The planner always selects the *minimal but sufficient*
+    rung for a given refine request.
+    """
+
+    METADATA_ONLY = "metadata_only"
+    PARAM_RETUNE = "param_retune"
+    IMG2IMG = "img2img"
+    INPAINT = "inpaint"
+    FULL_REGEN = "full_regen"
+
+
+class PromptDecompositionPass(str, Enum):
+    """Multi-stage refine passes for image generation (spec §5.11)."""
+
+    BASE_COMPOSITION = "base_composition"
+    CHARACTER_DETAIL = "character_detail"
+    PROP_ACCESSORY = "prop_accessory"
+    FINAL_POLISH = "final_polish"
+
+
 class GenerationJob(BaseModel):
     id: str
     project_id: str
@@ -314,6 +338,17 @@ class GenerationJob(BaseModel):
     recipe: GenerationRecipe | None = None
     source_asset_id: str | None = None
     mask_asset_id: str | None = None
+    # Refine lineage (spec §5.11 / §8.1): the parent asset version this job
+    # refines, plus the strategy chosen by the §6.2 decision tree.
+    parent_asset_id: str | None = None
+    refine_strategy: RefineStrategy | None = None
+    # Tunable sampler/recipe params threaded into the adapter (spec §6.2).
+    params: dict[str, Any] = Field(default_factory=dict)
+    # Per-refine record of why this method was chosen and what changed
+    # relative to the parent version (spec §5.11 / §6.2 last paragraph).
+    refine_reason: str | None = None
+    prompt_delta: str | None = None
+    param_delta: dict[str, Any] = Field(default_factory=dict)
     blocking_reason: str | None = None
     last_error: str | None = None
     progress: int = 0
@@ -332,6 +367,15 @@ class AssetRecord(BaseModel):
     title: str
     path: str
     description: str = ""
+    # Refine lineage (spec §5.11 / §8.1 versions.parent_version_id): null = root.
+    parent_version_id: str | None = None
+    refine_strategy: RefineStrategy | None = None
+    mask_asset_id: str | None = None
+    prompt_delta: str | None = None
+    param_delta: dict[str, Any] = Field(default_factory=dict)
+    prompt_hash: str | None = None
+    backend: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
 
@@ -350,6 +394,41 @@ class JobExecutionPatch(BaseModel):
 
 class BatchExecuteRequest(BaseModel):
     job_ids: list[str] = Field(default_factory=list)
+
+
+class RefineRequest(BaseModel):
+    """Request to refine an existing image asset version (spec §5.11 / §6.2).
+
+    ``strategy`` may be omitted to let the §6.2 decision tree auto-select the
+    minimal sufficient rung from the natural-language ``instruction`` and the
+    optional explicit ``params`` / ``mask_asset_id`` signals.
+    """
+
+    instruction: str = Field(min_length=1)
+    strategy: RefineStrategy | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+    mask_asset_id: str | None = None
+    title: str | None = None
+
+
+class PromptDecompositionStep(BaseModel):
+    """One stage of a multi-stage refine prompt (spec §5.11)."""
+
+    stage: PromptDecompositionPass
+    prompt: str
+
+
+class RefinePlan(BaseModel):
+    """Resolved refine plan emitted by the §6.2 decision tree."""
+
+    strategy: RefineStrategy
+    recipe: GenerationRecipe | None = None
+    reason: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    param_delta: dict[str, Any] = Field(default_factory=dict)
+    prompt_delta: str
+    decomposition: list[PromptDecompositionStep] = Field(default_factory=list)
+    requires_mask: bool = False
 
 
 class WorkerSmokeResult(BaseModel):
