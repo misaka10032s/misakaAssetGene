@@ -372,32 +372,69 @@ class WorkersService:
         is_running: bool,
         health_cache: dict[str, bool],
     ) -> str | None:
-        if installed_reference is None:
-            return "Repository is not installed."
+        """Compute the ``readiness_note`` per spec §5.13 with **live-first**
+        semantics: if the worker's health check responds (``is_running``),
+        readiness reflects whether the *live* server can actually serve, even
+        if the repo was never cloned under ``workers/<dir>`` (e.g. a standalone
+        ComfyUI started by the user with its own ``extra_model_paths``). The
+        local repo-clone / dependency-install checks only describe whether we
+        can *manage / start* the worker ourselves, so they apply only when the
+        worker is NOT running. ``None`` means "usable now"."""
+        # Install-time failures always surface -- they explain why we can't
+        # manage the worker locally, regardless of whether something is live.
         install_state = self._load_install_state(worker_name)
         if install_state.get("status") == "failed":
             install_error = str(install_state.get("error") or "").strip()
             if install_error:
                 return f"Dependency install failed: {install_error}"
             return "Dependency install failed."
-        if not self._install_succeeded(install_state) and not is_running:
+
+        if is_running:
+            # The worker is serving. Derive readiness from the live worker, not
+            # the local filesystem -- a running server with its own model dirs
+            # is usable even when nothing is installed under workers/<dir>.
+            if worker_name == "comfyui":
+                base_url = self._comfyui_base_url(worker)
+                if base_url and not self._comfyui_has_live_checkpoint(base_url):
+                    return "No ComfyUI checkpoint is installed."
+            return None
+
+        # Not running: describe whether we could start it locally.
+        if installed_reference is None:
+            return "Repository is not installed."
+        if not self._install_succeeded(install_state):
             return "Worker dependencies are not installed yet."
-        if worker_name == "comfyui":
-            checkpoints_dir = clone_path / "models" / "checkpoints"
-            checkpoint_files = [
-                item
-                for item in checkpoints_dir.glob("*")
-                if item.is_file() and item.name != "put_checkpoints_here"
-            ]
-            if not checkpoint_files:
-                return "No ComfyUI checkpoint is installed."
+        if worker_name == "comfyui" and not self._comfyui_has_local_checkpoint(clone_path):
+            return "No ComfyUI checkpoint is installed."
         health_check = worker.get("health_check")
-        if health_check and not is_running:
+        if health_check:
             startup_error = self._read_last_log_line(worker_name)
             if startup_error:
                 return startup_error
             return "Worker server is not running."
         return None
+
+    def _comfyui_base_url(self, worker: dict) -> str | None:
+        health_check = str(worker.get("health_check") or "").strip()
+        if not health_check:
+            return None
+        return health_check.removesuffix("/system_stats").rstrip("/")
+
+    def _comfyui_has_local_checkpoint(self, clone_path: Path) -> bool:
+        checkpoints_dir = clone_path / "models" / "checkpoints"
+        return any(
+            item.is_file() and item.name != "put_checkpoints_here"
+            for item in checkpoints_dir.glob("*")
+        )
+
+    def _comfyui_has_live_checkpoint(self, base_url: str) -> bool:
+        """Ask the running ComfyUI which checkpoints it can load. Reuses the
+        adapter's object_info query so readiness and generation agree on what
+        "has a checkpoint" means. A query failure is treated as "no live
+        checkpoint" so the note stays honest rather than falsely green."""
+        from core.generation.adapters.comfyui import fetch_live_checkpoints
+
+        return bool(fetch_live_checkpoints(base_url))
 
     def _run_smoke_script(self, worker_name: str, worker: dict, smoke_script: str) -> WorkerSmokeResult:
         script_path = self.repo_root / smoke_script

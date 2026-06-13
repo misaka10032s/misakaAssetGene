@@ -179,10 +179,51 @@ def test_inpaint_requires_mask(tmp_path: Path) -> None:
         )
 
 
+def test_fetch_live_checkpoints_parses_object_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "CheckpointLoaderSimple": {
+            "input": {"required": {"ckpt_name": [["b.ckpt", "a.ckpt"], {"tooltip": "x"}]}}
+        }
+    }
+    monkeypatch.setattr(comfyui.httpx, "get", lambda url, **k: _resp(url, "GET", json=payload))
+    # Sorted deterministically regardless of the server's enum order.
+    assert comfyui.fetch_live_checkpoints("http://x") == ["a.ckpt", "b.ckpt"]
+
+
+def test_fetch_live_checkpoints_returns_empty_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(url: str, **k):
+        raise httpx.ConnectError("refused", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(comfyui.httpx, "get", _boom)
+    assert comfyui.fetch_live_checkpoints("http://x") == []
+
+
+def test_resolve_checkpoint_prefers_live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # No local checkpoints -- a standalone ComfyUI with its own model dirs must
+    # still resolve a checkpoint from the live server (spec §5.13 live-first).
+    monkeypatch.setattr(comfyui, "fetch_live_checkpoints", lambda base_url, **k: ["x.ckpt", "y.ckpt"])
+    assert comfyui._resolve_checkpoint_name(tmp_path / "worker", base_url="http://x") == "x.ckpt"
+
+
+def test_resolve_checkpoint_falls_back_to_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ckpt_dir = tmp_path / "worker" / "models" / "checkpoints"
+    ckpt_dir.mkdir(parents=True)
+    (ckpt_dir / "local.safetensors").write_bytes(b"x")
+    monkeypatch.setattr(comfyui, "fetch_live_checkpoints", lambda base_url, **k: [])
+    assert comfyui._resolve_checkpoint_name(tmp_path / "worker", base_url="http://x") == "local.safetensors"
+
+
+def test_resolve_checkpoint_honours_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(comfyui, "fetch_live_checkpoints", lambda base_url, **k: ["a.ckpt", "b.ckpt"])
+    assert comfyui._resolve_checkpoint_name(tmp_path / "worker", base_url="http://x", override="b.ckpt") == "b.ckpt"
+
+
 def test_execute_end_to_end_with_mocked_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     checkpoint_dir = tmp_path / "worker" / "models" / "checkpoints"
     checkpoint_dir.mkdir(parents=True)
     (checkpoint_dir / "model.safetensors").write_bytes(b"ckpt")
+    # Force the local fallback path so the test makes no real network call.
+    monkeypatch.setattr(comfyui, "fetch_live_checkpoints", lambda base_url, **k: [])
 
     fake = _FakeClient()
 

@@ -19,7 +19,12 @@ def adapter_name() -> str:
 
 def execute(context: AdapterContext) -> AdapterExecutionResult:
     base_url = _resolve_base_url(context.health_check)
-    checkpoint_name = _resolve_checkpoint_name(context.worker_path)
+    params = context.job.params or {}
+    checkpoint_name = _resolve_checkpoint_name(
+        context.worker_path,
+        base_url=base_url,
+        override=params.get("checkpoint") or params.get("ckpt_name"),
+    )
     prompt_id = uuid.uuid4().hex
     filename_prefix = f"misaka-{context.job.project_id}-{context.job.id[:8]}"
 
@@ -91,16 +96,60 @@ def _resolve_base_url(health_check: str | None) -> str:
     return health_check.removesuffix("/system_stats").rstrip("/")
 
 
-def _resolve_checkpoint_name(worker_path: Path) -> str:
+def fetch_live_checkpoints(base_url: str, *, timeout: float = 2.0) -> list[str]:
+    """Query a running ComfyUI for the checkpoints it can actually load
+    (spec §5.13 live-first readiness). Reads
+    ``GET <base>/object_info/CheckpointLoaderSimple`` and returns the
+    ``ckpt_name`` enum the live server advertises -- this covers checkpoints
+    placed outside ``workers/comfyui`` via ``extra_model_paths``. Returns an
+    empty list (never raises) when the server is unreachable or the response
+    is malformed, so callers can fall back to the local filesystem."""
+    try:
+        response = httpx.get(f"{base_url}/object_info/CheckpointLoaderSimple", timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return []
+    node = payload.get("CheckpointLoaderSimple") if isinstance(payload, dict) else None
+    if not isinstance(node, dict):
+        return []
+    required = (node.get("input") or {}).get("required") or {}
+    ckpt_spec = required.get("ckpt_name")
+    # ComfyUI advertises enum inputs as ``[[option, ...], {meta}]`` or ``[[option, ...]]``.
+    if not isinstance(ckpt_spec, (list, tuple)) or not ckpt_spec:
+        return []
+    options = ckpt_spec[0]
+    if not isinstance(options, (list, tuple)):
+        return []
+    return sorted(str(item) for item in options if str(item).strip())
+
+
+def _list_local_checkpoints(worker_path: Path) -> list[str]:
     checkpoint_dir = worker_path / "models" / "checkpoints"
-    checkpoint_files = sorted(
+    return sorted(
         item.name
         for item in checkpoint_dir.glob("*")
         if item.is_file() and item.name != "put_checkpoints_here"
     )
-    if not checkpoint_files:
-        raise RuntimeError("ComfyUI has no installed checkpoint.")
-    return checkpoint_files[0]
+
+
+def _resolve_checkpoint_name(worker_path: Path, *, base_url: str | None = None, override: str | None = None) -> str:
+    """Pick the checkpoint name for a workflow. Prefer the live server's
+    advertised checkpoints when reachable (covers standalone ComfyUI with its
+    own model dirs); fall back to the local filesystem listing otherwise. The
+    deterministic choice is the sorted-first entry unless the job carries an
+    explicit ``checkpoint`` / ``ckpt_name`` override (spec §6.2)."""
+    live = fetch_live_checkpoints(base_url) if base_url else []
+    if override and override in live:
+        return override
+    if override and override in _list_local_checkpoints(worker_path):
+        return override
+    if live:
+        return live[0]
+    local = _list_local_checkpoints(worker_path)
+    if local:
+        return local[0]
+    raise RuntimeError("ComfyUI has no installed checkpoint.")
 
 
 def _sampler_inputs(
