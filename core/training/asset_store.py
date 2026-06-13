@@ -1,14 +1,15 @@
 """SQLite-backed CRUD store for §7.1.1 training-asset entities.
 
-Covers four entities:
-  - CharacterSheet  (table: character_sheets)
-  - DatasetPack     (table: dataset_packs)
-  - TrainingRecipe  (table: training_recipes)
-  - LoraPreset      (table: lora_presets)
+Covers five entities:
+  - CharacterSheet      (table: character_sheets)
+  - DatasetPack         (table: dataset_packs)
+  - TrainingRecipe      (table: training_recipes)
+  - LoraPreset          (table: lora_presets)
+  - ImageToVideoRecipe  (table: i2v_recipes)
 
 All tables share the same project-scoped design and timestamp conventions
 used by the consultant SessionStore.  The store opens (or creates) a single
-``memory.sqlite`` file and initialises all four tables on first access.
+``memory.sqlite`` file and initialises all five tables on first access.
 """
 
 from __future__ import annotations
@@ -26,6 +27,9 @@ from core.models.schemas import (
     DatasetPack,
     DatasetPackCreateRequest,
     DatasetPackUpdateRequest,
+    ImageToVideoRecipe,
+    ImageToVideoRecipeCreateRequest,
+    ImageToVideoRecipeUpdateRequest,
     LoraLayer,
     LoraPreset,
     LoraPresetCreateRequest,
@@ -89,6 +93,20 @@ CREATE TABLE IF NOT EXISTS lora_presets (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_lp_project ON lora_presets(project_id);
+
+CREATE TABLE IF NOT EXISTS i2v_recipes (
+    id               TEXT PRIMARY KEY,
+    project_id       TEXT NOT NULL,
+    name             TEXT NOT NULL,
+    workflow_kind    TEXT NOT NULL,
+    frames           INTEGER NOT NULL,
+    fps              INTEGER NOT NULL,
+    motion_strength  REAL NOT NULL,
+    notes            TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_i2v_project ON i2v_recipes(project_id);
 """
 
 
@@ -109,7 +127,7 @@ def _new_id() -> str:
 # ---------------------------------------------------------------------------
 
 class AssetStore:
-    """Repository for all four §7.1.1 entities, backed by ``memory.sqlite``."""
+    """Repository for all five §7.1.1 entities, backed by ``memory.sqlite``."""
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -536,6 +554,110 @@ class AssetStore:
             project_id=row["project_id"],
             name=row["name"],
             layers=layers,
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    # ------------------------------------------------------------------
+    # ImageToVideoRecipe CRUD
+    # ------------------------------------------------------------------
+
+    def create_i2v_recipe(
+        self, project_id: str, req: ImageToVideoRecipeCreateRequest
+    ) -> ImageToVideoRecipe:
+        now = _now()
+        record = ImageToVideoRecipe(
+            id=_new_id(),
+            project_id=project_id,
+            name=req.name.strip(),
+            workflow_kind=req.workflow_kind.strip(),
+            frames=req.frames,
+            fps=req.fps,
+            motion_strength=req.motion_strength,
+            notes=req.notes,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO i2v_recipes "
+                "(id, project_id, name, workflow_kind, frames, fps, motion_strength, notes, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    record.id, record.project_id, record.name, record.workflow_kind,
+                    record.frames, record.fps, record.motion_strength, record.notes,
+                    record.created_at.isoformat(),
+                    record.updated_at.isoformat(),
+                ),
+            )
+        return record
+
+    def get_i2v_recipe(self, project_id: str, record_id: str) -> ImageToVideoRecipe | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM i2v_recipes WHERE id=? AND project_id=?",
+                (record_id, project_id),
+            ).fetchone()
+        return self._row_to_i2v_recipe(row) if row else None
+
+    def list_i2v_recipes(self, project_id: str) -> list[ImageToVideoRecipe]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM i2v_recipes WHERE project_id=? ORDER BY created_at",
+                (project_id,),
+            ).fetchall()
+        return [self._row_to_i2v_recipe(r) for r in rows]
+
+    def update_i2v_recipe(
+        self, project_id: str, record_id: str, req: ImageToVideoRecipeUpdateRequest
+    ) -> ImageToVideoRecipe | None:
+        existing = self.get_i2v_recipe(project_id, record_id)
+        if existing is None:
+            return None
+        now = _now()
+        updated = ImageToVideoRecipe(
+            id=existing.id,
+            project_id=existing.project_id,
+            name=req.name.strip() if req.name is not None else existing.name,
+            workflow_kind=req.workflow_kind.strip() if req.workflow_kind is not None else existing.workflow_kind,
+            frames=req.frames if req.frames is not None else existing.frames,
+            fps=req.fps if req.fps is not None else existing.fps,
+            motion_strength=req.motion_strength if req.motion_strength is not None else existing.motion_strength,
+            notes=req.notes if req.notes is not None else existing.notes,
+            created_at=existing.created_at,
+            updated_at=now,
+        )
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE i2v_recipes SET name=?, workflow_kind=?, frames=?, fps=?, "
+                "motion_strength=?, notes=?, updated_at=? WHERE id=? AND project_id=?",
+                (
+                    updated.name, updated.workflow_kind, updated.frames, updated.fps,
+                    updated.motion_strength, updated.notes,
+                    updated.updated_at.isoformat(),
+                    updated.id, updated.project_id,
+                ),
+            )
+        return updated
+
+    def delete_i2v_recipe(self, project_id: str, record_id: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM i2v_recipes WHERE id=? AND project_id=?",
+                (record_id, project_id),
+            )
+        return cursor.rowcount > 0
+
+    def _row_to_i2v_recipe(self, row: sqlite3.Row) -> ImageToVideoRecipe:
+        return ImageToVideoRecipe(
+            id=row["id"],
+            project_id=row["project_id"],
+            name=row["name"],
+            workflow_kind=row["workflow_kind"],
+            frames=row["frames"],
+            fps=row["fps"],
+            motion_strength=row["motion_strength"],
+            notes=row["notes"] or "",
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )

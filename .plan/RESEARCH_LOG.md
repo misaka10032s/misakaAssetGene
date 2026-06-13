@@ -129,3 +129,12 @@ kohya_ss executor / 訓練觸發邏輯延後至 M4.c，不在本 sub-phase 內�
 新增 40 個測試（`tests/test_asset_store.py`）涵蓋：store 單元測試（create/get/list/update/delete、project scoping、persistence across reopen、404 路徑）+ API 路由測試（TestClient）。
 
 **狀態：已完成**
+
+---
+
+## 8. 2026-06-13 — M4.a 第五實體 ImageToVideoRecipe 補齊
+
+**問題**：§7.1.1 規格定義五個實體，但 M4.a 初始 commit `b997a3c` 只實作了四個，遺漏了 `image-to-video recipes`。  
+**結論**：**已完成**。新增第五實體 `ImageToVideoRecipe`（SQLite 表 `i2v_recipes`）。欄位：`name`, `workflow_kind`, `frames`, `fps`, `motion_strength`, `notes`。來源 accepted image 在套用時傳入，不存在 recipe 內（可重用模板設計）。路由：`/api/v1/projects/{project_id}/i2v-recipes`（5 個 CRUD 端點）。§7.1.1 儲存模型表已更新。測試涵蓋 store 單元 + API 層，全套通過。
+
+**狀態：已完成**

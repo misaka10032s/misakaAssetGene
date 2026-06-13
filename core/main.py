@@ -42,6 +42,9 @@ from core.models.schemas import (
     DatasetPackCreateRequest,
     DatasetPackUpdateRequest,
     HealthData,
+    ImageToVideoRecipe,
+    ImageToVideoRecipeCreateRequest,
+    ImageToVideoRecipeUpdateRequest,
     IntegrationSnapshot,
     JobExecutionPatch,
     LocalLlmStatus,
@@ -903,6 +906,76 @@ def delete_lora_preset(project_id: str, preset_id: str) -> ApiResponse:
     if not deleted:
         raise HTTPException(status_code=404, detail=f"LoRA preset not found: {preset_id}")
     return success_response(MessageKey.SUCCESS_SWITCH0, {"deleted": preset_id})
+
+
+# ---------------------------------------------------------------------------
+# §7.1.1 — ImageToVideoRecipe routes  (/api/v1/projects/{project_id}/i2v-recipes)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/projects/{project_id}/i2v-recipes", response_model=ApiResponse)
+def list_i2v_recipes(project_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/i2v-recipes", project_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    items = store.list_i2v_recipes(project_id)
+    return success_response(MessageKey.SUCCESS_FETCH0, {"i2v_recipes": [item.model_dump(mode="json") for item in items]})
+
+
+@app.post("/api/v1/projects/{project_id}/i2v-recipes", response_model=ApiResponse)
+def create_i2v_recipe(project_id: str, payload: ImageToVideoRecipeCreateRequest) -> ApiResponse:
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/%s/i2v-recipes name=%s", project_id, payload.name)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.create_i2v_recipe(project_id, payload)
+    return success_response(MessageKey.SUCCESS_ADD0, {"i2v_recipe": item.model_dump(mode="json")})
+
+
+@app.get("/api/v1/projects/{project_id}/i2v-recipes/{recipe_id}", response_model=ApiResponse)
+def get_i2v_recipe(project_id: str, recipe_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/i2v-recipes/%s", project_id, recipe_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.get_i2v_recipe(project_id, recipe_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Image-to-video recipe not found: {recipe_id}")
+    return success_response(MessageKey.SUCCESS_FETCH0, {"i2v_recipe": item.model_dump(mode="json")})
+
+
+@app.patch("/api/v1/projects/{project_id}/i2v-recipes/{recipe_id}", response_model=ApiResponse)
+def update_i2v_recipe(project_id: str, recipe_id: str, payload: ImageToVideoRecipeUpdateRequest) -> ApiResponse:
+    if IS_DEV:
+        logger.info("PATCH /api/v1/projects/%s/i2v-recipes/%s", project_id, recipe_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.update_i2v_recipe(project_id, recipe_id, payload)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Image-to-video recipe not found: {recipe_id}")
+    return success_response(MessageKey.SUCCESS_SWITCH0, {"i2v_recipe": item.model_dump(mode="json")})
+
+
+@app.delete("/api/v1/projects/{project_id}/i2v-recipes/{recipe_id}", response_model=ApiResponse)
+def delete_i2v_recipe(project_id: str, recipe_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("DELETE /api/v1/projects/%s/i2v-recipes/%s", project_id, recipe_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    deleted = store.delete_i2v_recipe(project_id, recipe_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Image-to-video recipe not found: {recipe_id}")
+    return success_response(MessageKey.SUCCESS_SWITCH0, {"deleted": recipe_id})
 
 
 @app.post("/api/v1/workers/{worker_name}/install", response_model=ApiResponse)

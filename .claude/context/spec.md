@@ -964,9 +964,9 @@ project workspace 的 conversation history 不可一次完整渲染所有訊息�
 
 這些資料若缺少，系統就只能做到「單次生成」，無法真正成為角色量產工廠。
 
-#### §7.1.1 儲存模型（M4.a 決策，2026-06-13）
+#### §7.1.1 儲存模型（M4.a 決策，2026-06-13；第五實體補齊 2026-06-13）
 
-四個實體均持久化於各專案資料夾內的 `memory.sqlite`（與顧問 sessions 表同一檔案）。
+五個實體均持久化於各專案資料夾內的 `memory.sqlite`（與顧問 sessions 表同一檔案）。
 
 | 實體 | SQLite 表名 | 主要欄位 |
 |---|---|---|
@@ -974,11 +974,13 @@ project workspace 的 conversation history 不可一次完整渲染所有訊息�
 | DatasetPack | `dataset_packs` | `id`, `project_id`, `source`, `cleaning_status`, `tags` (JSON), `license`, `split_strategy`, `members` (JSON), `created_at`, `updated_at` |
 | TrainingRecipe | `training_recipes` | `id`, `project_id`, `base_model`, `rank`, `epochs`, `optimizer`, `caption_strategy`, `created_at`, `updated_at` |
 | LoraPreset | `lora_presets` | `id`, `project_id`, `name`, `layers` (JSON array of `{kind, lora_ref, weight}`), `created_at`, `updated_at` |
+| ImageToVideoRecipe | `i2v_recipes` | `id`, `project_id`, `name`, `workflow_kind` (e.g. animatediff / svd), `frames`, `fps`, `motion_strength`, `notes`, `created_at`, `updated_at` |
 
 - 實作位置：`core/training/asset_store.py` (`AssetStore` class)
-- Pydantic schemas：`core/models/schemas.py`（`CharacterSheet`, `DatasetPack`, `TrainingRecipe`, `LoraPreset` 及各 CreateRequest / UpdateRequest）
-- REST API：`/api/v1/projects/{project_id}/characters`, `/dataset-packs`, `/training-recipes`, `/lora-presets`
+- Pydantic schemas：`core/models/schemas.py`（`CharacterSheet`, `DatasetPack`, `TrainingRecipe`, `LoraPreset`, `ImageToVideoRecipe` 及各 CreateRequest / UpdateRequest）
+- REST API：`/api/v1/projects/{project_id}/characters`, `/dataset-packs`, `/training-recipes`, `/lora-presets`, `/i2v-recipes`
 - 訓練執行（kohya_ss executor）延後至 M4.c。
+- `ImageToVideoRecipe` 為可重用模板；來源 accepted image 在套用時傳入，不存在 recipe 內（與 `TrainingRecipe` 不綁定 dataset 的設計一致）。
 
 ### 7.2 TTS Voice Clone
 

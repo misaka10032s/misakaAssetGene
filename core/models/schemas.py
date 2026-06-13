@@ -687,5 +687,47 @@ class LoraPresetUpdateRequest(BaseModel):
     layers: list[LoraLayer] | None = None
 
 
+# ---------------------------------------------------------------------------
+# §7.1.1 — ImageToVideoRecipe (fifth entity: image-to-video reusable recipe)
+# ---------------------------------------------------------------------------
+
+class ImageToVideoRecipe(BaseModel):
+    """Spec §7.1.1 — reusable recipe template for image-to-video workflows.
+
+    The source accepted-image is supplied at apply-time, NOT stored here —
+    this is a reusable template, consistent with TrainingRecipe not binding a dataset.
+    Targets ComfyUI AnimateDiff / SVD workflows (spec §6.1 / §7.1.1 line 963).
+    """
+
+    id: str
+    project_id: str
+    name: str                    # human-readable recipe name
+    workflow_kind: str           # e.g. animatediff / svd / image-to-video
+    frames: int                  # total frames to generate
+    fps: int                     # output frames per second
+    motion_strength: float       # motion module strength (0.0–1.0 typical range)
+    notes: str = ""              # optional usage notes
+    created_at: datetime
+    updated_at: datetime
+
+
+class ImageToVideoRecipeCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    workflow_kind: str = Field(min_length=1)
+    frames: int = Field(ge=1)
+    fps: int = Field(ge=1)
+    motion_strength: float = Field(ge=0.0)
+    notes: str = ""
+
+
+class ImageToVideoRecipeUpdateRequest(BaseModel):
+    name: str | None = None
+    workflow_kind: str | None = None
+    frames: int | None = Field(default=None, ge=1)
+    fps: int | None = Field(default=None, ge=1)
+    motion_strength: float | None = Field(default=None, ge=0.0)
+    notes: str | None = None
+
+
 ConversationEntry.model_rebuild()
 ProjectWorkspaceData.model_rebuild()

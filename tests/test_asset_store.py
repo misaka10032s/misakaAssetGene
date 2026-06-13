@@ -24,6 +24,8 @@ from core.models.schemas import (
     CharacterSheetUpdateRequest,
     DatasetPackCreateRequest,
     DatasetPackUpdateRequest,
+    ImageToVideoRecipeCreateRequest,
+    ImageToVideoRecipeUpdateRequest,
     LoraLayer,
     LoraPresetCreateRequest,
     LoraPresetUpdateRequest,
@@ -453,3 +455,190 @@ class TestLoraPresetAPI:
         pid = _project_id(client)
         assert client.get(f"/api/v1/projects/{pid}/lora-presets/missing").status_code == 404
         assert client.get("/api/v1/projects/ghost/lora-presets").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# AssetStore unit tests — ImageToVideoRecipe
+# ---------------------------------------------------------------------------
+
+class TestImageToVideoRecipeStore:
+    def test_create_and_get_roundtrip(self, tmp_path: Path) -> None:
+        store = AssetStore(tmp_path / "memory.sqlite")
+        req = ImageToVideoRecipeCreateRequest(
+            name="AnimateDiff Portrait Loop",
+            workflow_kind="animatediff",
+            frames=24,
+            fps=8,
+            motion_strength=0.85,
+            notes="Preferred for character closeups",
+        )
+        created = store.create_i2v_recipe("proj-a", req)
+        assert created.name == "AnimateDiff Portrait Loop"
+        assert created.workflow_kind == "animatediff"
+        assert created.frames == 24
+        assert created.fps == 8
+        assert abs(created.motion_strength - 0.85) < 1e-9
+        assert created.notes == "Preferred for character closeups"
+        assert created.project_id == "proj-a"
+
+        fetched = store.get_i2v_recipe("proj-a", created.id)
+        assert fetched is not None
+        assert fetched.id == created.id
+        assert fetched.workflow_kind == "animatediff"
+
+    def test_list(self, tmp_path: Path) -> None:
+        store = AssetStore(tmp_path / "memory.sqlite")
+        store.create_i2v_recipe(
+            "proj-a",
+            ImageToVideoRecipeCreateRequest(name="A", workflow_kind="animatediff", frames=16, fps=8, motion_strength=0.7),
+        )
+        store.create_i2v_recipe(
+            "proj-a",
+            ImageToVideoRecipeCreateRequest(name="B", workflow_kind="svd", frames=25, fps=25, motion_strength=0.5),
+        )
+        items = store.list_i2v_recipes("proj-a")
+        assert len(items) == 2
+
+    def test_update(self, tmp_path: Path) -> None:
+        store = AssetStore(tmp_path / "memory.sqlite")
+        created = store.create_i2v_recipe(
+            "proj-a",
+            ImageToVideoRecipeCreateRequest(name="Orig", workflow_kind="animatediff", frames=16, fps=8, motion_strength=0.7),
+        )
+        updated = store.update_i2v_recipe(
+            "proj-a", created.id,
+            ImageToVideoRecipeUpdateRequest(name="Renamed", frames=32, fps=12, motion_strength=0.9),
+        )
+        assert updated is not None
+        assert updated.name == "Renamed"
+        assert updated.frames == 32
+        assert updated.fps == 12
+        assert abs(updated.motion_strength - 0.9) < 1e-9
+        assert updated.workflow_kind == "animatediff"  # unchanged
+        assert updated.updated_at >= created.updated_at
+
+    def test_delete(self, tmp_path: Path) -> None:
+        store = AssetStore(tmp_path / "memory.sqlite")
+        created = store.create_i2v_recipe(
+            "proj-a",
+            ImageToVideoRecipeCreateRequest(name="Del", workflow_kind="svd", frames=25, fps=25, motion_strength=0.5),
+        )
+        assert store.delete_i2v_recipe("proj-a", created.id) is True
+        assert store.get_i2v_recipe("proj-a", created.id) is None
+
+    def test_delete_nonexistent_returns_false(self, tmp_path: Path) -> None:
+        store = AssetStore(tmp_path / "memory.sqlite")
+        assert store.delete_i2v_recipe("proj-a", "ghost-id") is False
+
+    def test_project_scoping_isolation(self, tmp_path: Path) -> None:
+        store = AssetStore(tmp_path / "memory.sqlite")
+        created = store.create_i2v_recipe(
+            "proj-a",
+            ImageToVideoRecipeCreateRequest(name="OnlyA", workflow_kind="animatediff", frames=16, fps=8, motion_strength=0.7),
+        )
+        assert store.get_i2v_recipe("proj-b", created.id) is None
+        assert store.list_i2v_recipes("proj-b") == []
+
+    def test_persistence_survives_reopen(self, tmp_path: Path) -> None:
+        db = tmp_path / "memory.sqlite"
+        store_a = AssetStore(db)
+        created = store_a.create_i2v_recipe(
+            "proj-a",
+            ImageToVideoRecipeCreateRequest(name="Persist", workflow_kind="animatediff", frames=16, fps=8, motion_strength=0.7),
+        )
+        store_b = AssetStore(db)
+        fetched = store_b.get_i2v_recipe("proj-a", created.id)
+        assert fetched is not None
+        assert fetched.name == "Persist"
+
+    def test_get_missing_returns_none(self, tmp_path: Path) -> None:
+        store = AssetStore(tmp_path / "memory.sqlite")
+        assert store.get_i2v_recipe("proj-a", "nonexistent") is None
+
+    def test_update_missing_returns_none(self, tmp_path: Path) -> None:
+        store = AssetStore(tmp_path / "memory.sqlite")
+        result = store.update_i2v_recipe("proj-a", "ghost", ImageToVideoRecipeUpdateRequest(name="X"))
+        assert result is None
+
+    def test_optional_notes_defaults_to_empty(self, tmp_path: Path) -> None:
+        store = AssetStore(tmp_path / "memory.sqlite")
+        created = store.create_i2v_recipe(
+            "proj-a",
+            ImageToVideoRecipeCreateRequest(name="No Notes", workflow_kind="animatediff", frames=16, fps=8, motion_strength=0.7),
+        )
+        assert created.notes == ""
+        fetched = store.get_i2v_recipe("proj-a", created.id)
+        assert fetched is not None
+        assert fetched.notes == ""
+
+
+# ---------------------------------------------------------------------------
+# API-level route tests — ImageToVideoRecipe
+# ---------------------------------------------------------------------------
+
+class TestImageToVideoRecipeAPI:
+    def test_list_empty(self, client: TestClient) -> None:
+        pid = _project_id(client)
+        resp = client.get(f"/api/v1/projects/{pid}/i2v-recipes")
+        assert resp.status_code == 200
+        assert resp.json()["data"]["i2v_recipes"] == []
+
+    def test_create_get_list(self, client: TestClient) -> None:
+        pid = _project_id(client)
+        body = {
+            "name": "AnimateDiff Portrait",
+            "workflow_kind": "animatediff",
+            "frames": 24,
+            "fps": 8,
+            "motion_strength": 0.85,
+            "notes": "test note",
+        }
+        resp = client.post(f"/api/v1/projects/{pid}/i2v-recipes", json=body)
+        assert resp.status_code == 200
+        recipe_id = resp.json()["data"]["i2v_recipe"]["id"]
+
+        resp2 = client.get(f"/api/v1/projects/{pid}/i2v-recipes/{recipe_id}")
+        assert resp2.status_code == 200
+        data = resp2.json()["data"]["i2v_recipe"]
+        assert data["name"] == "AnimateDiff Portrait"
+        assert data["workflow_kind"] == "animatediff"
+        assert data["frames"] == 24
+
+        resp3 = client.get(f"/api/v1/projects/{pid}/i2v-recipes")
+        assert len(resp3.json()["data"]["i2v_recipes"]) == 1
+
+    def test_update(self, client: TestClient) -> None:
+        pid = _project_id(client)
+        resp = client.post(
+            f"/api/v1/projects/{pid}/i2v-recipes",
+            json={"name": "Orig", "workflow_kind": "animatediff", "frames": 16, "fps": 8, "motion_strength": 0.7},
+        )
+        rid = resp.json()["data"]["i2v_recipe"]["id"]
+        patch = client.patch(
+            f"/api/v1/projects/{pid}/i2v-recipes/{rid}",
+            json={"name": "Renamed", "frames": 32},
+        )
+        assert patch.status_code == 200
+        assert patch.json()["data"]["i2v_recipe"]["name"] == "Renamed"
+        assert patch.json()["data"]["i2v_recipe"]["frames"] == 32
+
+    def test_delete(self, client: TestClient) -> None:
+        pid = _project_id(client)
+        resp = client.post(
+            f"/api/v1/projects/{pid}/i2v-recipes",
+            json={"name": "ToDelete", "workflow_kind": "svd", "frames": 25, "fps": 25, "motion_strength": 0.5},
+        )
+        rid = resp.json()["data"]["i2v_recipe"]["id"]
+        del_resp = client.delete(f"/api/v1/projects/{pid}/i2v-recipes/{rid}")
+        assert del_resp.status_code == 200
+        assert client.get(f"/api/v1/projects/{pid}/i2v-recipes/{rid}").status_code == 404
+
+    def test_404_unknown_project(self, client: TestClient) -> None:
+        resp = client.get("/api/v1/projects/ghost-project/i2v-recipes")
+        assert resp.status_code == 404
+
+    def test_404_unknown_recipe(self, client: TestClient) -> None:
+        pid = _project_id(client)
+        assert client.get(f"/api/v1/projects/{pid}/i2v-recipes/no-such-id").status_code == 404
+        assert client.patch(f"/api/v1/projects/{pid}/i2v-recipes/no-such-id", json={}).status_code == 404
+        assert client.delete(f"/api/v1/projects/{pid}/i2v-recipes/no-such-id").status_code == 404
