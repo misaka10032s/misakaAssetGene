@@ -150,12 +150,14 @@ kohya_ss executor / 訓練觸發邏輯延後至 M4.c，不在本 sub-phase 內�
 **問題**：training plan 如何引用已選擇的實體 ID？  
 **結論**：`ConsultantAnalysis` 新增五個 training 擴充欄位（`is_training_flow`、`training_character_sheet_id`、`training_dataset_pack_id`、`training_recipe_id`、`training_lora_preset_id`、`training_i2v_recipe_id`）。在 Summary → Generate 邊（`engine._run_clarify`）從 `session.slots` 取出各 slot 值並以 `model_copy(update=...)` 填入 plan，使 plan 成為帶 entity ID 引用的結構化規劃資料。非訓練流時所有欄位為空值，向後相容。
 
+**M4.b review fix（da2f7fa → 修正）**：原實作的 slot 合併只允許 `REQUIRED_SLOTS` 鍵，導致 `i2v_recipe` 被靜默丟棄，`training_i2v_recipe_id` 永遠為 `None`（truthful-delivery 缺陷）。修正：在 `state_machine.py` 新增 `OPTIONAL_SLOTS` dict 與 `optional_slots_for()` accessor；`engine.py` slot 合併改為允許 required ∪ optional 鍵集，選填 slot 得以持久化進 `session.slots`。Checklist 完成判定（`is_checklist_complete` / `missing_slots`）仍只查 `REQUIRED_SLOTS`，`i2v_recipe` 缺席不阻擋流程。`training_i2v_recipe_id` 在 user 提供 `i2v_recipe` slot 時從 `session.slots` 填入 plan；未提供時維持 `None`。
+
 ### 9.5 執行步驟（§7.1 sequence）
 **問題**：訓練流的 execution_steps 應涵蓋哪些階段？  
 **結論**：6 個必選步驟：(a) 確認 CharacterSheet → (b) 確認 DatasetPack → (c) 確認 TrainingRecipe → (d) 確認 LoraPreset → 訓練 LoRA（kohya_ss） → 批次生成（comfyui）。若 prompt 含語音克隆關鍵詞，插入 GPT-SoVITS 步驟；若含影片關鍵詞，附加 i2v 步驟。訓練執行（M4.c）不在此 phase。
 
 ### 9.6 驗證
-`uv run --extra dev pytest tests/ -q` → **212 passed, 0 failed**（含新增 41 個測試在 `tests/test_training_flow.py`）。涵蓋：訓練意圖偵測 14 cases、REQUIRED_SLOTS 驗證 4 cases、checklist 進展 5 cases、plan 實體 ID 引用 5 cases、建議卡片發射 9 cases、summary/next_step 3 cases、session persistence 1 case。
+`uv run --extra dev pytest tests/ -q` → **214 passed, 0 failed**（含 43 個測試在 `tests/test_training_flow.py`）。涵蓋：訓練意圖偵測 14 cases、REQUIRED_SLOTS 驗證 4 cases、checklist 進展 5 cases（含 optional slot 缺席不阻擋）、plan 實體 ID 引用 7 cases（含 `training_i2v_recipe_id` 填入與 None 兩向）、建議卡片發射 9 cases、summary/next_step 3 cases、session persistence 1 case。M4.b review fix（optional i2v_recipe slot 持久化）已驗證通過。
 
 **狀態：已完成**
 

@@ -28,6 +28,14 @@ REQUIRED_SLOTS: dict[str, list[str]] = {
     Modality.TRAINING.value: ["character_sheet", "dataset_pack", "training_recipe", "lora_preset"],
 }
 
+# Optional persisted slot keys per modality. These are accepted and stored in
+# ``session.slots`` but do NOT gate checklist completion — ``is_checklist_complete``
+# / Summary→Generate readiness depend only on ``REQUIRED_SLOTS``.
+OPTIONAL_SLOTS: dict[str, list[str]] = {
+    # spec §7.1.1 (e) — i2v_recipe is explicitly marked 選填 (optional).
+    Modality.TRAINING.value: ["i2v_recipe"],
+}
+
 # Legal forward transitions. Refine can loop back to Generate; any state can be
 # abandoned back to Intake (handled separately as a reset).
 _ALLOWED_TRANSITIONS: dict[ConsultantState, set[ConsultantState]] = {
@@ -44,6 +52,17 @@ def required_slots_for(modality: Modality | None) -> list[str]:
     """Return the required checklist slot keys for a modality."""
     key = modality.value if modality else Modality.TEXT.value
     return list(REQUIRED_SLOTS.get(key, REQUIRED_SLOTS[Modality.TEXT.value]))
+
+
+def optional_slots_for(modality: Modality | None) -> list[str]:
+    """Return the optional (non-gating) slot keys that may be persisted for a modality.
+
+    These keys are accepted by the engine slot-merge and stored in ``session.slots``
+    but are never checked by ``is_checklist_complete`` — their absence never blocks
+    the Clarify → Summary → Generate transition.
+    """
+    key = modality.value if modality else Modality.TEXT.value
+    return list(OPTIONAL_SLOTS.get(key, []))
 
 
 def missing_slots(modality: Modality | None, slots: dict[str, object]) -> list[str]:

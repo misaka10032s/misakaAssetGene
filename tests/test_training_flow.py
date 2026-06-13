@@ -191,8 +191,8 @@ class TestTrainingChecklistProgression:
         assert step.session.state is ConsultantState.SUMMARY
         assert step.missing_slots == []
 
-    def test_i2v_recipe_slot_is_accepted_but_not_required(self, tmp_path: Path) -> None:
-        """Supplying i2v_recipe in slots is allowed and accepted; absence is fine too."""
+    def test_i2v_recipe_slot_is_persisted_when_supplied(self, tmp_path: Path) -> None:
+        """Supplying i2v_recipe persists it in session.slots (optional but stored)."""
         engine = _engine(tmp_path)
         started = engine.start_session(
             "proj",
@@ -207,11 +207,29 @@ class TestTrainingChecklistProgression:
             ClarifyRequest(prompt="(continue)", modality=Modality.TRAINING),
             slots=all_slots,
         )
-        # i2v_recipe is not in REQUIRED_SLOTS so the checklist is already
-        # complete with just the four required keys.
+        # The four required slots are filled, so the checklist completes.
         assert step.session.state is ConsultantState.SUMMARY
-        # i2v_recipe key is NOT in REQUIRED_SLOTS whitelist; engine discards it.
-        # Verify it was silently dropped (slot whitelist enforcement).
+        # i2v_recipe is an optional slot: the engine must persist it, not drop it.
+        assert step.session.slots.get("i2v_recipe") == "i2v-id-001"
+
+    def test_i2v_recipe_slot_absence_does_not_block_flow(self, tmp_path: Path) -> None:
+        """Omitting i2v_recipe must not block checklist completion (truly optional)."""
+        engine = _engine(tmp_path)
+        started = engine.start_session(
+            "proj",
+            ClarifyRequest(prompt="訓練 LoRA", modality=Modality.TRAINING),
+        )
+        session_id = started.session.session_id
+
+        # Supply only the four required slots — no i2v_recipe.
+        step = engine.advance_session(
+            "proj", session_id,
+            ClarifyRequest(prompt="(continue)", modality=Modality.TRAINING),
+            slots=_complete_training_slots(),
+        )
+        # Checklist must complete and flow must reach Summary without i2v_recipe.
+        assert step.session.state is ConsultantState.SUMMARY
+        assert step.missing_slots == []
         assert "i2v_recipe" not in step.session.slots
 
 
@@ -260,6 +278,32 @@ class TestTrainingPlanEntityReferences:
         assert plan.training_dataset_pack_id == "dp-id-001"
         assert plan.training_recipe_id == "tr-id-001"
         assert plan.training_lora_preset_id == "lp-id-001"
+        # i2v_recipe was not supplied in _advance_to_generate; plan field must be None.
+        assert plan.training_i2v_recipe_id is None
+
+    def test_plan_i2v_recipe_id_populates_when_supplied(self, tmp_path: Path) -> None:
+        """When i2v_recipe is in slots, training_i2v_recipe_id must surface in the plan."""
+        engine = _engine(tmp_path)
+        started = engine.start_session(
+            "proj",
+            ClarifyRequest(prompt="訓練 LoRA 並製作影片", modality=Modality.TRAINING),
+        )
+        session_id = started.session.session_id
+        # Fill all required slots plus the optional i2v_recipe.
+        engine.advance_session(
+            "proj", session_id,
+            ClarifyRequest(prompt="(continue)", modality=Modality.TRAINING),
+            slots={**_complete_training_slots(), "i2v_recipe": "i2v-id-001"},
+        )
+        # Summary -> Generate (plan is emitted here).
+        data = engine.advance_session(
+            "proj", session_id,
+            ClarifyRequest(prompt="(continue)", modality=Modality.TRAINING),
+        )
+        assert data.session.state is ConsultantState.GENERATE
+        plan = data.session.plan
+        assert plan is not None
+        assert plan.training_i2v_recipe_id == "i2v-id-001"
 
     def test_plan_has_training_execution_steps(self, tmp_path: Path) -> None:
         engine = _engine(tmp_path)

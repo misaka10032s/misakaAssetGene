@@ -109,12 +109,16 @@ class ConsultantEngine:
         slots: dict[str, object],
         accept: bool,
     ) -> ConsultantSessionData:
-        # Merge newly supplied slots into the session record, whitelisting only
-        # keys defined in the modality's required checklist. Unknown keys are
+        # Merge newly supplied slots into the session record, whitelisting keys
+        # that are either required or optional for the modality. Unknown keys are
         # logged and discarded to prevent uncontrolled state growth.
+        # NOTE: optional slots are persisted here but do NOT gate checklist
+        # completion — ``is_checklist_complete`` consults only ``REQUIRED_SLOTS``.
         if slots:
             effective_mod = request.modality or session.modality
-            allowed_keys = set(state_machine.required_slots_for(effective_mod))
+            required_keys = set(state_machine.required_slots_for(effective_mod))
+            optional_keys = set(state_machine.optional_slots_for(effective_mod))
+            allowed_keys = required_keys | optional_keys
             unknown = {k: v for k, v in slots.items() if k not in allowed_keys}
             if unknown:
                 import logging
