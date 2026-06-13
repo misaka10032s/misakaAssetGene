@@ -82,3 +82,17 @@
 **結論**：M2–M5 的 bullet 點已重新對齊至各 spec gap（§5.11、§5.12/§4.1.1、§5.13、§5.14、§6.2、§7.1.1、§8.2）。詳見 `.plan/DEVELOPMENT_PLAN.md §4`。
 
 **狀態：已完成**
+
+---
+
+## 6. 2026-06-13 — M3(b) 離線三態 + VRAM Warm
+
+### 6.1 VRAM Scheduler Warm 實作範圍（§3.4 釐清）
+**問題**：§3.4 未明確界定 Warm/Active/Cold 治理哪些模型；ComfyUI 等外部 worker 自管顯存，排程器是否該插手？  
+**結論**：**已完成**。三態僅治理 in-process 受管模型（本機 LLM / embedding 權重）；外部 HTTP worker 不在範圍。已實作 `core/scheduler/vram.py` `ModelScheduler`（budget 可注入、clock 可注入、transition log），轉移：Active→Warm（idle/VRAM 壓力）、Warm→Active（快速還原）、Warm→Cold（idle/RAM 壓力）、RAM<16GB 跳過 Warm。spec §3.4 + v0.9.2 changelog 已標註。11 條 transition matrix 測試通過。
+
+### 6.2 離線「有效三態」（§11.5 釐清）
+**問題**：§11.5 定義三**模式**（Auto/Always Offline/Always Online），但 gating 需要的是執行期**有效狀態**；degraded（cloud 斷但本機 LLM 在）未明確命名。  
+**結論**：**已完成**。導入有效狀態 ONLINE / DEGRADED / OFFLINE（`core/network/state.py`）。`NetworkStateService` 由模式 + cloud/local 探測解析狀態並記錄切換；`core/llm/router.py:gate_providers` 在非 ONLINE 時將 cloud provider 標記 DISABLED。API snapshot 新增 `state`/`local_available`/`recent_transitions`，前端設定頁顯示 badge 與切換記錄。spec §11.5 + v0.9.2 changelog 已標註。12 條測試通過。
+
+**狀態：已完成**

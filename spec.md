@@ -180,6 +180,7 @@ repo/
 
 ### 3.4 VRAM Scheduler — 三態熱切換
 > v0.3: 新增章節，明確 Active/Warm/Cold 狀態轉移。
+> v0.9.2: 釐清 Warm（M3）實作範圍——三態僅治理 **in-process 受管模型**（本機 LLM / embedding 權重）；外部 HTTP worker（ComfyUI 等）自行管理顯存，不在排程器範圍內。budget（VRAM/RAM）可注入。實作見 `core/scheduler/vram.py`。
 
 **三態**：
 
@@ -1290,6 +1291,7 @@ AI 解釋路徑：讀 `.env` 有沒有 API key；沒有就提示「先取得一�
 
 ### 11.5 離線模式
 > v0.3: 新增章節。
+> v0.9.2: 釐清「三模式」與「有效三態」的關係——使用者選 Auto/Always Offline/Always Online（模式），執行期解析為 ONLINE / DEGRADED（cloud 不可達但本機 LLM 可用）/ OFFLINE（皆不可達）三種**有效狀態**用於 provider gating。cloud provider 僅在 ONLINE 可用。實作見 `core/network/service.py`、`core/llm/router.py`。
 
 #### 核心定位
 
@@ -1779,6 +1781,10 @@ misakaAssetGene/
 ---
 
 ## Changelog
+
+### v0.9.2 (2026-06-13)
+- **§3.4 釐清（M3 Warm 實作範圍）**：VRAM Scheduler 的 Active/Warm/Cold 三態僅治理 **in-process 受管模型**（本機 LLM / embedding 權重，應用程式可自行在 VRAM/RAM/Disk 間搬移者）。外部 HTTP worker（如 ComfyUI）自行管理顯存，不在排程器治理範圍，排程器不對其下達裝置擺放指令。預設 timeout：LLM `idle_offload_sec=300`、生成模型 `=180`、`cold_offload_sec=1800`；系統 RAM < 16GB 時跳過 Warm（Active 直接→Cold）。budget（VRAM/RAM，MB）可由設定注入。實作：`core/scheduler/vram.py` `ModelScheduler`/`ManagedModel`/`SchedulerBudget`。
+- **§11.5 釐清（有效三態 effective state）**：§11.5 定義三種**模式**（Auto/Always Offline/Always Online）；執行期由模式 + 即時探測解析為三種**有效狀態**用於 gating：`ONLINE`（外網可達，cloud provider 允許）/ `DEGRADED`（cloud 不可達但本機 Ollama 可用，僅本機運作、cloud 停用）/ `OFFLINE`（外網與本機 LLM 皆不可達，AI 功能退回 hand-crafted）。cloud provider 僅在 `ONLINE` 可用（離線矩陣「Cloud API 對話 ✗ 自動 disable」），其餘狀態標記為 DISABLED 供 UI 灰掉。狀態切換記錄於 snapshot（`recent_transitions`，最多 20 筆）。實作：`core/network/service.py`、`core/llm/router.py:gate_providers`。
 
 ### v0.9.1 (2026-06-13)
 - **§5.13 修訂（live-first readiness）**：`readiness_note` 改以 live worker 為準。worker 在執行中（health check 有回應）時，readiness 由 live server 推導——ComfyUI 查 `object_info/CheckpointLoaderSimple` 取實際可載入的 checkpoint；repo-clone / 依賴安裝 / 本機 checkpoint 檢查僅在 worker 未執行時適用。修正 standalone ComfyUI（自帶模型目錄、未在 `workers/comfyui` clone）被誤報為未安裝而導致 job blocked、`/jobs/execute-ready` 靜默略過全部 job 的 live e2e 缺陷。
