@@ -480,3 +480,74 @@ def test_registry_commercial_is_bool_or_null() -> None:
                 assert val is None or isinstance(val, bool), (
                     f"Model {model.get('name')!r} in {category!r}: commercial={val!r} is not bool or null"
                 )
+
+
+# ---------------------------------------------------------------------------
+# 7. Production-path: /api/v1/projects/{id}/license-report route wiring
+#
+# Guards that registry_path is passed to generate_report() in the live endpoint,
+# NOT just in tests.  If the wiring is reverted (registry_path omitted from the
+# call site), the registry lookup returns {} and nsfw stays None — this test fails.
+# ---------------------------------------------------------------------------
+
+def test_license_report_endpoint_delivers_registry_nsfw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET /api/v1/projects/{id}/license-report must return registry-derived nsfw (not None).
+
+    gpt-sovits has no nsfw field in workers/manifest.json; its value must come
+    from registry.json (entry "GPT-SoVITS", nsfw: false).  The test fails if
+    registry_path is not wired at the call site.
+    """
+    from starlette.testclient import TestClient
+
+    import core.main as main
+    from core.models.schemas import GenerationJob, GenerationJobStatus, Modality
+    from core.project.manager import ProjectManager
+
+    manager = ProjectManager(tmp_path / "projects")
+    monkeypatch.setattr(main, "project_manager", manager)
+    monkeypatch.setattr(main.generation_service, "project_manager", manager)
+    client = TestClient(main.app)
+
+    # Create a project
+    resp = client.post("/api/v1/projects", json={"name": "WiringTest", "type": "RPG", "synopsis": "s"})
+    assert resp.status_code == 200, resp.text
+    project_id = resp.json()["data"]["project"]["id"]
+
+    # Inject a job using worker "gpt-sovits" — manifest has no nsfw field for this worker,
+    # so nsfw can only come from the registry entry "GPT-SoVITS" (nsfw: false).
+    _, project_dir = manager.get_project(project_id)
+    now = datetime.now(timezone.utc)
+    job = GenerationJob(
+        id="job-wiring-test",
+        project_id=project_id,
+        title="Test voice",
+        modality=Modality.VOICE,
+        asset_type="voice",
+        status=GenerationJobStatus.PLANNED,
+        prompt="test",
+        summary="test",
+        worker="gpt-sovits",
+        created_at=now,
+        updated_at=now,
+    )
+    jobs_path = project_dir / "jobs.json"
+    jobs_path.write_text(
+        json.dumps({"jobs": [job.model_dump(mode="json")]}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    # Call the live endpoint
+    resp = client.get(f"/api/v1/projects/{project_id}/license-report")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    entries = data["entries"]
+    assert len(entries) == 1, f"Expected 1 entry, got: {entries}"
+    entry = entries[0]
+    assert entry["worker_name"] == "gpt-sovits"
+
+    # nsfw MUST be False (from registry "GPT-SoVITS"), never None.
+    # If registry_path is not wired at the call site this assertion fails.
+    assert entry["nsfw"] is False, (
+        f"nsfw={entry['nsfw']!r}: registry_path is NOT wired at the live call site — "
+        "got None instead of False from registry entry 'GPT-SoVITS'"
+    )

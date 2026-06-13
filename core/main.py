@@ -671,6 +671,7 @@ def project_license_report(project_id: str) -> ApiResponse:
         jobs=workspace.jobs,
         assets=workspace.assets,
         workers_service=workers_service,
+        registry_path=REPO_ROOT / "core" / "models" / "registry.json",
     )
     return success_response(MessageKey.SUCCESS_FETCH0, payload.model_dump(mode="json"))
 
@@ -689,6 +690,7 @@ def export_project_download(project_id: str, resolve_refs: bool = Query(default=
         jobs=workspace.jobs,
         assets=workspace.assets,
         workers_service=workers_service,
+        registry_path=REPO_ROOT / "core" / "models" / "registry.json",
     )
     export_path = project_export_service.export_project(
         project_dir=project_dir,

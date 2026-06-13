@@ -451,9 +451,19 @@ Delta fields: `prompt_delta`, `param_delta`, `mask_diff`, `recipe_diff`, `strate
 
 `core/project/export.py` 無需修改；`license_report` 為傳入的 dict，已自動攜帶 enriched 欄位。
 
-### 13.6 驗證
+### 13.6 驗證（M5.2 review fix — 2026-06-13）
 
-`uv run --extra dev pytest tests/ -q` → **356 passed, 3 warnings**（含 33 個新測試在 `tests/test_license_report.py`）。
+**Review-fix (M5.2 review):** `generate_report()` 的 `registry_path` 參數在兩個 live call site 均未傳入
+（`core/main.py` GET `/license-report` endpoint 與 export-download endpoint），導致 production 環境
+`nsfw`/`commercial` 永遠為 `None`（registry lookup 被跳過）。Fix: 兩處 call site 均補上
+`registry_path=REPO_ROOT / "core" / "models" / "registry.json"`。
+
+追加 production-path test `test_license_report_endpoint_delivers_registry_nsfw`（`tests/test_license_report.py` §7）：
+透過 TestClient 呼叫真實 `/api/v1/projects/{id}/license-report` route，注入使用 `gpt-sovits` worker 的 job
+（manifest 無 `nsfw` 欄位），斷言回傳的 `nsfw` 為 `False`（來自 registry entry `"GPT-SoVITS"`）。
+此測試在 registry_path 未傳入時必然失敗，確保 live wiring 被守護。
+
+`uv run --extra dev pytest tests/ -q` → **357 passed, 3 warnings**（含 34 個測試在 `tests/test_license_report.py`）。
 
 測試涵蓋：
 - commercial bool 讀取 7 cases（True / False / absent / null / 字串 true/false / 非法字串 + warning）
@@ -462,5 +472,6 @@ Delta fields: `prompt_delta`, `param_delta`, `mask_diff`, `recipe_diff`, `strate
 - summary counts 3 cases（多 worker totals / summary 型別 / empty）
 - export 整合 1 case（zip 內含 enriched license-report.json with summary）
 - registry 結構驗證 2 cases（所有 entry 有 nsfw 欄位、commercial 為 bool 或 null）
+- **production-path wiring 1 case**（live endpoint 透過 TestClient 驗證 registry_path 實際傳入）
 
-**狀態：已完成**
+**狀態：已完成（含 review fix）**
