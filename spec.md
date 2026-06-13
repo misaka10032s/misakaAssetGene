@@ -1,7 +1,7 @@
 # MisakaAssetGene — 專案規格書 (Spec)
 
-> **Version:** v0.9  
-> **Last Updated:** 2026-06-12  
+> **Version:** v0.9.1  
+> **Last Updated:** 2026-06-13  
 > 對話式 AI 創作顧問：整合圖像、文字台詞、聲音、影片的**生成 + 訓練**工作台，以專案為單位維持記憶與風格一致性，為不懂技術的個人創作者（遊戲開發、內容創作）而設計。
 
 ---
@@ -826,6 +826,7 @@ project workspace 必須把這份顧問解析落地為：
 
 ### 5.13 Worker runtime readiness
 > v0.9: 新增章節。
+> v0.9.1: 修訂為 **live-first** 語意（見章節末）。
 
 M1~M2 的 worker integration 不只要知道 repo 有沒有 clone；還必須提供：
 
@@ -838,6 +839,15 @@ M1~M2 的 worker integration 不只要知道 repo 有沒有 clone；還必須提
 例如：
 - ComfyUI server 已啟動但沒有 checkpoint 時，狀態應顯示 `running=true`，同時 `readiness_note=No ComfyUI checkpoint is installed.`
 - VoxCPM / GPT-SoVITS / ACE-Step 等 repo 已安裝但 server 未啟動時，應明確標示 `Worker server is not running.`
+
+#### Live-first readiness（v0.9.1 修訂）
+
+`readiness_note` 的唯一目的是回答「**這個 worker 現在能不能服務**」。因此判定必須以 **live worker 為準**，而非只看本機 `workers/<dir>` 檔案系統：
+
+- **當 health check 有回應（`is_running=true`）：** readiness 由 live worker 推導。對 ComfyUI，查詢 `GET <base>/object_info/CheckpointLoaderSimple`，以 server 實際可載入的 checkpoint enum 為準（涵蓋透過 `extra_model_paths` 掛載、或 standalone ComfyUI 自帶的模型目錄）。有 checkpoint → `readiness_note=null`（usable now）；無 → `No ComfyUI checkpoint is installed.`。此時**不得**因為本機未 clone repo 或 `workers/comfyui/models/checkpoints` 為空就回報 blocked。
+- **當 worker 未執行（`is_running=false`）：** repo-clone / 依賴安裝 / 本機 checkpoint 檢查才適用——這些描述的是「我們能否在本機啟動 / 管理它」，而非「能否使用它」。依序回報 `Repository is not installed.` → `Worker dependencies are not installed yet.` → `No ComfyUI checkpoint is installed.` → `Worker server is not running.`（或 startup log 末行）。
+- 生成路徑（ComfyUI adapter `_resolve_checkpoint_name`）必須與 readiness 採同一來源：live 可達時優先用 `object_info` 的 checkpoint 清單（排序後取首個，job 帶 `checkpoint`/`ckpt_name` 時可覆寫），不可達時才回退本機列檔。
+- **動機（live e2e 缺陷）：** 一個已在 health URL 正常服務的 standalone ComfyUI 曾被誤報「Repository is not installed.」/「No ComfyUI checkpoint is installed.」，導致 job 卡在 blocked、`/jobs/execute-ready` 靜默略過全部 job（不觸發任何生成），即使生成其實可正常運作。live-first 語意修正此誤判。
 
 ### 5.14 Conversation performance and consultant memory
 > v0.9: 新增章節。
@@ -1769,6 +1779,10 @@ misakaAssetGene/
 ---
 
 ## Changelog
+
+### v0.9.1 (2026-06-13)
+- **§5.13 修訂（live-first readiness）**：`readiness_note` 改以 live worker 為準。worker 在執行中（health check 有回應）時，readiness 由 live server 推導——ComfyUI 查 `object_info/CheckpointLoaderSimple` 取實際可載入的 checkpoint；repo-clone / 依賴安裝 / 本機 checkpoint 檢查僅在 worker 未執行時適用。修正 standalone ComfyUI（自帶模型目錄、未在 `workers/comfyui` clone）被誤報為未安裝而導致 job blocked、`/jobs/execute-ready` 靜默略過全部 job 的 live e2e 缺陷。
+- **ComfyUI adapter 修訂**：`_resolve_checkpoint_name` 改為 live-first（`object_info` 清單，排序首個，支援 `checkpoint`/`ckpt_name` job 覆寫），不可達時回退本機列檔，與 readiness 採同一事實來源。
 
 ### v0.9 (2026-06-12)
 - **決策記錄（2026-06-12 PM 決策）**
