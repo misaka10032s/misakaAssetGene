@@ -1,5 +1,6 @@
 import {
   ConsultantState,
+  CrossRefStatus,
   GenerationJobStatus,
   MessageKey,
   Modality,
@@ -766,4 +767,84 @@ export interface VersionDiffResponse {
   recipe_diff: { from: string | null; to: string | null } | null;
   strategy_diff: { from: string | null; to: string | null } | null;
   backend_diff: { from: string | null; to: string | null } | null;
+}
+
+// ---------------------------------------------------------------------------
+// §5.6.2 / §5.6.3 / M5.3 — Cross-project reference types
+// Field names mirror CrossRefEntry / CrossRefListData in core/models/schemas.py.
+// ---------------------------------------------------------------------------
+
+/**
+ * One resolved cross-project reference entry (spec §5.6.2 / §5.6.3).
+ * Backend emits via CrossRefEntry Pydantic model.
+ */
+export interface CrossRefEntry {
+  /** Raw @ref string, e.g. "@adventure_rpg/char/kyuoka#v3". */
+  ref: string;
+  /** Resolution status: live | outdated | external | broken. */
+  status: CrossRefStatus;
+  /** Resolved file path, or null when broken. */
+  path: string | null;
+  /** SHA-256 of the resolved file, or null. */
+  hash: string | null;
+  /** SHA-256 recorded in origins.json, or null. */
+  origin_hash: string | null;
+  /** Human-readable resolver note from the backend. */
+  message: string;
+}
+
+/**
+ * Response envelope for GET /api/v1/projects/{project_id}/refs.
+ * Backend key: the data object is CrossRefListData.model_dump().
+ * project_id, refs, cycle_warning are the three top-level keys.
+ */
+export interface CrossRefListData {
+  project_id: string;
+  refs: CrossRefEntry[];
+  /** DFS-detected cycle paths; each inner list is one cycle (spec §5.6.5). */
+  cycle_warning: string[][];
+}
+
+/**
+ * One result entry from a materialize operation (spec §5.6.6 / §16 Q4).
+ * Backend key: MaterializeResultEntry.
+ */
+export interface MaterializeResultEntry {
+  ref: string;
+  /** "materialized" | "already_external" | "broken" */
+  status: string;
+  local_path: string | null;
+  provenance: Record<string, unknown> | null;
+  message: string;
+}
+
+/**
+ * Response envelope for POST /api/v1/projects/{project_id}/refs/materialize.
+ * Backend key: MaterializeData.model_dump().
+ */
+export interface MaterializeData {
+  project_id: string;
+  materialized: MaterializeResultEntry[];
+  broken: MaterializeResultEntry[];
+  total: number;
+}
+
+/**
+ * Optional request body for POST /refs/materialize (spec §5.6.6).
+ * Omit refs to materialize all refs in the project.
+ */
+export interface MaterializePayload {
+  refs?: string[] | null;
+}
+
+/**
+ * Response data for POST /api/v1/projects/import (spec §5.5).
+ * Backend returns a plain dict from import_project_zip; keys are:
+ * project_id, project_name, collision_resolved, origin_id.
+ */
+export interface ProjectImportData {
+  project_id: string;
+  project_name: string;
+  collision_resolved: boolean;
+  origin_id: string | null;
 }

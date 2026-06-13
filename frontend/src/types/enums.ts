@@ -165,3 +165,18 @@ export enum VersionNodeStatus {
   /** Asset generation failed. */
   FAILED = "failed",
 }
+
+/**
+ * Cross-project reference resolution status (spec §5.6.3 / M5.3).
+ * Mirrors the Python CrossRefStatus / RefStatus enum exactly.
+ * live: source reachable, file exists, hash matches origins.json.
+ * outdated: source reachable, file exists, but hash mismatch — needs refresh.
+ * external: source not reachable; served from local _external/ copy.
+ * broken: no live file and no valid _external/ copy — user action required.
+ */
+export enum CrossRefStatus {
+  LIVE = "live",
+  OUTDATED = "outdated",
+  EXTERNAL = "external",
+  BROKEN = "broken",
+}

@@ -16,6 +16,7 @@ import type {
   ConsultantSessionStartPayload,
   ConversationHistoryData,
   CreateProjectPayload,
+  CrossRefListData,
   DatasetPack,
   DatasetPackCreatePayload,
   DatasetPackListResponse,
@@ -34,8 +35,11 @@ import type {
     LoraPresetListResponse,
     LoraPresetSingleResponse,
     LoraPresetUpdatePayload,
+    MaterializeData,
+    MaterializePayload,
     ModelDownloadPayload,
     ModelDownloadResult,
+    ProjectImportData,
     ProjectLicenseReport,
     ProjectListData,
     ProjectSchemaData,
@@ -542,6 +546,55 @@ export const apiClient = {
 
   exportProjectDownloadUrl: (projectId: string, resolveRefs = true) =>
     `${appEnv.apiBaseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/export/download?resolve_refs=${resolveRefs ? "true" : "false"}`,
+
+  // ---------------------------------------------------------------------------
+  // §5.6.2 / §5.6.3 / §5.6.6 / M5.3 — Cross-project reference endpoints
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Lists all cross-project references for a project with resolved statuses (spec §5.6.2).
+   * Backend key: data → CrossRefListData { project_id, refs, cycle_warning }.
+   */
+  listProjectRefs: (projectId: string) =>
+    request<CrossRefListData>(`/api/v1/projects/${encodeURIComponent(projectId)}/refs`),
+
+  /**
+   * Lists cross-project references for a single asset (spec §5.6.2).
+   * Backend key: data → CrossRefListData { project_id, refs, cycle_warning }.
+   */
+  listAssetRefs: (projectId: string, assetId: string) =>
+    request<CrossRefListData>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/refs/${encodeURIComponent(assetId)}`,
+    ),
+
+  /**
+   * Materializes cross-project references into local _external/ copies (spec §5.6.6).
+   * This is EXPLICIT / OPT-IN — never called automatically.
+   * Backend key: data → MaterializeData { project_id, materialized, broken, total }.
+   */
+  materializeProjectRefs: (projectId: string, payload: MaterializePayload = {}) =>
+    request<MaterializeData>(`/api/v1/projects/${encodeURIComponent(projectId)}/refs/materialize`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  // ---------------------------------------------------------------------------
+  // §5.5 / M5.8 — Project import (drag-drop archive)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Imports a *.misaka.zip project archive (spec §5.5).
+   * Accepts only .zip; backend validates SHA-256 manifest and guards against zip-slip.
+   * Backend key: data → ProjectImportData { project_id, project_name, collision_resolved, origin_id }.
+   */
+  importProject: (file: File) => {
+    const formData = new FormData();
+    formData.set("file", file);
+    return request<ProjectImportData>("/api/v1/projects/import", {
+      method: "POST",
+      body: formData,
+    });
+  },
 
   // ---------------------------------------------------------------------------
   // §8.2 — Version Tree DAG endpoints (M5.6)

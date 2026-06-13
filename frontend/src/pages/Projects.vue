@@ -5,7 +5,9 @@ import { useRouter } from "vue-router";
 
 import { useAppStore } from "@/stores/app";
 import { useWindowSize } from "@/composables/useWindowSize";
-import type { CreateProjectPayload } from "@/types/api";
+import CrossProjectRefsPanel from "@/components/CrossProjectRefsPanel.vue";
+import ProjectImportDropZone from "@/components/ProjectImportDropZone.vue";
+import type { CreateProjectPayload, ProjectImportData } from "@/types/api";
 import { PageKey, ProviderStatus } from "@/types/enums";
 
 const appStore = useAppStore();
@@ -88,6 +90,15 @@ function mergeSynopsisSuggestion(): void {
 
 function getProjectTypeLabel(projectType: string): string {
   return appStore.projectTypes.includes(projectType) ? t(`projectType.${projectType}`) : projectType;
+}
+
+/** Called when a project archive is successfully imported; refreshes the project list. */
+async function onProjectImported(_result: ProjectImportData): Promise<void> {
+  try {
+    await appStore.loadProjects();
+  } catch {
+    // Silently ignore — the import itself already succeeded.
+  }
 }
 </script>
 
@@ -181,6 +192,20 @@ function getProjectTypeLabel(projectType: string): string {
         <p class="mt-3 app-muted">{{ $t("project.schemaDescription") }}</p>
         <pre class="mt-3 whitespace-pre-wrap break-all text-xs text-app-muted">{{ appStore.projectSchema }}</pre>
       </details>
+
+      <!-- Project import drag-drop (spec §5.5 / M5.8) -->
+      <div class="app-panel">
+        <h2 class="app-section-title">{{ $t("projectImport.title") }}</h2>
+        <p class="mt-1 app-muted">{{ $t("projectImport.description") }}</p>
+        <div class="mt-4">
+          <ProjectImportDropZone @imported="onProjectImported" />
+        </div>
+      </div>
     </div>
+  </section>
+
+  <!-- Cross-project refs panel — shown when a project is selected (spec §5.6.3 / M5.8) -->
+  <section v-if="appStore.currentProjectId" class="mt-4">
+    <CrossProjectRefsPanel :project-id="appStore.currentProjectId" />
   </section>
 </template>
