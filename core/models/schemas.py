@@ -522,17 +522,69 @@ class ConsultantPlanRecord(BaseModel):
 
 
 class LicenseReportEntry(BaseModel):
+    """Per-worker license report entry (spec §2 / §9.3 — M5.2).
+
+    Fields
+    ------
+    worker_name         : manifest key for this worker
+    display_name        : human-readable name
+    repo                : upstream git repository URL
+    recommended_reference / installed_reference : version strings
+    license             : SPDX id or raw license name; None = unknown
+    commercial          : True = confirmed commercial-use allowed;
+                          False = confirmed commercial-use NOT allowed;
+                          None = registry has no commercial field for this model
+                          (truthful-delivery: never guess)
+    attribution         : True = attribution required by this license;
+                          False = no attribution required;
+                          None = cannot be determined from available data
+    attribution_note    : short human-readable note on attribution requirement
+                          (e.g. "Apache-2.0 requires NOTICE file preservation")
+    nsfw                : True = model registry marks this worker/model as NSFW;
+                          False = explicitly not NSFW;
+                          None = not specified in registry (unknown)
+    job_count           : number of jobs using this worker in the project
+    asset_count         : number of accepted assets produced by this worker
+    modalities          : list of modality strings this worker was used for
+    readiness_note      : live readiness note from worker snapshot
+    """
+
     worker_name: str
     display_name: str
     repo: str
     recommended_reference: str
     installed_reference: str | None = None
     license: str | None = None
-    commercial: str | None = None
+    commercial: bool | None = None
+    attribution: bool | None = None
+    attribution_note: str | None = None
+    nsfw: bool | None = None
     job_count: int = 0
     asset_count: int = 0
     modalities: list[str] = Field(default_factory=list)
     readiness_note: str | None = None
+
+
+class LicenseReportSummary(BaseModel):
+    """Concise machine- and human-readable summary for the export-confirm dialog
+    (spec §2 / M5.2 export-summary data deliverable).
+
+    Counts apply to the set of workers/models that appear in the project's jobs.
+    ``unknown_*`` counts track entries where the field is None so the UI can
+    surface them as requiring manual review before a commercial release.
+    """
+
+    total_workers: int = 0
+    commercial_ok: int = 0
+    commercial_no: int = 0
+    commercial_unknown: int = 0
+    attribution_required: int = 0
+    attribution_not_required: int = 0
+    attribution_unknown: int = 0
+    nsfw_present: int = 0
+    nsfw_absent: int = 0
+    nsfw_unknown: int = 0
+    has_nsfw: bool = False
 
 
 class ProjectLicenseReport(BaseModel):
@@ -540,6 +592,7 @@ class ProjectLicenseReport(BaseModel):
     project_name: str
     generated_at: datetime | None = None
     entries: list[LicenseReportEntry] = Field(default_factory=list)
+    summary: LicenseReportSummary = Field(default_factory=LicenseReportSummary)
     warnings: list[str] = Field(default_factory=list)
 
 

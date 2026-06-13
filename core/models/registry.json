@@ -1,5 +1,6 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "schema_notes": "Added 'nsfw' boolean field (M5.2). null = unknown/not-specified; false = safe default for established models; true = explicitly NSFW-capable. Do not invent per-model NSFW values — only set true when the model is documented as NSFW-capable by its authors.",
   "categories": {
     "consultant_llm": [
       {
@@ -7,6 +8,7 @@
         "version": "3.6.0",
         "license": "Apache-2.0",
         "commercial": true,
+        "nsfw": false,
         "vram_min_gb": 12,
         "download_url": "hf://Qwen/Qwen3.6-14B-Instruct-GGUF"
       }
@@ -15,25 +17,32 @@
       {
         "name": "Flux.1-dev",
         "license": "Flux",
-        "commercial": false
+        "commercial": false,
+        "nsfw": null
       }
     ],
     "music": [
       {
         "name": "MusicGen",
-        "license": "CC-BY-NC-4.0"
+        "license": "CC-BY-NC-4.0",
+        "commercial": false,
+        "nsfw": false
       }
     ],
     "tts": [
       {
         "name": "GPT-SoVITS",
-        "license": "Apache-2.0"
+        "license": "Apache-2.0",
+        "commercial": true,
+        "nsfw": false
       }
     ],
     "video": [
       {
         "name": "Wan 2.1",
-        "license": "custom"
+        "license": "custom",
+        "commercial": null,
+        "nsfw": null
       }
     ]
   }
