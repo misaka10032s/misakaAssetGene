@@ -449,11 +449,15 @@ class GenerationService:
         if readiness_note:
             return readiness_note
         snapshot = self.workers_service.get_worker(worker_name)
+        # M3(a) live-first: if the worker is already running and readiness_note
+        # is None the worker is live-usable regardless of local install state.
+        # The is_installed / is_running fallbacks only apply when the worker is
+        # NOT running (i.e. we cannot reach it at all).
+        if snapshot.is_running:
+            return None
         if not snapshot.is_installed:
             return f"{snapshot.display_name} is not installed yet."
-        if not snapshot.is_running:
-            return f"{snapshot.display_name} is installed but not running."
-        return None
+        return f"{snapshot.display_name} is installed but not running."
 
     def _resolve_job_asset_path(self, project_dir: Path, asset_id: str | None) -> Path | None:
         if not asset_id:
