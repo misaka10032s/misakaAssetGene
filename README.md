@@ -17,8 +17,8 @@ npm run start:dev
 
 ### Port 與服務
 
-- Frontend: `http://127.0.0.1:7501`
-- Core API: `http://127.0.0.1:7500`
+- Frontend: `http://127.0.0.1:8400`
+- Core API: `http://127.0.0.1:8401`
 - Ollama: `http://127.0.0.1:11434`
 
 ### 常用指令
@@ -55,8 +55,8 @@ npm run start:dev
 
 ### Ports and services
 
-- Frontend: `http://127.0.0.1:7501`
-- Core API: `http://127.0.0.1:7500`
+- Frontend: `http://127.0.0.1:8400`
+- Core API: `http://127.0.0.1:8401`
 - Ollama: `http://127.0.0.1:11434`
 
 ### Common commands
@@ -93,8 +93,8 @@ npm run start:dev
 
 ### ポートとサービス
 
-- Frontend: `http://127.0.0.1:7501`
-- Core API: `http://127.0.0.1:7500`
+- Frontend: `http://127.0.0.1:8400`
+- Core API: `http://127.0.0.1:8401`
 - Ollama: `http://127.0.0.1:11434`
 
 ### よく使うコマンド

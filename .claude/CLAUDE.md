@@ -25,6 +25,22 @@
 - `.claude/rules/community-workflow.md`：開源貢獻與 review 流程
 - `.claude/rules/frontend-standards.md`：前端 i18n、型別、RWD、樣式與註解規範
 
+## Ports
+
+本機服務均綁定 `127.0.0.1`，port 由 `.env` 集中定義：
+
+- **Frontend** `http://127.0.0.1:8400`、**Core API** `http://127.0.0.1:8401`、**Ollama** `http://127.0.0.1:11434`
+
+**測試與正式環境的 port 必須相同（test == prod ports）。**
+
+### Browser testing & login flow
+- **Agent-driven browser verification → use the `Claude in Chrome` MCP only.** It drives one real, reused Chrome window via the extension. Do **not** start the `playwright` or `chrome-devtools-mcp` MCPs for ad-hoc checks — they spawn a fresh window/instance per run (window spam) and cost more. One reused window keeps verification cheap and visible.
+- **Cookie hygiene.** Claude-in-Chrome shares the profile's cookie jar, and cookies **ignore port** — so every local app on `127.0.0.1` shares one jar. Verify **one flow at a time**, prefer a **dedicated test Chrome profile** (not your daily one).
+- **Never auto-fill credentials.** If a page needs login, ask the user to log in manually and confirm before resuming.
+- **Test artifacts are gitignored** — screenshots, `final_runs/`, and `impeccable` output are never committed.
+
+> Note: MisakaAssetGene is a desktop Tauri app (not a browser-delivered web service). The browser-testing rules above apply when verifying the embedded WebView or the Vite dev-server URL during development.
+
 ## 開發模式與檢測規範
 
 1. **開發期診斷輸出必須受 mode / env 控制。**
