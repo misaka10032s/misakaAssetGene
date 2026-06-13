@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
+import { useI18n } from "vue-i18n";
 
 import { apiClient } from "@/api/client";
 import { useAppStore } from "@/stores/app";
@@ -8,6 +9,7 @@ import type { AssetRecord, ConsultantAnalysis, ConversationEntry, GenerationJob 
 import { Modality, PageKey } from "@/types/enums";
 
 const route = useRoute();
+const { t } = useI18n();
 const appStore = useAppStore();
 
 const projectId = computed<string>(() => String(route.params.projectId ?? ""));
@@ -209,6 +211,23 @@ async function executeReadyJobs(): Promise<void> {
     executingJobId.value = null;
   }
 }
+
+/** Human-readable batch summary from the last execute-ready call (spec §5.14). */
+const batchSummary = computed<string | null>(() => {
+  const result = appStore.lastBatchResult;
+  if (result === null) {
+    return null;
+  }
+  const parts: string[] = [];
+  if (result.executedCount > 0 || result.skipped.length === 0) {
+    parts.push(t("chat.batchResultExecuted", { count: result.executedCount }));
+  }
+  if (result.skipped.length > 0) {
+    const reasons = result.skipped.map((s) => s.reason).join("; ");
+    parts.push(t("chat.batchResultSkipped", { count: result.skipped.length, reasons }));
+  }
+  return parts.join(" / ");
+});
 
 function showRecipeControls(job: GenerationJob): boolean {
   return currentWorker(job) === "comfyui";
@@ -428,6 +447,8 @@ async function createTrainingJob(): Promise<void> {
             {{ $t("project.versionsAction") }}
           </RouterLink>
         </div>
+        <!-- Batch-execute summary: shows executed count + any skipped/blocked jobs (spec §5.14) -->
+        <p v-if="batchSummary" class="mt-1 text-sm app-muted">{{ batchSummary }}</p>
       </section>
 
       <section v-if="projectLicenseReport" class="app-panel grid gap-4">

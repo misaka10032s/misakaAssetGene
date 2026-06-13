@@ -2,6 +2,7 @@ import { appEnv } from "@/config/env";
 import type {
   ApiErrorResponse,
   ApiResponse,
+  BatchExecuteData,
   ClarifyPayload,
   ClarifyResult,
   ConsultantSession,
@@ -227,10 +228,11 @@ export const apiClient = {
       method: "POST",
     }),
   /**
-   * Executes all ready jobs, or a provided subset, and returns the refreshed workspace.
+   * Executes all ready jobs, or a provided subset.
+   * Returns a BatchExecuteData envelope with executed_count + skipped list (spec §5.14).
    */
   executeReadyProjectJobs: (projectId: string, jobIds: string[] = []) =>
-    request<ProjectWorkspaceData>(`/api/v1/projects/${projectId}/jobs/execute-ready`, {
+    request<BatchExecuteData>(`/api/v1/projects/${projectId}/jobs/execute-ready`, {
       method: "POST",
       body: JSON.stringify({ job_ids: jobIds }),
     }),

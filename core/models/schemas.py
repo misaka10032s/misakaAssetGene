@@ -410,6 +410,29 @@ class BatchExecuteRequest(BaseModel):
     job_ids: list[str] = Field(default_factory=list)
 
 
+class SkippedJobInfo(BaseModel):
+    """One entry per job silently skipped during a batch-execute (spec §5.14)."""
+
+    job_id: str
+    title: str
+    reason: str
+
+
+class BatchExecuteData(BaseModel):
+    """Response envelope for execute-ready (spec §5.14 batch honesty).
+
+    ``workspace`` carries the refreshed jobs/assets/plans identical to the
+    existing ProjectWorkspaceData.  ``executed_count`` and ``skipped`` surface
+    any jobs that were not attempted, so the frontend can show a truthful
+    summary (e.g. "executed 2, skipped 1: reason…") instead of silently
+    swallowing blocked jobs.
+    """
+
+    workspace: ProjectWorkspaceData
+    executed_count: int = 0
+    skipped: list[SkippedJobInfo] = Field(default_factory=list)
+
+
 class RefineRequest(BaseModel):
     """Request to refine an existing image asset version (spec §5.11 / §6.2).
 

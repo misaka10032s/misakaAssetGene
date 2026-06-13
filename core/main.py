@@ -29,6 +29,7 @@ from core.llm.service import optimize_synopsis as llm_optimize_synopsis
 from core.models.schemas import (
     ApiErrorResponse,
     ApiResponse,
+    BatchExecuteData,
     BatchExecuteRequest,
     ClarifyRequest,
     ConsultantSessionAdvanceRequest,
@@ -416,11 +417,17 @@ def execute_ready_project_jobs(project_id: str, payload: BatchExecuteRequest) ->
     if IS_DEV:
         logger.info("POST /api/v1/projects/%s/jobs/execute-ready count=%s", project_id, len(payload.job_ids))
     try:
-        result = generation_service.execute_ready_jobs(project_id, payload.job_ids)
+        result: BatchExecuteData = generation_service.execute_ready_jobs(project_id, payload.job_ids)
     except ProjectNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    if IS_DEV:
+        logger.info(
+            "execute-ready: executed=%d skipped=%d",
+            result.executed_count,
+            len(result.skipped),
+        )
     return success_response(MessageKey.SUCCESS_SWITCH0, result.model_dump(mode="json"))
 
 

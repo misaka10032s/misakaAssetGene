@@ -5,6 +5,7 @@ import { apiClient } from "@/api/client";
 import { appEnv } from "@/config/env";
 import type {
   AssetRecord,
+  BatchExecuteData,
   ClarifyPayload,
   ClarifyResult,
   ConsultantPlanRecord,
@@ -20,6 +21,7 @@ import type {
   ProjectLicenseReport,
   ProjectSummary,
   ProjectVersionGraph,
+  SkippedJobInfo,
   SynopsisOptimizeResult,
   TrainingJob,
   WorkerSmokeResult,
@@ -104,6 +106,8 @@ export const useAppStore = defineStore("app", () => {
   const projectTrainingJobs = ref<Record<string, TrainingJob[]>>({});
   const assetDrawerOpen = ref<boolean>(false);
   const workerSmokeResults = ref<Record<string, WorkerSmokeResult>>({});
+  /** Last batch-execute summary — exposed so the UI can show honest skip counts (spec §5.14). */
+  const lastBatchResult = ref<{ executedCount: number; skipped: SkippedJobInfo[] } | null>(null);
   let integrationRequest: Promise<IntegrationSnapshot> | null = null;
   let integrationLoadedAt = 0;
   let localLlmRequest: Promise<LocalLlmStatus> | null = null;
@@ -306,12 +310,15 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
-  async function executeReadyProjectJobs(projectId: string, jobIds: string[] = []): Promise<void> {
+  async function executeReadyProjectJobs(projectId: string, jobIds: string[] = []): Promise<BatchExecuteData> {
     try {
-      const response = await apiClient.executeReadyProjectJobs(projectId, jobIds);
-      applyWorkspaceSnapshot(projectId, response);
+      const result = await apiClient.executeReadyProjectJobs(projectId, jobIds);
+      // The new envelope wraps workspace inside result.workspace (spec §5.14).
+      applyWorkspaceSnapshot(projectId, result.workspace);
+      lastBatchResult.value = { executedCount: result.executed_count, skipped: result.skipped };
       lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
       errorMessageKey.value = null;
+      return result;
     } catch (error) {
       if (error instanceof apiClient.ApiClientError) {
         errorMessageKey.value = error.messageKey;
@@ -657,6 +664,7 @@ export const useAppStore = defineStore("app", () => {
     studioDrafts,
     synopsisSuggestion,
     workerSmokeResults,
+    lastBatchResult,
     bootstrap,
     closeSynopsisSuggestion,
     createProject,

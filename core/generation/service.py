@@ -10,6 +10,7 @@ from core.generation.adapters import get_adapter
 from core.generation.adapters.common import AdapterContext
 from core.models.schemas import (
     AssetRecord,
+    BatchExecuteData,
     BatchExecuteRequest,
     ClarifyResult,
     ConsultantDeliverable,
@@ -22,6 +23,7 @@ from core.models.schemas import (
     Modality,
     ProjectWorkspaceData,
     RefineRequest,
+    SkippedJobInfo,
 )
 from core.generation import refine as refine_planner
 from core.project.manager import ProjectManager
@@ -100,19 +102,39 @@ class GenerationService:
         plans = self._read_plans(project_dir)
         return ProjectWorkspaceData(jobs=jobs, assets=assets, plans=plans)
 
-    def execute_ready_jobs(self, project_id: str, job_ids: list[str] | None = None) -> ProjectWorkspaceData:
+    def execute_ready_jobs(self, project_id: str, job_ids: list[str] | None = None) -> BatchExecuteData:
+        """Execute all ready/planned jobs in the requested set (spec §5.14).
+
+        Blocked jobs within the requested set are collected into ``skipped``
+        rather than silently ignored, so callers can surface a truthful summary
+        (e.g. "executed 2, skipped 1: reason…").
+        """
         _, project_dir = self.project_manager.get_project(project_id)
         jobs = self._refresh_jobs(self._read_jobs(project_dir))
         assets = self._read_assets(project_dir)
         plans = self._read_plans(project_dir)
         requested_ids = set(job_ids or [])
+        executed_count = 0
+        skipped: list[SkippedJobInfo] = []
         for index, job in enumerate(list(jobs)):
-            if job.status not in {GenerationJobStatus.READY, GenerationJobStatus.PLANNED}:
-                continue
+            # Skip jobs not in the requested set (if a set was given).
             if requested_ids and job.id not in requested_ids:
                 continue
+            if job.status == GenerationJobStatus.BLOCKED:
+                skipped.append(
+                    SkippedJobInfo(
+                        job_id=job.id,
+                        title=job.title,
+                        reason=job.blocking_reason or "Blocked",
+                    )
+                )
+                continue
+            if job.status not in {GenerationJobStatus.READY, GenerationJobStatus.PLANNED}:
+                continue
             jobs, assets = self._execute_job_in_memory(project_dir, jobs, assets, index)
-        return ProjectWorkspaceData(jobs=jobs, assets=assets, plans=plans)
+            executed_count += 1
+        workspace = ProjectWorkspaceData(jobs=jobs, assets=assets, plans=plans)
+        return BatchExecuteData(workspace=workspace, executed_count=executed_count, skipped=skipped)
 
     def update_job(self, project_id: str, job_id: str, patch: JobExecutionPatch) -> ProjectWorkspaceData:
         _, project_dir = self.project_manager.get_project(project_id)

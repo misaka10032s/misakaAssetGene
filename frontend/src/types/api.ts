@@ -294,6 +294,20 @@ export interface ProjectWorkspaceData {
   plans: ConsultantPlanRecord[];
 }
 
+/** One job that was skipped (blocked) during a batch-execute (spec §5.14). */
+export interface SkippedJobInfo {
+  job_id: string;
+  title: string;
+  reason: string;
+}
+
+/** Response envelope for POST /jobs/execute-ready (spec §5.14 batch honesty). */
+export interface BatchExecuteData {
+  workspace: ProjectWorkspaceData;
+  executed_count: number;
+  skipped: SkippedJobInfo[];
+}
+
 export interface JobExecutionPatch {
   worker: string | null;
   recipe: string | null;
