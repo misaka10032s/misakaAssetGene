@@ -626,11 +626,13 @@ Resolve @adventure_rpg/char/kyuoka#v3
 
 #### 5.6.3 引用狀態與警告
 
-**四種狀態**：
-- ✓ OK — 引用有效
-- ⚠ Outdated — pinned version 已被來源淘汰（非 favorite / 非 latest）
-- ⚠ Hash Mismatch — live 與複本不一致
-- ✗ Broken — 來源專案或 asset 不存在
+**四種狀態**（`RefStatus` enum，後端 `resolve_reference()` 回傳）：
+- ✓ **live** — 來源專案可達，檔案存在，SHA-256 符合 origins.json 紀錄
+- ⚠ **outdated** — 來源專案可達，檔案存在，但 SHA-256 與 origins.json 紀錄不符（live 版本已更新）
+- ⚠ **external** — 來源專案不可達或找不到檔案，改從 `_external/` 複本提供服務
+- ✗ **broken** — 無 live 檔案也無有效 `_external/` 複本（複本 hash 不符 origins.json 視為損毀）
+
+後端 `resolve_reference()` 絕不在 broken 時拋出例外，永遠回傳 dict（`status`, `path`, `hash`, `message`）。
 
 **UI**：
 - 專案側欄 badge：broken → 紅；outdated / mismatch → 黃
@@ -639,7 +641,8 @@ Resolve @adventure_rpg/char/kyuoka#v3
 
 #### 5.6.4 匯出時的邏輯
 
-**每次匯出都重新解析**所有外部引用，把 resolved 結果複製進新 zip 的 `_external/`：
+**每次匯出都重新解析**所有外部引用（`resolve_refs=True`），把 resolved 結果複製進新 zip 的 `_external/`。
+後端 `_refresh_external_copies()` 在打包前執行：live/outdated refs → 以最新檔案更新 `_external/`；broken refs → 移除舊複本（不打包過期資料）。匯出 manifest 包含 `ref_resolution` 清單，記錄每條 ref 的解析狀態。
 
 **例子**：
 ```
@@ -682,6 +685,36 @@ Env B 再匯出 proj_alpha
 #### 5.6.5 循環依賴
 
 `A` 引用 `@B/x`，`B` 引用 `@A/y` → **允許**（不是程式依賴，只是資源連結），但 UI 顯示循環警告讓使用者知情。
+後端 `detect_cycles()` 用 DFS + visited frozenset 偵測，回傳 `list[list[str]]`（每個 list 是一條循環路徑），不會無窮迴圈。循環是 warning，不是 error。
+
+#### 5.6.6 實體化 API（Materialization）
+> v0.5 M5.3：新增章節。
+
+**顯式 / opt-in**：從不自動執行；由使用者明確觸發（`POST /api/v1/projects/{project_id}/refs/materialize`）。
+
+**功能**：將 cross-project reference 解析的 live 檔案複製成本地 `_external/` 副本，並在 origins.json 的 `origin` sub-dict 寫入來源溯源：
+
+```json
+{
+  "local_path": "_external/source_proj/char/hero/v2.png",
+  "origin": {
+    "project": "source_proj",
+    "asset_path": "char/hero",
+    "version": "v2",
+    "sha256": "...",
+    "original_ref": "@source_proj/char/hero#v2",
+    "materialized_at": "2026-06-13T00:00:00Z"
+  },
+  "copied_at": "2026-06-13T00:00:00Z"
+}
+```
+
+**安全**：實體化前驗證 resolved 路徑在來源專案根目錄內（防 path escape）。broken ref → `status="broken"` 回傳，不拋出例外。
+
+**API Routes（M5.3）**：
+- `GET /api/v1/projects/{project_id}/refs` → `CrossRefListData`（全專案 refs + cycle_warning）
+- `GET /api/v1/projects/{project_id}/refs/{asset_id}` → `CrossRefListData`（特定 asset 的 deps）
+- `POST /api/v1/projects/{project_id}/refs/materialize` → `MaterializeData`（body 可選 `refs` 清單；broken 在回應中列出，不回 4xx）
 
 ### 5.7 專案建立：Type & Synopsis
 > v0.3: 新增章節。

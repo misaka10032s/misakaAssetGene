@@ -475,3 +475,99 @@ Delta fields: `prompt_delta`, `param_delta`, `mask_diff`, `recipe_diff`, `strate
 - **production-path wiring 1 case**（live endpoint 透過 TestClient 驗證 registry_path 實際傳入）
 
 **狀態：已完成（含 review fix）**
+
+---
+
+## 14. 2026-06-13 — M5.3 Cross-project references: resolver wiring + export re-resolution + materialization tool (BACKEND)
+
+### 14.1 Audit findings
+
+**Resolver call-site (§5.6.2):**
+- `core/project/cross_project.py` had `parse_reference()`, `copy_external_asset()`, `update_origins_json()`, and the RW lock — but NO `resolve_reference()` function.
+- The `resolve_refs` flag in `export.py` was stored in the manifest but never acted on — the export simply packed all files as-is with a static warning string.
+- No existing call site resolved a `@ref#v` at read-time. The resolver was **NOT wired** into any read path.
+
+**Export re-resolution (§5.6.4):**
+- `ProjectExportService.export_project()` had `resolve_refs` parameter but **did NOT re-parse refs or refresh `_external/`**. The parameter was a manifest-only flag with no functional effect.
+
+### 14.2 Implementation: resolver read-side (§5.6.2)
+
+`resolve_reference(ref, current_project_dir, projects_root, *, source_project_dir=None) → dict`
+
+Four-status model:
+- **LIVE**: source project accessible, file found, sha256 matches origins.json record.
+- **OUTDATED**: source file found in live project, but sha256 differs from origins.json entry (live version has changed).
+- **EXTERNAL**: source project unavailable or file not found; served from `_external/` fallback with matching hash.
+- **BROKEN**: neither live file nor valid `_external/` copy (also: `_external/` copy hash doesn't match origins.json = corrupted copy).
+
+Never raises on broken — returns `{"status": RefStatus.BROKEN, "path": None, ...}`.
+
+Supporting functions added:
+- `_find_asset_file(source_project_dir, asset_path, version)` — locates versioned files under `assets/<asset_path>/<version>.*` with fallback strategies.
+- `_find_external_copy(consumer_project_dir, source_project_id, asset_path, version)` — locates `_external/<source>/<path>` copies.
+- `_sha256_file(path)` — efficient streaming sha256.
+- `collect_project_refs(project_dir)` — extracts all unique @ref strings from style_guide.md and assets/index.json dependencies fields.
+- `RefStatus` enum (live / outdated / external / broken).
+
+### 14.3 Export re-resolution (§5.6.4)
+
+`ProjectExportService._refresh_external_copies(project_dir, project_summary)` is now called when `resolve_refs=True`:
+- For **LIVE / OUTDATED** refs: copies the current live file into `_external/`, updates origins.json.
+- For **EXTERNAL** refs: keeps the existing copy (pinned versions preserved per spec).
+- For **BROKEN** refs: removes stale `_external/` entry via `_remove_stale_external()` so the exported zip doesn't pack outdated data.
+- Results recorded in export manifest as `ref_resolution` list.
+
+When `resolve_refs=False`: `ref_resolution` is an empty list; no refresh is performed.
+
+### 14.4 Circular dependency detection (§5.6.5)
+
+`detect_cycles(project_id, projects_root, *, _visited, _path) → list[list[str]]`
+
+- DFS with visited-set to prevent infinite loops.
+- Cycles are ALLOWED (not an error) — returned as lists of project IDs that form the loop.
+- Example: A→B→A returns `[["A", "B", "A"]]`.
+- Missing projects silently return `[]` (no crash).
+
+### 14.5 Materialization tool (§16 Q4)
+
+`materialize_reference(ref, current_project_dir, projects_root, *, new_asset_id, source_project_dir, lock_timeout) → dict`
+
+- Explicit / opt-in only; never called automatically.
+- Resolves the ref, copies the file into `_external/` under RW lock, records provenance in origins.json.
+- Provenance fields in origins.json `origin` sub-dict: `original_ref` (the @ref string), `materialized_at`, `sha256`.
+- `update_origins_json` extended to pass through arbitrary extra origin fields (beyond the §5.6.1 schema keys) — backwards-compatible.
+- Broken refs return `{"status": "broken", "local_path": None, "provenance": None, ...}` — never raises.
+- `materialize_project_refs(project_dir, projects_root, *, refs, lock_timeout) → dict` — bulk wrapper; separates `materialized` from `broken`.
+
+**Security**: `materialize_reference` verifies the resolved source file is inside the source project directory before copying. Paths outside the project boundary return `status="broken"`.
+
+### 14.6 API routes (M5.3)
+
+- `GET /api/v1/projects/{project_id}/refs` — list all @refs with resolved statuses + cycle warning.
+- `GET /api/v1/projects/{project_id}/refs/{asset_id}` — list @refs for a specific asset's dependencies.
+- `POST /api/v1/projects/{project_id}/refs/materialize` — trigger materialization (optional `refs` list; if omitted, all project refs are processed). Broken refs reported in response, not 4xx.
+
+New schemas in `core/models/schemas.py`: `CrossRefStatus`, `CrossRefEntry`, `CrossRefListData`, `MaterializeRequest`, `MaterializeResultEntry`, `MaterializeData`.
+
+### 14.7 Spec writeback note
+
+§5.6.2 resolver status model (live/outdated/external/broken) is fully implemented as described.
+§5.6.4 export re-resolution now functional (was previously a no-op flag).
+§5.6.5 cycle detection returns warnings, not errors (cycles are allowed per spec).
+§16 Q4 materialization tool is explicit/opt-in, handles broken refs gracefully, preserves provenance.
+
+### 14.8 Verification
+
+`uv run --extra dev pytest tests/ -q` → **384 passed, 3 warnings** (+27 new tests in `tests/test_cross_project_resolver.py`).
+
+Tests cover:
+- resolve_reference: all 4 statuses (live / outdated / external / broken) — 6 tests
+- collect_project_refs: style_guide + assets/index.json — 2 tests
+- Export re-resolution: _refresh_external_copies / resolve_refs=False — 2 tests
+- detect_cycles: no cycle / simple cycle / 3-hop cycle without infinite loop — 3 tests
+- materialize_reference: live ref / provenance in origins.json / broken returns status / no raise — 4 tests
+- materialize_project_refs: bulk mixed / all broken — 2 tests
+- Security: materialization stays within project root — 1 test
+- API GET refs / POST materialize — 7 tests
+
+**狀態：已完成**

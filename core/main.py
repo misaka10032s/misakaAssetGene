@@ -38,6 +38,9 @@ from core.models.schemas import (
     ConsultantSessionAdvanceRequest,
     ConsultantSessionStartRequest,
     ConversationHistoryData,
+    CrossRefListData,
+    CrossRefEntry,
+    CrossRefStatus,
     DatasetPack,
     DatasetPackCreateRequest,
     DatasetPackUpdateRequest,
@@ -51,6 +54,9 @@ from core.models.schemas import (
     LoraPreset,
     LoraPresetCreateRequest,
     LoraPresetUpdateRequest,
+    MaterializeData,
+    MaterializeRequest,
+    MaterializeResultEntry,
     MessageKey,
     ModelDownloadRequest,
     ModelDownloadResult,
@@ -72,6 +78,15 @@ from core.models.schemas import (
     WorkerSmokeResult,
 )
 from core.network.service import NetworkStateService
+from core.project.cross_project import (
+    RefStatus,
+    collect_project_refs,
+    detect_cycles,
+    materialize_project_refs,
+    materialize_reference,
+    parse_reference,
+    resolve_reference,
+)
 from core.project.export import ProjectExportService
 from core.project.portability import ZipImportError, import_project_zip
 from core.project.manager import (
@@ -1198,6 +1213,146 @@ def download_local_llm_model(payload: ModelDownloadRequest) -> ApiResponse:
         raise HTTPException(status_code=400, detail=str(error)) from error
     invalidate_integration_snapshot_cache()
     return success_response(MessageKey.SUCCESS_ADD0, result.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# M5.3 — Cross-project reference routes (§5.6.2 / §5.6.5 / §16 Q4)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/projects/{project_id}/refs", response_model=ApiResponse)
+def list_project_refs(project_id: str) -> ApiResponse:
+    """List all cross-project references in a project with their resolved statuses (§5.6.2 / §5.6.3).
+
+    Also runs cycle detection (§5.6.5) and includes any cycle warnings in the response.
+    The frontend can use this data to render ref-status badges.
+    """
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/refs", project_id)
+    try:
+        _, project_dir = project_manager.get_project(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+    refs = collect_project_refs(project_dir)
+    resolved: list[CrossRefEntry] = []
+    for ref in refs:
+        result = resolve_reference(ref, project_dir, PROJECTS_ROOT)
+        resolved.append(CrossRefEntry(
+            ref=ref,
+            status=CrossRefStatus(result["status"].value if hasattr(result["status"], "value") else result["status"]),
+            path=str(result["path"]) if result["path"] else None,
+            hash=result.get("hash"),
+            origin_hash=result.get("origin_hash"),
+            message=result.get("message", ""),
+        ))
+
+    # Cycle detection (§5.6.5) — warning only, never an error
+    cycles = detect_cycles(project_id, PROJECTS_ROOT)
+
+    payload = CrossRefListData(
+        project_id=project_id,
+        refs=resolved,
+        cycle_warning=cycles,
+    )
+    return success_response(MessageKey.SUCCESS_FETCH0, payload.model_dump(mode="json"))
+
+
+@app.get("/api/v1/projects/{project_id}/refs/{asset_id}", response_model=ApiResponse)
+def list_asset_refs(project_id: str, asset_id: str) -> ApiResponse:
+    """List cross-project references for a specific asset (by asset id).
+
+    Scans the asset's dependencies field in assets/index.json.
+    Returns resolved statuses for each ref found on that asset.
+    """
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/refs/%s", project_id, asset_id)
+    try:
+        _, project_dir = project_manager.get_project(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+    import json as _json
+    index_path = project_dir / "assets" / "index.json"
+    deps: list[str] = []
+    if index_path.is_file():
+        try:
+            data = _json.loads(index_path.read_text(encoding="utf-8"))
+            for asset in data.get("assets", []):
+                if asset.get("id") == asset_id:
+                    deps = [d for d in asset.get("dependencies", []) if d.startswith("@")]
+                    break
+        except (Exception,):
+            pass
+
+    resolved: list[CrossRefEntry] = []
+    for ref in deps:
+        result = resolve_reference(ref, project_dir, PROJECTS_ROOT)
+        resolved.append(CrossRefEntry(
+            ref=ref,
+            status=CrossRefStatus(result["status"].value if hasattr(result["status"], "value") else result["status"]),
+            path=str(result["path"]) if result["path"] else None,
+            hash=result.get("hash"),
+            origin_hash=result.get("origin_hash"),
+            message=result.get("message", ""),
+        ))
+
+    payload = CrossRefListData(project_id=project_id, refs=resolved)
+    return success_response(MessageKey.SUCCESS_FETCH0, payload.model_dump(mode="json"))
+
+
+@app.post("/api/v1/projects/{project_id}/refs/materialize", response_model=ApiResponse)
+def materialize_project_references(project_id: str, payload: MaterializeRequest) -> ApiResponse:
+    """Materialize cross-project references into local asset copies (§16 Q4).
+
+    This is an EXPLICIT / OPT-IN operation — never triggered automatically.
+    For each resolved ref, copies the referenced asset file into _external/,
+    updates origins.json with provenance metadata, and records the original
+    ref for audit.
+
+    Broken refs are reported in the response rather than causing a 4xx error,
+    so bulk materialization can continue past individual failures.
+    """
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/%s/refs/materialize", project_id)
+    try:
+        _, project_dir = project_manager.get_project(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+    result = materialize_project_refs(
+        project_dir,
+        PROJECTS_ROOT,
+        refs=payload.refs,
+    )
+
+    materialized = [
+        MaterializeResultEntry(
+            ref=r["ref"],
+            status=r["status"],
+            local_path=str(r["local_path"]) if r.get("local_path") else None,
+            provenance=r.get("provenance"),
+            message=r.get("message", ""),
+        )
+        for r in result["materialized"]
+    ]
+    broken = [
+        MaterializeResultEntry(
+            ref=r["ref"],
+            status=r["status"],
+            local_path=None,
+            provenance=None,
+            message=r.get("message", ""),
+        )
+        for r in result["broken"]
+    ]
+
+    data = MaterializeData(
+        project_id=project_id,
+        materialized=materialized,
+        broken=broken,
+        total=result["total"],
+    )
+    return success_response(MessageKey.SUCCESS_ADD0, data.model_dump(mode="json"))
 
 
 @app.post("/api/v1/projects/import", response_model=ApiResponse)

@@ -928,5 +928,88 @@ class TrainingJobPollData(BaseModel):
     job: TrainingJob
 
 
+# ---------------------------------------------------------------------------
+# M5.3 — Cross-project reference schemas (§5.6.2 / §5.6.5 / §16 Q4)
+# ---------------------------------------------------------------------------
+
+class CrossRefStatus(str, Enum):
+    """Mirror of RefStatus from cross_project.py, exported as a Pydantic-friendly enum."""
+
+    LIVE = "live"
+    OUTDATED = "outdated"
+    EXTERNAL = "external"
+    BROKEN = "broken"
+
+
+class CrossRefEntry(BaseModel):
+    """One resolved cross-project reference entry (§5.6.2 / §5.6.3).
+
+    Fields
+    ------
+    ref         : raw @ref string
+    status      : live / outdated / external / broken
+    path        : resolved file path (str for JSON serialisability), or None
+    hash        : sha256 of the resolved file, or None
+    origin_hash : sha256 recorded in origins.json, or None
+    message     : human-readable resolver note
+    """
+
+    ref: str
+    status: CrossRefStatus
+    path: str | None = None
+    hash: str | None = None
+    origin_hash: str | None = None
+    message: str = ""
+
+
+class CrossRefListData(BaseModel):
+    """Response envelope for listing all cross-project refs in a project."""
+
+    project_id: str
+    refs: list[CrossRefEntry] = Field(default_factory=list)
+    cycle_warning: list[list[str]] = Field(default_factory=list)
+
+
+class MaterializeRequest(BaseModel):
+    """Request body for the materialization endpoint (§16 Q4).
+
+    Parameters
+    ----------
+    refs:
+        Optional list of specific @ref strings to materialize.
+        If omitted, all refs found in the project are materialized.
+    """
+
+    refs: list[str] | None = None
+
+
+class MaterializeResultEntry(BaseModel):
+    """One result entry from the materialization operation (§16 Q4).
+
+    Fields
+    ------
+    ref         : the @ref that was processed
+    status      : "materialized" | "already_external" | "broken"
+    local_path  : path of the materialized file, or None
+    provenance  : provenance dict recorded in origins.json
+    message     : human-readable note
+    """
+
+    ref: str
+    status: str
+    local_path: str | None = None
+    provenance: dict[str, Any] | None = None
+    message: str = ""
+
+
+class MaterializeData(BaseModel):
+    """Response envelope for the materialize endpoint (§16 Q4)."""
+
+    project_id: str
+    materialized: list[MaterializeResultEntry] = Field(default_factory=list)
+    broken: list[MaterializeResultEntry] = Field(default_factory=list)
+    total: int = 0
+
+
 ConversationEntry.model_rebuild()
 ProjectWorkspaceData.model_rebuild()
