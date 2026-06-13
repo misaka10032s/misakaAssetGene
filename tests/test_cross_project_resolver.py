@@ -497,6 +497,174 @@ def test_materialize_security_source_outside_project(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# NEW traversal-escape security tests (M5.3 review fix)
+# These tests verify ALL THREE blockers identified by the independent reviewer.
+# They MUST fail if the guards are reverted.
+# ---------------------------------------------------------------------------
+
+def test_resolve_reference_dotdot_traversal_returns_broken(tmp_path: Path) -> None:
+    """BLOCKER 1: resolve_reference must return BROKEN (not LIVE) when asset_path
+    contains '..' that would escape the source project root.
+
+    Reviewer probe: @src/../SECRET.txt returned status=LIVE with a path OUTSIDE
+    the source project root.  After the fix the status must be BROKEN and any
+    returned path must be inside the source project root.
+    """
+    projects_root = tmp_path / "projects"
+    source_dir = _make_project(projects_root, "src")
+    consumer_dir = _make_project(projects_root, "consumer")
+
+    # Plant a "secret" file OUTSIDE the source project root (sibling of projects/)
+    secret = tmp_path / "SECRET.txt"
+    secret.write_bytes(b"sensitive-data")
+
+    # The regex allows '..' in asset_path, so this ref parses successfully.
+    # Without the guard, _find_asset_file would locate tmp_path/SECRET.txt
+    # by resolving source_dir / "../SECRET.txt".
+    result = resolve_reference("@src/../SECRET.txt", consumer_dir, projects_root)
+
+    assert result["status"] == RefStatus.BROKEN, (
+        f"Expected BROKEN but got {result['status']}; path={result.get('path')}"
+    )
+    # If a path IS returned (it shouldn't be for BROKEN), it must be inside source_dir.
+    if result["path"] is not None:
+        source_dir_resolved = source_dir.resolve()
+        assert result["path"].resolve().is_relative_to(source_dir_resolved), (
+            f"Returned path {result['path']} escapes source project root {source_dir_resolved}"
+        )
+
+
+def test_export_refresh_does_not_copy_outside_root_file(tmp_path: Path) -> None:
+    """BLOCKER 2: _refresh_external_copies must NOT copy a file that lies outside
+    the source project root into _external/, even when the ref resolves to it.
+
+    Reviewer probe: a ref @proj/../SECRET.txt copied SECRET.txt (outside project
+    root) into _external/ and into the exported zip.
+    """
+    projects_root = tmp_path / "projects"
+    source_dir = _make_project(projects_root, "src-proj")
+    consumer_dir = _make_project(projects_root, "consumer")
+
+    # Plant the secret OUTSIDE the source project root
+    secret = tmp_path / "SECRET.txt"
+    secret.write_bytes(b"should-not-be-exported")
+
+    # Plant a ref in style_guide that uses '..' traversal
+    (consumer_dir / "style_guide.md").write_text(
+        "# Style\n@src-proj/../SECRET.txt\n", encoding="utf-8"
+    )
+    (consumer_dir / "assets" / "index.json").write_text('{"assets":[]}', encoding="utf-8")
+
+    project_summary = {"id": "consumer", "name": "Consumer", "type": "RPG", "synopsis": ""}
+    svc = ProjectExportService()
+    zip_path = svc.export_project(
+        project_dir=consumer_dir,
+        project_summary=project_summary,
+        jobs=[],
+        assets=[],
+        plans=[],
+        license_report={},
+        resolve_refs=True,
+    )
+
+    # The secret must NOT appear in _external/
+    external_secret = consumer_dir / "_external" / "src-proj" / "SECRET.txt"
+    assert not external_secret.exists(), (
+        "SECRET.txt was copied into _external/ via traversal — BLOCKER 2 not fixed"
+    )
+
+    # The secret must NOT appear inside the zip
+    with ZipFile(zip_path, "r") as zf:
+        names = zf.namelist()
+    secret_in_zip = any("SECRET" in n for n in names)
+    assert not secret_in_zip, (
+        f"SECRET.txt appeared in the export zip — exfiltration path open. zip entries: {names}"
+    )
+
+
+def test_copy_external_asset_rejects_dotdot_rel_path(tmp_path: Path) -> None:
+    """BLOCKER 3: copy_external_asset must raise when rel_path contains '..'
+    that would write outside dest_project_dir/_external/.
+
+    Reviewer probe: rel_path='../../../PWNED.txt' wrote a file OUTSIDE the project root.
+    After the fix, a ValueError must be raised and nothing written outside _external/.
+    """
+    projects_root = tmp_path / "projects"
+    dest_dir = _make_project(projects_root, "dest")
+
+    source_file = tmp_path / "source.txt"
+    source_file.write_bytes(b"payload")
+
+    # Attempt a path-escape write via traversal
+    traversal_rel_path = "../../../PWNED.txt"
+
+    with pytest.raises(ValueError, match="Security"):
+        copy_external_asset(
+            source_file,
+            dest_dir,
+            "some-proj",
+            traversal_rel_path,
+        )
+
+    # Verify nothing was written outside _external/
+    pwned_outside = tmp_path / "PWNED.txt"
+    assert not pwned_outside.exists(), "Traversal wrote PWNED.txt outside project root"
+
+    # Also verify nothing was written at any parent-escaped location
+    pwned_projects = projects_root / "PWNED.txt"
+    assert not pwned_projects.exists()
+
+
+def test_resolve_reference_legitimate_refs_still_work(tmp_path: Path) -> None:
+    """Positive test: legitimate refs (no '..') resolve correctly after the fix.
+
+    Ensures the guards do not over-block valid asset paths like 'a/b/c.png'.
+    """
+    projects_root = tmp_path / "projects"
+    source_dir = _make_project(projects_root, "art-proj")
+    consumer_dir = _make_project(projects_root, "game-proj")
+
+    content = b"valid_asset_bytes"
+    _plant_asset(source_dir, "backgrounds/city/v1.png", content)
+
+    import hashlib
+    h = hashlib.sha256(content).hexdigest()
+    update_origins_json(
+        consumer_dir, "art-proj", "backgrounds/city/v1.png",
+        {"version": "v1", "sha256": h}
+    )
+
+    result = resolve_reference("@art-proj/backgrounds/city#v1", consumer_dir, projects_root)
+    assert result["status"] == RefStatus.LIVE, (
+        f"Legitimate ref was blocked: status={result['status']}, msg={result.get('message')}"
+    )
+    assert result["path"] is not None
+    assert result["path"].read_bytes() == content
+
+
+def test_copy_external_asset_legitimate_path_still_works(tmp_path: Path) -> None:
+    """Positive test: copy_external_asset with a normal rel_path succeeds after fix."""
+    projects_root = tmp_path / "projects"
+    dest_dir = _make_project(projects_root, "dest")
+
+    source_file = tmp_path / "legit.png"
+    source_file.write_bytes(b"legit_bytes")
+
+    dest_file = copy_external_asset(
+        source_file,
+        dest_dir,
+        "source-proj",
+        "images/hero/v1.png",
+    )
+    assert dest_file.exists()
+    assert dest_file.read_bytes() == b"legit_bytes"
+    # Must be inside _external/
+    assert dest_file.resolve().is_relative_to(
+        (dest_dir / "_external").resolve()
+    )
+
+
+# ---------------------------------------------------------------------------
 # API routes (GET refs / POST materialize)
 # ---------------------------------------------------------------------------
 

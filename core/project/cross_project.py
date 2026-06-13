@@ -180,9 +180,24 @@ def copy_external_asset(
 
     The lock prevents two concurrent processes/threads from writing the same
     _external/ entry simultaneously (RESEARCH_LOG §3.4).
+
+    Security: dest_file is verified to resolve INSIDE dest_project_dir/_external/
+    before the copy occurs; a traversal attempt (relative_asset_path containing
+    '..') raises ValueError rather than writing outside the boundary.
     """
     dest_external = dest_project_dir / "_external" / source_project_id
     dest_file = dest_external / relative_asset_path
+
+    # BLOCKER 3 guard: reject any dest_file that escapes the _external/ root.
+    external_root = (dest_project_dir / "_external").resolve()
+    try:
+        dest_file.resolve().relative_to(external_root)
+    except ValueError:
+        raise ValueError(
+            f"Security: destination path {dest_file} resolves outside "
+            f"the _external/ boundary {external_root}. "
+            "Traversal in relative_asset_path is not permitted."
+        )
 
     lock_path = _external_lock_path(dest_project_dir)
     with _acquire_file_lock(lock_path, timeout=lock_timeout):
@@ -366,7 +381,17 @@ def resolve_reference(
     if source_project_dir is not None and source_project_dir.is_dir():
         # Try to find the versioned file under assets/<asset_path>/<version>.*
         # or the exact path <asset_path> if it points directly at a file.
-        live_path = _find_asset_file(source_project_dir, asset_path, version)
+        _candidate_live = _find_asset_file(source_project_dir, asset_path, version)
+        # BLOCKER 1 guard (live-side): verify the candidate resolves INSIDE the
+        # source project root.  asset_path may contain '..' via the regex, so
+        # an explicit containment check is required before trusting the path.
+        if _candidate_live is not None:
+            try:
+                _candidate_live.resolve().relative_to(source_project_dir.resolve())
+                live_path = _candidate_live
+            except ValueError:
+                # Path escapes source project root — treat as broken (no live file).
+                pass
 
     # Load origins entry for hash comparison
     origins = _load_origins(current_project_dir)
@@ -409,7 +434,19 @@ def resolve_reference(
         }
 
     # --- Step 2: Fall back to _external/ copy (§5.6.2 Step 2) --------------
-    external_path = _find_external_copy(current_project_dir, source_project_id, asset_path, version)
+    _candidate_ext = _find_external_copy(current_project_dir, source_project_id, asset_path, version)
+    external_path: Path | None = None
+    if _candidate_ext is not None:
+        # BLOCKER 1 guard (external-side): verify the candidate resolves INSIDE
+        # current_project_dir/_external/ so a traversal cannot escape the boundary.
+        _external_root = (current_project_dir / "_external").resolve()
+        try:
+            _candidate_ext.resolve().relative_to(_external_root)
+            external_path = _candidate_ext
+        except ValueError:
+            # Path escapes _external/ root — treat as broken.
+            pass
+
     if external_path is not None and external_path.is_file():
         ext_hash = _sha256_file(external_path)
         if origin_hash and ext_hash != origin_hash:

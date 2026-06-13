@@ -109,6 +109,23 @@ class ProjectExportService:
                 source_project_id = parsed["project"]
                 asset_path = parsed["asset_path"]
                 version = parsed["version"]
+
+                # BLOCKER 2 guard: verify source_file is inside the source project root
+                # before copying it into _external/.  A ref whose asset_path contains '..'
+                # could resolve to a file outside the project boundary.
+                source_project_dir = projects_root / source_project_id
+                try:
+                    source_file.resolve().relative_to(source_project_dir.resolve())
+                except ValueError:
+                    # Source file escapes the source project root — skip + mark broken.
+                    entry["status"] = RefStatus.BROKEN
+                    entry["message"] = (
+                        f"Security: source file {source_file} resolves outside "
+                        f"source project dir {source_project_dir}. Skipping copy."
+                    )
+                    summary.append(entry)
+                    continue
+
                 file_hash = _sha256_file(source_file)
                 now_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
 
