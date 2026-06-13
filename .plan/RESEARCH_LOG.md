@@ -648,3 +648,85 @@ Tests cover:
 - Idempotency (double install, no duplicate filter on root) — 1 test
 
 **狀態：已完成（RESEARCH_LOG item 5 完整實施）**
+
+---
+
+## 16. 2026-06-14 — M5.5 `decompose_prompt` dedup (BACKEND)
+
+### 16.1 Dedup intent determination
+
+**Problem**: `decompose_prompt()` (spec §5.11) splits a long instruction into
+`PromptDecompositionStep` objects for four stages (base_composition →
+character_detail → prop_accessory → final_polish). Each step's `prompt` is
+composed of all segments matching that stage's marker keywords. Because marker
+sets overlap (e.g. a segment containing both 服裝 and 帽 matches both
+CHARACTER_DETAIL and PROP_ACCESSORY), the same segment text could appear
+verbatim in two different steps, causing the execution planner to process
+identical sub-instructions in different passes.
+
+**Spec §5.11 intent**: each pass should contain only the sub-instructions
+**unique to that stage**. The dedup is within-decomposition, within-run — not
+cross-refine reuse. The goal is to prevent the execution planner from running
+the same segment twice in different passes.
+
+### 16.2 Equality key and dedup semantics implemented
+
+**Equality key**: `normalised segment text × stage`
+
+**Algorithm (earliest-stage-wins, canonical order preserved)**:
+- Split instruction by `；;。\n` into segments.
+- Walk stages in canonical order: BASE_COMPOSITION → CHARACTER_DETAIL →
+  PROP_ACCESSORY → FINAL_POLISH.
+- For each stage, collect segments that match its markers AND have not yet been
+  claimed by an earlier stage.
+- Claim claimed segments so later stages cannot reclaim them.
+- Emit a step only if at least one unclaimed segment matches.
+
+**What collapses**: a segment that matches the markers of two or more stages
+appears only in the earliest matching stage. Later stages receive it zero times.
+
+**What does NOT collapse**: segments that are semantically distinct and only
+happen to share some tokens with multiple stages are not merged — they are
+separate segments (split by delimiters) and each keeps its own stage assignment.
+Each stage appears at most once in the output (a structural guarantee of the
+single-step-per-stage construction).
+
+**Conservative principle**: correctness over aggressiveness. If a later stage
+legitimately needs a distinct segment, that segment is preserved in that stage
+as long as it hasn't already been claimed.
+
+### 16.3 Implementation
+
+`core/generation/refine.py`:
+- New helper `_dedup_decomposition_steps(segments, stage_markers)` (line ~132):
+  maintains a `claimed: set[str]` of segments already assigned; each stage only
+  picks from unclaimed segments.
+- `decompose_prompt()` delegates to `_dedup_decomposition_steps()` (unchanged
+  external signature).
+
+### 16.4 Tests added (`tests/test_refine_strategy.py`)
+
+5 new test functions (M5.5 dedup section):
+- `test_dedup_segment_appears_in_only_one_stage` — segment matching both
+  CHARACTER_DETAIL and PROP_ACCESSORY markers appears exactly once, in the
+  earlier stage.
+- `test_dedup_distinct_passes_unchanged` — an instruction with truly distinct
+  segments (one per stage) produces all four stages without over-dedup.
+- `test_dedup_preserves_canonical_order` — stages in output remain in canonical
+  order after dedup.
+- `test_dedup_no_stage_emitted_twice` — same stage cannot appear twice regardless
+  of how many segments match it.
+- `test_dedup_lineage_metadata_preserved` — every step in the decomposition
+  carries non-empty `stage` and `prompt` for lineage/audit (spec §5.11).
+
+### 16.5 Spec writeback
+
+Spec §5.11 updated: dedup semantics (equality key + earliest-stage-wins rule +
+conservative principle) documented inline under the decomposition bullet.
+
+### 16.6 Verification
+
+`uv run --extra dev pytest tests/ -q` → **428 passed, 1 skipped, 3 warnings**
+(baseline was 423 passed, 1 skipped; +5 new dedup tests).
+
+**狀態：已完成**

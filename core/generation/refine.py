@@ -127,6 +127,36 @@ def _reason_for(strategy: RefineStrategy, instruction: str) -> str:
     return f"{reasons[strategy]} Instruction: {instruction.strip()}"
 
 
+def _dedup_decomposition_steps(
+    segments: list[str],
+    stage_markers: list[tuple[PromptDecompositionPass, tuple[str, ...]]],
+) -> list[PromptDecompositionStep]:
+    """Assign each segment to exactly one stage and return deduped steps (spec §5.11).
+
+    Dedup semantics (equality key: normalised segment text × stage):
+    - Each segment is assigned to the **first** stage (in canonical order
+      base → detail → prop → polish) whose markers match it.
+    - A segment that matches multiple stages is placed only in the earliest
+      matching one; later stages never receive a segment already claimed.
+    - Stages that end up with no segments are omitted from the output.
+    - A stage that is present in the output appears exactly once (the stage
+      enum value is itself unique, so intra-stage dedup is guaranteed by the
+      single-step-per-stage construction).
+
+    This is conservative: semantically distinct segments that share tokens
+    with multiple stages are not collapsed — only redundant cross-stage
+    repetition of the *same segment text* is eliminated.
+    """
+    claimed: set[str] = set()
+    steps: list[PromptDecompositionStep] = []
+    for stage, markers in stage_markers:
+        matched = [seg for seg in segments if _has_any(seg, markers) and seg not in claimed]
+        if matched:
+            claimed.update(matched)
+            steps.append(PromptDecompositionStep(stage=stage, prompt="；".join(matched)))
+    return steps
+
+
 def decompose_prompt(instruction: str) -> list[PromptDecompositionStep]:
     """Split a long, multi-aspect instruction into staged passes (spec §5.11).
 
@@ -134,6 +164,11 @@ def decompose_prompt(instruction: str) -> list[PromptDecompositionStep]:
     handled in a single pass. When decomposition applies, passes are emitted in
     the canonical order base composition -> character detail -> prop / accessory
     -> final polish, including only the stages the instruction actually touches.
+
+    Duplicate segments (same normalised text matching more than one stage) are
+    deduplicated: each segment is emitted in the **earliest** matching stage
+    only (earliest-stage-wins, canonical order preserved).  See
+    ``_dedup_decomposition_steps`` for the full equality-key definition.
     """
     text = instruction.strip()
     if len(text) < _DECOMP_LENGTH_THRESHOLD:
@@ -156,12 +191,7 @@ def decompose_prompt(instruction: str) -> list[PromptDecompositionStep]:
         (PromptDecompositionPass.FINAL_POLISH, _POLISH_MARKERS),
     ]
 
-    steps: list[PromptDecompositionStep] = []
-    for stage, markers in stage_markers:
-        matched = [seg for seg in segments if _has_any(seg, markers)]
-        if matched:
-            steps.append(PromptDecompositionStep(stage=stage, prompt="；".join(matched)))
-    return steps
+    return _dedup_decomposition_steps(segments, stage_markers)
 
 
 def plan_refine(request: RefineRequest) -> RefinePlan:

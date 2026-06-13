@@ -794,6 +794,7 @@ Step 3: 故事設定 (選填但強烈建議 — 顧問會根據此提供更貼�
   - character detail pass（服裝、表情、髮型、手勢）
   - prop / accessory correction（帽子、武器、配件）
   - final polish（色彩、光線、局部修補）
+  - **Dedup semantics（M5.5 實作）**：分解時每個文字段落（segment，由 `；;。\n` 分隔）只歸屬到**最早匹配的 pass**（earliest-stage-wins，以 `normalized segment text × stage` 為相等鍵）。匹配多個 pass 標記詞的段落不重複出現在多個 pass；各 pass 至多發射一次。語意上確實不同、只是共用部分標記詞的段落不被合併——保守原則：正確性優於激進去重。
 - 每一次 refine 都要保留 parent-child 關係、遮罩來源、使用的 workflow recipe、prompt delta 與參數差異
 - 被接受的圖片版本可直接當成 image-to-video、角色定稿、LoRA 資料集挑圖的上游輸入
 
