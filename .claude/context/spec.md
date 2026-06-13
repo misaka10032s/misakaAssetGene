@@ -1484,6 +1484,30 @@ Dev-Mode 向下相容：uv / `.venv` / ffmpeg 已存在時自動跳過對應步�
    Log 寫入前經 `_redact()` 脫敏（regex 匹配 ≥20 字元的 API key 形式字串 → `[REDACTED]`）。
 6. LLM client 可注入（測試用 fake；生產用 `_build_default_client`）。
 
+**App-wide 日誌脫敏（M5.4 擴充：`core/logging_redaction.py`）**：
+
+setup.log 的脫敏從 M4.e 起就已實作；M5.4 將脫敏能力擴充至整個後端（HTTP 日誌、子進程日誌、未處理異常的 traceback 全部覆蓋）。
+
+| 項目 | 實作 |
+|---|---|
+| **共用模式模組** | `core/logging_redaction.py` — `REDACT_RE`（預編譯）+ `redact(text)` 純函式 |
+| **`setup_diagnostics.py` 整合** | 優先 `from core.logging_redaction import redact as _redact`；core 套件不可達時（bootstrap 前）回退本地備份實作 |
+| **app-wide 安裝** | `core/main.py` 在 `logging.basicConfig` **前** 呼叫 `install_redaction_filter()`；過濾器裝載於 root logger，所有 `logging.getLogger(…)` 子 logger 自動繼承 |
+| **覆蓋範圍** | `record.msg`（格式化後）、`record.exc_text`（exception traceback）、`record.stack_info` |
+| **env 開關** | `MISAKA_LOG_REDACT`（預設 `"1"` = 開啟）；設為 `"0"` / `"false"` / `"no"` / `"off"` 可停用（僅限本機深度除錯） |
+
+**脫敏 pattern 家族**（單一 `REDACT_RE`，所有 pattern 合一）：
+- `sk-ant-api03-*` / `sk-proj-*` / `sk-*`（Anthropic / OpenAI 前綴）
+- `AIza*` / `AIZA*`（Google API key）
+- `Bearer <token>`（HTTP Authorization header 值）
+- Generic backstop：≥20 chars `[A-Za-z0-9+_=\-]`（不含 `.` / `/`，避免誤判 URL 與檔案路徑）
+
+**使用者路徑脫敏**（`_PATH_RE`，`redact()` 第二步驟）：
+- Windows: `C:\Users\<name>\...` → `C:\Users\[USER]\...`
+- macOS: `/Users/<name>/...` → `/Users/[USER]/...`
+- Linux: `/home/<name>/...` → `/home/[USER]/...`
+- 只替換使用者名稱段，保留路徑其餘部分供除錯使用
+
 ### 11.4 原則
 - console 不印 Python traceback（只寫 log）
 - 每一步都給進度百分比與預估時間

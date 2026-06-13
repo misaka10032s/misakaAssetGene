@@ -43,7 +43,7 @@
 2.  **路徑相對化：** 實作 `portability.py` 時，必須在寫入 `project.json` 前對所有路徑進行 `os.path.relpath` 處理。
 3.  **冷啟動種子：** 在 `cold_start.py` 預置行業標準模板 (RPG/FPS/VN)，確保 LLM 失聯或使用者初次使用時仍有導引。
 4.  **文件讀寫鎖 (RW Lock)：** 針對「跨專案引用」，在更新 `_external/` 複本前必須檢查原始檔案是否被佔用，避免寫入衝突。**已完成**：以 lock-file + threading.Lock 雙層策略實作於 `cross_project.py`，Windows 用 `msvcrt.locking`、POSIX 用 `fcntl.flock`，無需第三方套件；已通過 12 執行緒並發測試驗證無資料損毀。
-5.  **日誌脫敏：** 所有的 Error Log 在寫入 `setup.log` 前必須進行脫敏，禁止記錄使用者的本地路徑與 API Key。
+5.  **日誌脫敏（完整實施，M5.4 完成）：** 所有 Error Log 寫入 `setup.log` 前必須脫敏，禁止記錄使用者的本地路徑與 API Key。**已完成**：M4.e 完成 setup.log 脫敏；M5.4 擴充至全 app（見下方 §15）。
 
 ---
 
@@ -571,3 +571,80 @@ Tests cover:
 - API GET refs / POST materialize — 7 tests
 
 **狀態：已完成**
+
+---
+
+## 15. 2026-06-14 — M5.4 App-wide log desensitization (BACKEND)
+
+### 15.1 Scope decision (USER DECISION)
+
+Central filter applied app-wide (all loggers in the process), not just setup.log.
+RESEARCH_LOG item 5 promoted from "setup.log only" to "complete implementation".
+
+### 15.2 Shared pattern module: `core/logging_redaction.py`
+
+Single source of truth for all redaction patterns in the codebase.
+
+**`REDACT_RE`** — one precompiled regex with named-prefix alternation + generic backstop:
+- `sk-ant-api03-*` / `sk-proj-*` / `sk-*` — Anthropic / OpenAI key prefixes
+- `AIza*` / `AIZA*` — Google API key prefix
+- `Bearer <token>` — HTTP Authorization header value (token body: base64url chars including `.`)
+- Generic backstop: `[A-Za-z0-9][A-Za-z0-9+_=\-]{19,}` — ≥20 chars, NO `.` or `/`
+  - Intentionally excludes `.` and `/` to prevent over-redaction of URLs and file paths
+  - Named prefixes above cover the major cases where `/` appears in key body (base64)
+
+**`_PATH_RE`** — user-path pattern applied as second step in `redact()`:
+- Windows: `[A-Z]:\Users\<name>` → `[A-Z]:\Users\[USER]`
+- macOS: `/Users/<name>` → `/Users/[USER]`
+- Linux: `/home/<name>` → `/home/[USER]`
+- Replaces only the user name segment; retains path tail for debugging
+
+**`RedactionFilter`** — `logging.Filter` subclass:
+- `filter(record)` bakes `getMessage()` result into `record.msg` + clears args, then calls `redact()`
+- Forces `exc_text` formatting (if `exc_info` is set) before the handler emits, redacts it, clears `exc_info`
+- Redacts `record.stack_info` if present
+- Always returns `True` (never suppresses records)
+
+**`install_redaction_filter()`** — idempotent installation on root logger:
+- Controlled by `MISAKA_LOG_REDACT` env var (default `"1"` = ON)
+- Values `"0"` / `"false"` / `"no"` / `"off"` disable the filter
+- Guards global `_FILTER_INSTALLED` flag — second call is a no-op
+
+### 15.3 Integration points
+
+**`core/main.py`**: `install_redaction_filter()` called BEFORE `logging.basicConfig()` so the filter is present before any handler is attached. All `logging.getLogger(...)` children of root inherit it automatically — covers HTTP logs, subprocess logs, unhandled exception tracebacks via `logger.exception(...)`.
+
+**`scripts/lib/setup_diagnostics.py`**: Refactored to `from core.logging_redaction import redact as _redact`. No duplicate regex. Fallback local implementation retained for pre-venv bootstrap context (when `core` package is not on sys.path).
+
+### 15.4 Direct log-leak audit
+
+Surveyed all `logger.*` call sites in `core/`. Findings:
+- No call site directly logs an API key value (provider keys are only used in HTTP headers, never in log arguments).
+- `core/main.py` startup logs `REPO_ROOT` and `PROJECTS_ROOT` (absolute paths). These are the repo root and projects folder — not the user's home directory — so they do NOT leak the OS account name. The path-redaction filter (`_PATH_RE`) would additionally suppress any `C:\Users\<name>` segment if it appeared in those paths.
+- No egregious direct-leak call site found requiring a fix beyond the central filter.
+
+### 15.5 Over-redaction risk and guard
+
+**Risk**: the generic ≥20-char backstop can match long alphanumeric tokens in normal log text (e.g. UUIDs, long file names). Redacting a UUID is acceptable (it's safe-to-lose in a log context). The exclusion of `.` and `/` from the backstop character class prevents URLs and POSIX paths from being swallowed.
+
+**Guard**: `tests/test_logging_redaction.py` class `TestNoOverRedaction` (6 tests) verifies:
+- Short words (`info`, `debug`, `core`) survive
+- Normal API base URLs survive (`anthropic.com` in result)
+- Module paths (`core/main.py`, `scripts/lib/setup_diagnostics.py`) survive
+- Plain INFO-level log lines are unchanged
+- Worker names (`comfyui`, `audiocraft`) survive
+
+### 15.6 Verification
+
+`uv run --extra dev pytest tests/ -q` → **419 passed, 3 warnings** (+30 new tests in `tests/test_logging_redaction.py`).
+
+Tests cover:
+- API key redaction — each pattern family (sk-ant / sk-proj / sk- / AIza / Bearer / generic) — 7 tests
+- User-path redaction (Windows / macOS / Linux / multiple paths / end-of-string) — 6 tests
+- RedactionFilter on real logger message path (api key / user path / format args / non-sensitive unchanged / short path survives) — 5 tests
+- RedactionFilter on exception path (`exc_text` redacted) — 1 test
+- Env toggle (disabled by 0 / false / enabled by default / enabled by 1) — 4 tests
+- No over-redaction (short words / URLs / module paths / UUID / plain log / worker names) — 6 tests
+- Idempotency (double install, no duplicate filter on root) — 1 test
+
+**狀態：已完成（RESEARCH_LOG item 5 完整實施）**

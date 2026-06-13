@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse
 from fastapi.exceptions import RequestValidationError
 
 from core.config import get_settings
+from core.logging_redaction import install_redaction_filter
 from core.consultant.engine import ConsultantEngine
 from core.generation.service import GenerationService
 from core.integration.model_registry import ModelRegistryService
@@ -108,6 +109,12 @@ PROJECTS_ROOT = REPO_ROOT / "projects"
 settings = get_settings()
 APP_ENV = settings.misaka_env.lower()
 IS_DEV = settings.is_dev
+
+# Install the app-wide redaction filter BEFORE basicConfig so the filter is
+# present on the root logger before any handler is attached.  The filter runs
+# on every LogRecord produced by any logger in this process (all core loggers
+# inherit it via the root).  Controlled by MISAKA_LOG_REDACT (default ON).
+install_redaction_filter()
 
 logging.basicConfig(
     level=logging.INFO if IS_DEV else logging.WARNING,

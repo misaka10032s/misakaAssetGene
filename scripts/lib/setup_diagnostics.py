@@ -19,12 +19,40 @@ Design notes (recorded in .plan/RESEARCH_LOG.md §8):
 from __future__ import annotations
 
 import platform
-import re
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+# ---------------------------------------------------------------------------
+# Secret-redaction: import from the shared app module so setup.log and the
+# app-wide logging filter stay in sync.  If the core package is not on the
+# Python path (e.g. early bootstrap before venv is ready), fall back to a
+# minimal local implementation that covers the same patterns.
+# ---------------------------------------------------------------------------
+try:
+    from core.logging_redaction import redact as _redact  # noqa: F401
+    import re  # still needed for compile-time checks below
+except ImportError:  # pragma: no cover — fallback for pre-venv bootstrap
+    import re
+    _SECRET_RE_FALLBACK = re.compile(
+        r"""
+        (?:
+            (?:sk-ant-api03-|sk-proj-|sk-)[A-Za-z0-9_\-]{10,}
+        |
+            (?:AIza|AIZA)[A-Za-z0-9_\-]{10,}
+        |
+            Bearer\s+[A-Za-z0-9_\-\.]{10,}
+        |
+            [A-Za-z0-9][A-Za-z0-9+/=_\-\.]{19,}
+        )
+        """,
+        re.VERBOSE,
+    )
+
+    def _redact(text: str) -> str:  # type: ignore[misc]
+        return _SECRET_RE_FALLBACK.sub("[REDACTED]", text)
 
 
 # ---------------------------------------------------------------------------
@@ -149,32 +177,6 @@ KNOWN_ERRORS: tuple[KnownError, ...] = (
         ),
     ),
 )
-
-
-# ---------------------------------------------------------------------------
-# Security: redact API-key-like strings
-# ---------------------------------------------------------------------------
-
-# Match strings that look like API keys: 20+ chars of base64 / hex / mixed,
-# possibly prefixed by "sk-", "AIza", etc.  We keep prefix + replace body.
-_SECRET_RE = re.compile(
-    r"""
-    (?:
-        # common named key patterns
-        (?:sk-|AIza|AIZA|Bearer\s+)
-        [A-Za-z0-9_\-]{10,}
-    |
-        # generic: long alphanumeric+special sequence (≥20 chars)
-        [A-Za-z0-9][A-Za-z0-9+/=_\-]{19,}
-    )
-    """,
-    re.VERBOSE,
-)
-
-
-def _redact(text: str) -> str:
-    """Replace API-key-shaped strings with ``[REDACTED]``."""
-    return _SECRET_RE.sub("[REDACTED]", text)
 
 
 # ---------------------------------------------------------------------------
