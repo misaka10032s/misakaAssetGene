@@ -65,3 +65,4 @@ screenshots/
 *.screenshot.png
 .impeccable/
 impeccable-out/
+*.local.*

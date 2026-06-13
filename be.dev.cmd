@@ -1,5 +1,5 @@
 @echo off
-title assetgene · Backend :8401
+title assetgene - Backend :8401
 cls
 cd /d %~dp0
 set MISAKA_ENV=dev
