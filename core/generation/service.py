@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger("misaka.generation.service")
 
 from core.generation.adapters import get_adapter
 from core.generation.adapters.common import AdapterContext
@@ -923,7 +926,21 @@ class GenerationService:
         if not path.exists():
             return []
         payload = json.loads(path.read_text(encoding="utf-8"))
-        return [GenerationJob(**item) for item in payload.get("jobs", [])]
+        jobs: list[GenerationJob] = []
+        skipped = 0
+        for item in payload.get("jobs", []):
+            # Legacy jobs written before asset_type was added carry only modality.
+            # Derive asset_type from modality so these records stay loadable.
+            if "asset_type" not in item and "modality" in item:
+                item = {**item, "asset_type": item["modality"]}
+                logger.warning("legacy job upgraded: derived asset_type=%r from modality", item["asset_type"])
+            try:
+                jobs.append(GenerationJob(**item))
+            except Exception:
+                skipped += 1
+        if skipped:
+            logger.warning("_read_jobs: skipped %d malformed record(s) in %s", skipped, path)
+        return jobs
 
     def _write_jobs(self, project_dir: Path, jobs: list[GenerationJob]) -> None:
         self._jobs_path(project_dir).write_text(
