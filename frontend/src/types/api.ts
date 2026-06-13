@@ -9,6 +9,7 @@ import {
   ProviderMode,
   ProviderName,
   ProviderStatus,
+  TrainingEntityKind,
 } from "@/types/enums";
 
 export interface AppEnv {
@@ -251,6 +252,20 @@ export interface ConsultantAnalysis {
   execution_steps: ConsultantPlanStep[];
   blocking_reasons: string[];
   guidance_path: string[];
+  /** True when the consultant detected a training/LoRA intent (spec §5.12.1 / M4.b). */
+  is_training_flow: boolean;
+  /** Selected or suggested CharacterSheet ID for the training checklist. */
+  training_character_sheet_id: string | null;
+  /** Selected or suggested DatasetPack ID for the training checklist. */
+  training_dataset_pack_id: string | null;
+  /** Selected or suggested TrainingRecipe ID for the training checklist. */
+  training_recipe_id: string | null;
+  /** Selected or suggested LoraPreset ID for the training checklist. */
+  training_lora_preset_id: string | null;
+  /** Selected or suggested ImageToVideoRecipe ID (optional slot) for the training checklist. */
+  training_i2v_recipe_id: string | null;
+  /** Suggestion cards for missing training entities; empty in non-training flows. */
+  suggestion_cards: TrainingSuggestionCard[];
 }
 
 export interface GenerationJob {
@@ -398,4 +413,193 @@ export interface TrainingJob {
 
 export interface TrainingWorkspaceData {
   jobs: TrainingJob[];
+}
+
+// ---------------------------------------------------------------------------
+// §7.1.1 training entity interfaces (M4.a / M4.c)
+// ---------------------------------------------------------------------------
+
+/** One LoRA layer entry inside a LoraPreset stack (spec §7.1.1). */
+export interface LoraLayer {
+  kind: string;
+  lora_ref: string;
+  weight: number;
+}
+
+/** CharacterSheet entity (spec §7.1.1). */
+export interface CharacterSheet {
+  id: string;
+  project_id: string;
+  name: string;
+  visual_anchors: string[];
+  trigger_words: string[];
+  forbidden_features: string[];
+  reference_image_refs: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** Create payload for CharacterSheet. */
+export interface CharacterSheetCreatePayload {
+  name: string;
+  visual_anchors?: string[];
+  trigger_words?: string[];
+  forbidden_features?: string[];
+  reference_image_refs?: string[];
+}
+
+/** Partial-update payload for CharacterSheet. */
+export interface CharacterSheetUpdatePayload {
+  name?: string;
+  visual_anchors?: string[];
+  trigger_words?: string[];
+  forbidden_features?: string[];
+  reference_image_refs?: string[];
+}
+
+/** DatasetPack entity (spec §7.1.1). */
+export interface DatasetPack {
+  id: string;
+  project_id: string;
+  source: string;
+  cleaning_status: string;
+  tags: string[];
+  license: string;
+  split_strategy: string;
+  members: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** Create payload for DatasetPack. */
+export interface DatasetPackCreatePayload {
+  source: string;
+  cleaning_status: string;
+  tags?: string[];
+  license?: string;
+  split_strategy?: string;
+  members?: string[];
+}
+
+/** Partial-update payload for DatasetPack. */
+export interface DatasetPackUpdatePayload {
+  source?: string;
+  cleaning_status?: string;
+  tags?: string[];
+  license?: string;
+  split_strategy?: string;
+  members?: string[];
+}
+
+/** TrainingRecipe entity (spec §7.1.1). */
+export interface TrainingRecipe {
+  id: string;
+  project_id: string;
+  base_model: string;
+  rank: number;
+  epochs: number;
+  optimizer: string;
+  caption_strategy: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Create payload for TrainingRecipe. */
+export interface TrainingRecipeCreatePayload {
+  base_model: string;
+  rank: number;
+  epochs: number;
+  optimizer: string;
+  caption_strategy: string;
+}
+
+/** Partial-update payload for TrainingRecipe. */
+export interface TrainingRecipeUpdatePayload {
+  base_model?: string;
+  rank?: number;
+  epochs?: number;
+  optimizer?: string;
+  caption_strategy?: string;
+}
+
+/** LoraPreset entity (spec §7.1.1). */
+export interface LoraPreset {
+  id: string;
+  project_id: string;
+  name: string;
+  layers: LoraLayer[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** Create payload for LoraPreset. */
+export interface LoraPresetCreatePayload {
+  name: string;
+  layers?: LoraLayer[];
+}
+
+/** Partial-update payload for LoraPreset. */
+export interface LoraPresetUpdatePayload {
+  name?: string;
+  layers?: LoraLayer[];
+}
+
+/** ImageToVideoRecipe entity (spec §7.1.1). */
+export interface ImageToVideoRecipe {
+  id: string;
+  project_id: string;
+  name: string;
+  workflow_kind: string;
+  frames: number;
+  fps: number;
+  motion_strength: number;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Create payload for ImageToVideoRecipe. */
+export interface ImageToVideoRecipeCreatePayload {
+  name: string;
+  workflow_kind: string;
+  frames: number;
+  fps: number;
+  motion_strength: number;
+  notes?: string;
+}
+
+/** Partial-update payload for ImageToVideoRecipe. */
+export interface ImageToVideoRecipeUpdatePayload {
+  name?: string;
+  workflow_kind?: string;
+  frames?: number;
+  fps?: number;
+  motion_strength?: number;
+  notes?: string;
+}
+
+/** Aggregate snapshot of all five training entities for a project (M4.c). */
+export interface TrainingEntitiesSnapshot {
+  characters: CharacterSheet[];
+  dataset_packs: DatasetPack[];
+  training_recipes: TrainingRecipe[];
+  lora_presets: LoraPreset[];
+  i2v_recipes: ImageToVideoRecipe[];
+}
+
+// ---------------------------------------------------------------------------
+// Suggestion card (spec §4.4 / §5.12.1 / M4.b)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single suggestion card emitted by the consultant for a missing training
+ * entity.  The frontend renders it as a user-clickable create action — the
+ * system NEVER auto-creates (spec §4.4).
+ */
+export interface TrainingSuggestionCard {
+  entity_kind: TrainingEntityKind | string;
+  action: string;
+  prefilled: Record<string, unknown>;
+  reason: string;
+  existing_id: string | null;
 }

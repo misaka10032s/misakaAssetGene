@@ -104,3 +104,33 @@ export enum GenerationJobStatus {
   COMPLETED = "completed",
   FAILED = "failed",
 }
+
+/** Training entity kinds used in suggestion cards (spec §7.1.1 / M4.b). */
+export enum TrainingEntityKind {
+  CHARACTER_SHEET = "character_sheet",
+  DATASET_PACK = "dataset_pack",
+  TRAINING_RECIPE = "training_recipe",
+  LORA_PRESET = "lora_preset",
+  I2V_RECIPE = "i2v_recipe",
+}
+
+/** Cleaning status values for DatasetPack (spec §7.1.1). */
+export enum DatasetCleaningStatus {
+  RAW = "raw",
+  CLEANED = "cleaned",
+  TAGGED = "tagged",
+}
+
+/** Workflow kinds for ImageToVideoRecipe (spec §7.1.1). */
+export enum I2vWorkflowKind {
+  ANIMATEDIFF = "animatediff",
+  SVD = "svd",
+  IMAGE_TO_VIDEO = "image-to-video",
+}
+
+/** LoRA layer kinds for LoraPreset (spec §7.1.1). */
+export enum LoraLayerKind {
+  CHARACTER = "character",
+  COSTUME = "costume",
+  STYLE = "style",
+}

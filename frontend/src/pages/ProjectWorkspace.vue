@@ -5,6 +5,7 @@ import { useI18n } from "vue-i18n";
 
 import { apiClient } from "@/api/client";
 import { useAppStore } from "@/stores/app";
+import TrainingEntities from "@/components/TrainingEntities.vue";
 import type { AssetRecord, ConsultantAnalysis, ConversationEntry, GenerationJob } from "@/types/api";
 import { Modality, PageKey } from "@/types/enums";
 
@@ -700,6 +701,9 @@ async function createTrainingJob(): Promise<void> {
               </div>
             </div>
           </section>
+
+          <!-- §7.1.1 training entity CRUD + consultant suggestion cards (M4.c) -->
+          <TrainingEntities :project-id="projectId" :analysis="latestAnalysis" />
 
           <section class="app-panel grid gap-4">
             <div class="flex flex-wrap items-center justify-between gap-3">

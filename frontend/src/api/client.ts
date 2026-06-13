@@ -3,6 +3,9 @@ import type {
   ApiErrorResponse,
   ApiResponse,
   BatchExecuteData,
+  CharacterSheet,
+  CharacterSheetCreatePayload,
+  CharacterSheetUpdatePayload,
   ClarifyPayload,
   ClarifyResult,
   ConsultantSession,
@@ -11,15 +14,28 @@ import type {
   ConsultantSessionStartPayload,
   ConversationHistoryData,
   CreateProjectPayload,
+  DatasetPack,
+  DatasetPackCreatePayload,
+  DatasetPackUpdatePayload,
   HealthData,
+  ImageToVideoRecipe,
+  ImageToVideoRecipeCreatePayload,
+  ImageToVideoRecipeUpdatePayload,
     IntegrationSnapshot,
     LocalLlmStatus,
+    LoraPreset,
+    LoraPresetCreatePayload,
+    LoraPresetUpdatePayload,
     ModelDownloadPayload,
     ModelDownloadResult,
     ProjectLicenseReport,
     ProjectListData,
     ProjectSchemaData,
     ProjectSummary,
+    TrainingEntitiesSnapshot,
+    TrainingRecipe,
+    TrainingRecipeCreatePayload,
+    TrainingRecipeUpdatePayload,
     TrainingWorkspaceData,
     ProjectVersionGraph,
     ProjectTypeData,
@@ -327,6 +343,191 @@ export const apiClient = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  // ---------------------------------------------------------------------------
+  // §7.1.1 training entity CRUD (M4.c)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Lists all character sheets for a project.
+   */
+  listCharacters: (projectId: string) =>
+    request<{ items: CharacterSheet[] }>(`/api/v1/projects/${projectId}/characters`),
+  /**
+   * Creates a character sheet inside a project.
+   */
+  createCharacter: (projectId: string, payload: CharacterSheetCreatePayload) =>
+    request<{ item: CharacterSheet }>(`/api/v1/projects/${projectId}/characters`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Fetches a single character sheet by id.
+   */
+  getCharacter: (projectId: string, id: string) =>
+    request<{ item: CharacterSheet }>(`/api/v1/projects/${projectId}/characters/${id}`),
+  /**
+   * Partially updates a character sheet.
+   */
+  updateCharacter: (projectId: string, id: string, payload: CharacterSheetUpdatePayload) =>
+    request<{ item: CharacterSheet }>(`/api/v1/projects/${projectId}/characters/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Deletes a character sheet.
+   */
+  deleteCharacter: (projectId: string, id: string) =>
+    request<void>(`/api/v1/projects/${projectId}/characters/${id}`, { method: "DELETE" }),
+
+  /**
+   * Lists all dataset packs for a project.
+   */
+  listDatasetPacks: (projectId: string) =>
+    request<{ items: DatasetPack[] }>(`/api/v1/projects/${projectId}/dataset-packs`),
+  /**
+   * Creates a dataset pack inside a project.
+   */
+  createDatasetPack: (projectId: string, payload: DatasetPackCreatePayload) =>
+    request<{ item: DatasetPack }>(`/api/v1/projects/${projectId}/dataset-packs`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Fetches a single dataset pack by id.
+   */
+  getDatasetPack: (projectId: string, id: string) =>
+    request<{ item: DatasetPack }>(`/api/v1/projects/${projectId}/dataset-packs/${id}`),
+  /**
+   * Partially updates a dataset pack.
+   */
+  updateDatasetPack: (projectId: string, id: string, payload: DatasetPackUpdatePayload) =>
+    request<{ item: DatasetPack }>(`/api/v1/projects/${projectId}/dataset-packs/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Deletes a dataset pack.
+   */
+  deleteDatasetPack: (projectId: string, id: string) =>
+    request<void>(`/api/v1/projects/${projectId}/dataset-packs/${id}`, { method: "DELETE" }),
+
+  /**
+   * Lists all training recipes for a project.
+   */
+  listTrainingRecipes: (projectId: string) =>
+    request<{ items: TrainingRecipe[] }>(`/api/v1/projects/${projectId}/training-recipes`),
+  /**
+   * Creates a training recipe inside a project.
+   */
+  createTrainingRecipe: (projectId: string, payload: TrainingRecipeCreatePayload) =>
+    request<{ item: TrainingRecipe }>(`/api/v1/projects/${projectId}/training-recipes`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Fetches a single training recipe by id.
+   */
+  getTrainingRecipe: (projectId: string, id: string) =>
+    request<{ item: TrainingRecipe }>(`/api/v1/projects/${projectId}/training-recipes/${id}`),
+  /**
+   * Partially updates a training recipe.
+   */
+  updateTrainingRecipe: (projectId: string, id: string, payload: TrainingRecipeUpdatePayload) =>
+    request<{ item: TrainingRecipe }>(`/api/v1/projects/${projectId}/training-recipes/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Deletes a training recipe.
+   */
+  deleteTrainingRecipe: (projectId: string, id: string) =>
+    request<void>(`/api/v1/projects/${projectId}/training-recipes/${id}`, { method: "DELETE" }),
+
+  /**
+   * Lists all LoRA presets for a project.
+   */
+  listLoraPresets: (projectId: string) =>
+    request<{ items: LoraPreset[] }>(`/api/v1/projects/${projectId}/lora-presets`),
+  /**
+   * Creates a LoRA preset inside a project.
+   */
+  createLoraPreset: (projectId: string, payload: LoraPresetCreatePayload) =>
+    request<{ item: LoraPreset }>(`/api/v1/projects/${projectId}/lora-presets`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Fetches a single LoRA preset by id.
+   */
+  getLoraPreset: (projectId: string, id: string) =>
+    request<{ item: LoraPreset }>(`/api/v1/projects/${projectId}/lora-presets/${id}`),
+  /**
+   * Partially updates a LoRA preset.
+   */
+  updateLoraPreset: (projectId: string, id: string, payload: LoraPresetUpdatePayload) =>
+    request<{ item: LoraPreset }>(`/api/v1/projects/${projectId}/lora-presets/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Deletes a LoRA preset.
+   */
+  deleteLoraPreset: (projectId: string, id: string) =>
+    request<void>(`/api/v1/projects/${projectId}/lora-presets/${id}`, { method: "DELETE" }),
+
+  /**
+   * Lists all image-to-video recipes for a project.
+   */
+  listI2vRecipes: (projectId: string) =>
+    request<{ items: ImageToVideoRecipe[] }>(`/api/v1/projects/${projectId}/i2v-recipes`),
+  /**
+   * Creates an image-to-video recipe inside a project.
+   */
+  createI2vRecipe: (projectId: string, payload: ImageToVideoRecipeCreatePayload) =>
+    request<{ item: ImageToVideoRecipe }>(`/api/v1/projects/${projectId}/i2v-recipes`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Fetches a single image-to-video recipe by id.
+   */
+  getI2vRecipe: (projectId: string, id: string) =>
+    request<{ item: ImageToVideoRecipe }>(`/api/v1/projects/${projectId}/i2v-recipes/${id}`),
+  /**
+   * Partially updates an image-to-video recipe.
+   */
+  updateI2vRecipe: (projectId: string, id: string, payload: ImageToVideoRecipeUpdatePayload) =>
+    request<{ item: ImageToVideoRecipe }>(`/api/v1/projects/${projectId}/i2v-recipes/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  /**
+   * Deletes an image-to-video recipe.
+   */
+  deleteI2vRecipe: (projectId: string, id: string) =>
+    request<void>(`/api/v1/projects/${projectId}/i2v-recipes/${id}`, { method: "DELETE" }),
+
+  /**
+   * Loads all five training entities for a project in a single fan-out.
+   * Returns a snapshot keyed by entity kind (M4.c convenience helper).
+   */
+  async trainingEntities(projectId: string): Promise<TrainingEntitiesSnapshot> {
+    const [characters, datasetPacks, trainingRecipes, loraPresets, i2vRecipes] = await Promise.all([
+      request<{ items: CharacterSheet[] }>(`/api/v1/projects/${projectId}/characters`),
+      request<{ items: DatasetPack[] }>(`/api/v1/projects/${projectId}/dataset-packs`),
+      request<{ items: TrainingRecipe[] }>(`/api/v1/projects/${projectId}/training-recipes`),
+      request<{ items: LoraPreset[] }>(`/api/v1/projects/${projectId}/lora-presets`),
+      request<{ items: ImageToVideoRecipe[] }>(`/api/v1/projects/${projectId}/i2v-recipes`),
+    ]);
+    return {
+      characters: characters.items,
+      dataset_packs: datasetPacks.items,
+      training_recipes: trainingRecipes.items,
+      lora_presets: loraPresets.items,
+      i2v_recipes: i2vRecipes.items,
+    };
+  },
+
   exportProjectDownloadUrl: (projectId: string, resolveRefs = true) =>
     `${appEnv.apiBaseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/export/download?resolve_refs=${resolveRefs ? "true" : "false"}`,
   ApiClientError,

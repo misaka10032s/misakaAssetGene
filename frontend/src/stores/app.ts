@@ -6,6 +6,9 @@ import { appEnv } from "@/config/env";
 import type {
   AssetRecord,
   BatchExecuteData,
+  CharacterSheet,
+  CharacterSheetCreatePayload,
+  CharacterSheetUpdatePayload,
   ClarifyPayload,
   ClarifyResult,
   ConsultantPlanRecord,
@@ -14,16 +17,29 @@ import type {
   ConsultantSessionStartPayload,
   ConversationEntry,
   CreateProjectPayload,
+  DatasetPack,
+  DatasetPackCreatePayload,
+  DatasetPackUpdatePayload,
   GenerationJob,
+  ImageToVideoRecipe,
+  ImageToVideoRecipeCreatePayload,
+  ImageToVideoRecipeUpdatePayload,
   IntegrationSnapshot,
   LocalLlmStatus,
+  LoraPreset,
+  LoraPresetCreatePayload,
+  LoraPresetUpdatePayload,
   ModelDownloadResult,
   ProjectLicenseReport,
   ProjectSummary,
   ProjectVersionGraph,
   SkippedJobInfo,
   SynopsisOptimizeResult,
+  TrainingEntitiesSnapshot,
   TrainingJob,
+  TrainingRecipe,
+  TrainingRecipeCreatePayload,
+  TrainingRecipeUpdatePayload,
   WorkerSmokeResult,
 } from "@/types/api";
 import { MessageKey, NetworkMode, NetworkState, NetworkStatus, NetworkTone } from "@/types/enums";
@@ -106,6 +122,8 @@ export const useAppStore = defineStore("app", () => {
   const projectTrainingJobs = ref<Record<string, TrainingJob[]>>({});
   const assetDrawerOpen = ref<boolean>(false);
   const workerSmokeResults = ref<Record<string, WorkerSmokeResult>>({});
+  /** Per-project training entity snapshots (spec §7.1.1 / M4.c). */
+  const projectTrainingEntities = ref<Record<string, TrainingEntitiesSnapshot>>({});
   /** Last batch-execute summary — exposed so the UI can show honest skip counts (spec §5.14). */
   const lastBatchResult = ref<{ executedCount: number; skipped: SkippedJobInfo[] } | null>(null);
   let integrationRequest: Promise<IntegrationSnapshot> | null = null;
@@ -604,6 +622,169 @@ export const useAppStore = defineStore("app", () => {
     await loadIntegrationSnapshot(true);
   }
 
+  // ---------------------------------------------------------------------------
+  // §7.1.1 training entity actions (M4.c)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Loads (or reloads) all five training entities for a project in parallel.
+   */
+  async function loadProjectTrainingEntities(projectId: string): Promise<TrainingEntitiesSnapshot> {
+    const snapshot = await apiClient.trainingEntities(projectId);
+    projectTrainingEntities.value = {
+      ...projectTrainingEntities.value,
+      [projectId]: snapshot,
+    };
+    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
+    errorMessageKey.value = null;
+    return snapshot;
+  }
+
+  /**
+   * Creates a character sheet and refreshes the project snapshot.
+   */
+  async function createCharacter(projectId: string, payload: CharacterSheetCreatePayload): Promise<CharacterSheet> {
+    const response = await apiClient.createCharacter(projectId, payload);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_ADD0;
+    return response.item;
+  }
+
+  /**
+   * Updates a character sheet and refreshes the project snapshot.
+   */
+  async function updateCharacter(projectId: string, id: string, payload: CharacterSheetUpdatePayload): Promise<CharacterSheet> {
+    const response = await apiClient.updateCharacter(projectId, id, payload);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
+    return response.item;
+  }
+
+  /**
+   * Deletes a character sheet and refreshes the project snapshot.
+   */
+  async function deleteCharacter(projectId: string, id: string): Promise<void> {
+    await apiClient.deleteCharacter(projectId, id);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
+  }
+
+  /**
+   * Creates a dataset pack and refreshes the project snapshot.
+   */
+  async function createDatasetPack(projectId: string, payload: DatasetPackCreatePayload): Promise<DatasetPack> {
+    const response = await apiClient.createDatasetPack(projectId, payload);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_ADD0;
+    return response.item;
+  }
+
+  /**
+   * Updates a dataset pack and refreshes the project snapshot.
+   */
+  async function updateDatasetPack(projectId: string, id: string, payload: DatasetPackUpdatePayload): Promise<DatasetPack> {
+    const response = await apiClient.updateDatasetPack(projectId, id, payload);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
+    return response.item;
+  }
+
+  /**
+   * Deletes a dataset pack and refreshes the project snapshot.
+   */
+  async function deleteDatasetPack(projectId: string, id: string): Promise<void> {
+    await apiClient.deleteDatasetPack(projectId, id);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
+  }
+
+  /**
+   * Creates a training recipe and refreshes the project snapshot.
+   */
+  async function createTrainingRecipe(projectId: string, payload: TrainingRecipeCreatePayload): Promise<TrainingRecipe> {
+    const response = await apiClient.createTrainingRecipe(projectId, payload);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_ADD0;
+    return response.item;
+  }
+
+  /**
+   * Updates a training recipe and refreshes the project snapshot.
+   */
+  async function updateTrainingRecipe(projectId: string, id: string, payload: TrainingRecipeUpdatePayload): Promise<TrainingRecipe> {
+    const response = await apiClient.updateTrainingRecipe(projectId, id, payload);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
+    return response.item;
+  }
+
+  /**
+   * Deletes a training recipe and refreshes the project snapshot.
+   */
+  async function deleteTrainingRecipe(projectId: string, id: string): Promise<void> {
+    await apiClient.deleteTrainingRecipe(projectId, id);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
+  }
+
+  /**
+   * Creates a LoRA preset and refreshes the project snapshot.
+   */
+  async function createLoraPreset(projectId: string, payload: LoraPresetCreatePayload): Promise<LoraPreset> {
+    const response = await apiClient.createLoraPreset(projectId, payload);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_ADD0;
+    return response.item;
+  }
+
+  /**
+   * Updates a LoRA preset and refreshes the project snapshot.
+   */
+  async function updateLoraPreset(projectId: string, id: string, payload: LoraPresetUpdatePayload): Promise<LoraPreset> {
+    const response = await apiClient.updateLoraPreset(projectId, id, payload);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
+    return response.item;
+  }
+
+  /**
+   * Deletes a LoRA preset and refreshes the project snapshot.
+   */
+  async function deleteLoraPreset(projectId: string, id: string): Promise<void> {
+    await apiClient.deleteLoraPreset(projectId, id);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
+  }
+
+  /**
+   * Creates an image-to-video recipe and refreshes the project snapshot.
+   */
+  async function createI2vRecipe(projectId: string, payload: ImageToVideoRecipeCreatePayload): Promise<ImageToVideoRecipe> {
+    const response = await apiClient.createI2vRecipe(projectId, payload);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_ADD0;
+    return response.item;
+  }
+
+  /**
+   * Updates an image-to-video recipe and refreshes the project snapshot.
+   */
+  async function updateI2vRecipe(projectId: string, id: string, payload: ImageToVideoRecipeUpdatePayload): Promise<ImageToVideoRecipe> {
+    const response = await apiClient.updateI2vRecipe(projectId, id, payload);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
+    return response.item;
+  }
+
+  /**
+   * Deletes an image-to-video recipe and refreshes the project snapshot.
+   */
+  async function deleteI2vRecipe(projectId: string, id: string): Promise<void> {
+    await apiClient.deleteI2vRecipe(projectId, id);
+    await loadProjectTrainingEntities(projectId);
+    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
+  }
+
   function updateProjectDraft(payload: CreateProjectPayload): void {
     projectDraft.value = { ...payload };
   }
@@ -656,6 +837,7 @@ export const useAppStore = defineStore("app", () => {
     projectDraft,
     projectJobs,
     projectPlans,
+    projectTrainingEntities,
     projectTrainingJobs,
     projectVersionGraphs,
     projectSchema,
@@ -698,5 +880,21 @@ export const useAppStore = defineStore("app", () => {
     updateProjectJob,
     updateProjectDraft,
     updateStudioDraft,
+    loadProjectTrainingEntities,
+    createCharacter,
+    updateCharacter,
+    deleteCharacter,
+    createDatasetPack,
+    updateDatasetPack,
+    deleteDatasetPack,
+    createTrainingRecipe,
+    updateTrainingRecipe,
+    deleteTrainingRecipe,
+    createLoraPreset,
+    updateLoraPreset,
+    deleteLoraPreset,
+    createI2vRecipe,
+    updateI2vRecipe,
+    deleteI2vRecipe,
   };
 });
