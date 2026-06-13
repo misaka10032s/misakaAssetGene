@@ -1323,11 +1323,20 @@ scripts/smoke/
 | Windows | `scripts/setup.ps1` | 雙擊（自動提權）或 PowerShell 跑 |
 | macOS / Linux | `scripts/setup.sh` | Terminal 跑 `./setup.sh` |
 
-**Setup 內部流程**：
-1. 呼叫 `manager.ps1/sh` 的「全部檢查並安裝」模式（tools + 必要 workers）
-2. 跑 `doctor.py`（GPU / VRAM / 磁碟 / 網路檢查）
-3. 初始化 `core/` Python venv
-4. 啟動 Core Service + Tauri UI
+**Setup 內部流程（uv-bootstrap，M4.e 實作）**：
+
+1. 偵測 OS / 硬體（GPU best-effort）
+2. 下載 `uv` binary（若已在 PATH 或 `tools/bin/` 則跳過）
+3. `uv python install 3.11`（若 `.venv` 已存在則跳過）
+4. `uv venv .venv`（若 `.venv` 已存在則跳過）
+5. `uv pip install -e .`（安裝 `pyproject.toml` 核心依賴）
+6. 確保 ffmpeg（`ensure_desktop_toolchain.py`，非致命）
+7. 初始化資料夾 `projects/ logs/ tmp/`
+
+Dev-Mode 向下相容：uv / `.venv` / ffmpeg 已存在時自動跳過對應步驟。
+
+> **[DEFERRED] Tauri 跨平台封裝**（`.msi` / `.dmg` / `.AppImage` 打包設定）
+> 已明確延後至後續里程碑，不在 M4.e 範圍內。
 
 ### 11.2 階段化進度 UI
 
@@ -1343,14 +1352,19 @@ scripts/smoke/
 
 ### 11.3 友善錯誤處理
 
-**白名單已知錯誤**：寫好中文說明 + 修復指令
-- 網路逾時 → 「網路不穩，按 Enter 重試或設定 proxy」
-- 磁碟不足 → 「需 15GB，目前 C 槽剩 8GB」
-- CUDA 驅動缺失 → 「未偵測到 NVIDIA 驅動。連結：...」
-- PowerShell 執行策略 → 「請以管理員執行：`Set-ExecutionPolicy RemoteSigned`」
-- SHA256 不符 → 「下載檔損毀，自動重試；連續失敗請檢查網路」
+**白名單已知錯誤**（`scripts/lib/setup_diagnostics.py` `KNOWN_ERRORS`，M4.e 實作）：
 
-**未知錯誤**：完整 traceback **只寫入 `setup.log`**，console 顯示：
+| 白名單 key | 觸發情境 | 友善訊息（zh-TW）|
+|---|---|---|
+| `network_timeout` | 連線逾時 / ReadTimeout | 網路不穩，按 Enter 重試或設定 proxy |
+| `network_unreachable` | getaddrinfo failed / ConnectionRefused | 無法連線，請確認網路後重試 |
+| `disk_full` | [Errno 28] / WinError 112 | 磁碟空間不足，需 15 GB |
+| `cuda_missing` | libcuda.so.1 not found / NVIDIA-SMI failed | 未偵測到 NVIDIA 驅動；提供官方連結 |
+| `powershell_execution_policy` | running scripts is disabled | 請以管理員執行 Set-ExecutionPolicy RemoteSigned |
+| `hash_mismatch` | sha256 / digest did not match | 下載檔損毀，自動重試 |
+| `permission_denied` | PermissionError / [Errno 13] | 權限不足；Windows 請管理員執行 |
+
+**未知錯誤**：完整 traceback **只寫入 `setup.log`**（API key 脫敏），console 顯示：
 ```
 ⚠ 步驟 [5/7] 發生未知錯誤
    摘要: ImportError: libcuda.so.1 not found
@@ -1362,7 +1376,15 @@ scripts/smoke/
    [s] 跳過此步驟繼續
 ```
 
-AI 解釋路徑：讀 `.env` 有沒有 API key；沒有就提示「先取得一組免費 key」+ 常見 provider 連結；丟 `setup.log` 最後 50 行 + 系統資訊給 LLM。
+**AI 解釋路徑**（`scripts/lib/setup_ai_explain.py`，M4.e 實作）：
+1. 讀 `.env` 偵測 API key / Ollama URL。
+2. 若無任何 provider → 返回引導訊息（provider 列表 + 官方連結），不發起 LLM 請求。
+3. 若有 provider → 優先用 Ollama（local），次選 Anthropic / OpenAI / Gemini（cloud）。
+4. Prompt = `setup.log` 最後 50 行（已脫敏）+ OS / arch / Python 版本資訊。
+5. 安全機制：API key 僅透過 HTTP header 傳遞（`x-api-key` / `Authorization: Bearer`），
+   絕不寫入 URL query、setup.log、或 console 輸出。
+   Log 寫入前經 `_redact()` 脫敏（regex 匹配 ≥20 字元的 API key 形式字串 → `[REDACTED]`）。
+6. LLM client 可注入（測試用 fake；生產用 `_build_default_client`）。
 
 ### 11.4 原則
 - console 不印 Python traceback（只寫 log）

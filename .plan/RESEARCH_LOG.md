@@ -267,3 +267,85 @@ Resume from checkpoint **尚未實作**。`TrainingJob.resume_checkpoint_path` �
 - (f) Live command path 1 case（asset_store_resolver → real kohya_ss argv，非 echo）
 
 **狀態：已完成（real-run deferred，GPT-SoVITS CLI args DEFERRED，resume TODO）**
+
+---
+
+## 11. 2026-06-13 — M4.e Portable-Release uv-bootstrap + setup 錯誤 AI 解釋
+
+### 11.1 範圍決策（PM 決策）
+
+**實作**：uv-bootstrap setup flow、`setup.log` 基礎設施、已知錯誤白名單、setup 錯誤 AI 解釋。  
+**延後（DEFERRED）**：Tauri 跨平台封裝（`.msi` / `.dmg` / `.AppImage` 打包設定）——留待後續里程碑。
+
+### 11.2 uv-bootstrap 流程設計
+
+`scripts/setup.ps1`（Windows）與 `scripts/setup.sh`（macOS / Linux）均實作 7 階段 bootstrap：
+
+| 階段 | 動作 | Dev-Mode 跳過條件 |
+|---|---|---|
+| [1/7] | 偵測 OS / 硬體（GPU best-effort） | — |
+| [2/7] | 下載 uv binary（pinned v0.5.31） | uv 已在 PATH 或 `tools/bin/` |
+| [3/7] | `uv python install 3.11` | `.venv` 已存在 |
+| [4/7] | `uv venv .venv` | `.venv` 已存在 |
+| [5/7] | `uv pip install -e .`（核心依賴） | — |
+| [6/7] | 確保 ffmpeg（非致命） | ffmpeg 已在 PATH 或 `tools/bin/` |
+| [7/7] | 初始化 `projects/ logs/ tmp/` | — |
+
+uv 下載 URL 格式：`https://github.com/astral-sh/uv/releases/download/{version}/{asset}`。  
+資產命名遵循 uv 官方 release asset 規則（x86_64/aarch64 × windows/darwin/linux）。
+
+### 11.3 已知錯誤白名單（`scripts/lib/setup_diagnostics.py`）
+
+`KNOWN_ERRORS` tuple（順序匹配，first-match wins）：
+
+| key | 主要觸發 pattern |
+|---|---|
+| `network_timeout` | `timed out`, `ConnectTimeout`, `ReadTimeout`, `urlopen error timed out` |
+| `network_unreachable` | `getaddrinfo failed`, `ConnectionRefusedError`, `No route to host` |
+| `disk_full` | `No space left on device`, `WinError 112`, `OSError: [Errno 28]` |
+| `cuda_missing` | `libcuda.so`, `libcuda.so.1`, `NVIDIA-SMI has failed` |
+| `powershell_execution_policy` | `running scripts is disabled`, `ExecutionPolicy`, `UnauthorizedAccess` |
+| `hash_mismatch` | `sha256`, `checksum`, `digest did not match` |
+| `permission_denied` | `PermissionError`, `[Errno 13]`, `WinError 5`, `access is denied` |
+
+### 11.4 setup.log 基礎設施（`scripts/lib/setup_diagnostics.py`）
+
+- `write_to_log(stage_label, error_text, exc, root)` → 附加到 `<root>/setup.log`。
+- 所有文字先過 `_redact()` 脫敏（regex：≥20 字元的 alphanumeric+特殊字元 blob，或 `sk-` / `AIza` / `Bearer ` 前綴）→ 替換為 `[REDACTED]`。
+- `build_console_summary(stage_index, stage_total, one_line_summary, log_path)` → 產生 §11.3 規格的 console 文字（包含 y/n/s 選項）。
+
+### 11.5 AI 解釋設計（`scripts/lib/setup_ai_explain.py`）
+
+1. `explain_setup_error(stage_label, log_path, root, llm_client=None)` — 公共入口。
+2. **無 provider 路徑**：`_load_env_keys()` 讀 `.env` → `_has_any_provider()` 返回 False → 直接返回 `NO_KEY_GUIDANCE`（provider 列表 + 官方連結），不發起任何 LLM 請求。
+3. **有 provider 路徑**：優先順序 Ollama（local）> Anthropic > OpenAI；`_build_default_client()` 根據 env_keys 選擇。
+4. **Prompt 構成**：`build_explain_prompt()` = 最後 50 行 `setup.log`（再次 `_redact`）+ OS / arch / Python 版本資訊 + 階段標籤。
+5. **LLM client 可注入**：測試傳入 fake callable；生產用 `_build_default_client`。
+
+### 11.6 安全機制
+
+- API key 僅透過 HTTP header 傳遞（`x-api-key` / `Authorization: Bearer`），絕不出現在 URL query params。
+- `write_to_log` 寫入前 → `_redact(error_text)` + `_redact(traceback_text)`。
+- `build_console_summary` 的 `one_line_summary` 也過 `_redact`。
+- `build_explain_prompt` 中的 log tail 也過 `_redact`（belt-and-suspenders，因 log 寫入時已脫敏）。
+- 測試 `test_api_key_not_in_setup_log` 與 `test_api_key_not_in_console_summary` 驗證 key 不洩漏。
+
+### 11.7 [DEFERRED] Tauri 跨平台封裝
+
+`.msi`（Windows）/ `.dmg`（macOS）/ `.AppImage`（Linux）的 `tauri.conf.json` / CI bundle 設定**未在 M4.e 實作**。  
+本次交付的 setup script 以 uv + Python venv 為完整可測試核心；Tauri shell 封裝留待後續里程碑。
+
+### 11.8 驗證
+
+`uv run --extra dev pytest tests/ -q` → **296 passed, 3 warnings**（含 39 個新測試在 `tests/test_setup_diagnostics.py`）。
+
+測試涵蓋：
+- (a) 白名單 7 個 key 各至少 2 個觸發 pattern，含 case-insensitive 驗證
+- (b) 未知錯誤 → `setup.log` 寫入（含 exception traceback）+ console summary 正確格式
+- (c) AI 解釋 fake LLM：無 key 路徑不呼叫 client；有 key 路徑呼叫並回傳；prompt 含 last-50 log lines + OS info + stage label
+- (d) 安全：fake key 不出現在 setup.log / console summary；redact 覆蓋 Bearer token、traceback 中嵌入的 key
+
+PowerShell parse check：`0 errors`。  
+Bash parse check：`bash -n` 通過。
+
+**狀態：已完成（Tauri 封裝 DEFERRED）**
