@@ -96,3 +96,36 @@
 **結論**：**已完成**。導入有效狀態 ONLINE / DEGRADED / OFFLINE（`core/network/state.py`）。`NetworkStateService` 由模式 + cloud/local 探測解析狀態並記錄切換；`core/llm/router.py:gate_providers` 在非 ONLINE 時將 cloud provider 標記 DISABLED。API snapshot 新增 `state`/`local_available`/`recent_transitions`，前端設定頁顯示 badge 與切換記錄。spec §11.5 + v0.9.2 changelog 已標註。12 條測試通過。
 
 **狀態：已完成**
+
+---
+
+## 7. 2026-06-13 — M4.a §7.1.1 四實體 SQLite CRUD 設計決策
+
+### 7.1 儲存方案選擇（SQLite vs JSON 檔案）
+**問題**：CharacterSheet / DatasetPack / TrainingRecipe / LoraPreset 應存在 SQLite 還是 JSON 檔案？  
+**結論（PM 已決策）**：統一存入各專案資料夾內的 `memory.sqlite`（與顧問 sessions 表同一檔案），不使用 JSON 檔案。  
+理由：事務性一致性、並發安全（WAL 模式）、project scoping 自然分離、與 SessionStore 模式一致。
+
+### 7.2 表結構設計
+四張表（`character_sheets`, `dataset_packs`, `training_recipes`, `lora_presets`）均遵循 SessionStore 慣例：
+- 所有 array / object 欄位序列化為 JSON TEXT
+- `created_at` / `updated_at` 以 ISO 8601 TEXT 儲存
+- `project_id` 有索引，CRUD 操作全部帶 `AND project_id=?` 以確保 project scoping isolation
+- WAL mode + busy_timeout=5000ms（與 SessionStore 相同）
+
+### 7.3 訓練執行延後
+kohya_ss executor / 訓練觸發邏輯延後至 M4.c，不在本 sub-phase 內。
+
+### 7.4 API 路徑
+- `/api/v1/projects/{project_id}/characters` (CharacterSheet)
+- `/api/v1/projects/{project_id}/dataset-packs` (DatasetPack)
+- `/api/v1/projects/{project_id}/training-recipes` (TrainingRecipe)
+- `/api/v1/projects/{project_id}/lora-presets` (LoraPreset)
+
+各實體支援 GET (list) / POST (create) / GET :id / PATCH :id / DELETE :id。
+
+### 7.5 驗證
+`uv run --extra dev pytest tests/ -q` → 155 passed, 0 failed。  
+新增 40 個測試（`tests/test_asset_store.py`）涵蓋：store 單元測試（create/get/list/update/delete、project scoping、persistence across reopen、404 路徑）+ API 路由測試（TestClient）。
+
+**狀態：已完成**

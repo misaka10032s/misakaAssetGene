@@ -31,14 +31,23 @@ from core.models.schemas import (
     ApiResponse,
     BatchExecuteData,
     BatchExecuteRequest,
+    CharacterSheet,
+    CharacterSheetCreateRequest,
+    CharacterSheetUpdateRequest,
     ClarifyRequest,
     ConsultantSessionAdvanceRequest,
     ConsultantSessionStartRequest,
     ConversationHistoryData,
+    DatasetPack,
+    DatasetPackCreateRequest,
+    DatasetPackUpdateRequest,
     HealthData,
     IntegrationSnapshot,
     JobExecutionPatch,
     LocalLlmStatus,
+    LoraPreset,
+    LoraPresetCreateRequest,
+    LoraPresetUpdateRequest,
     MessageKey,
     ModelDownloadRequest,
     ModelDownloadResult,
@@ -51,6 +60,9 @@ from core.models.schemas import (
     RefineRequest,
     SynopsisOptimizeRequest,
     TrainingJobCreateRequest,
+    TrainingRecipe,
+    TrainingRecipeCreateRequest,
+    TrainingRecipeUpdateRequest,
     TrainingWorkspaceData,
     WorkerSmokeResult,
 )
@@ -66,6 +78,7 @@ from core.project.manager import (
     ProjectValidationError,
 )
 from core.reporting.license import LicenseReportService
+from core.training.asset_store import AssetStore
 from core.training.service import TrainingService
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -107,6 +120,19 @@ network_state_service = NetworkStateService()
 project_export_service = ProjectExportService()
 license_report_service = LicenseReportService()
 training_service = TrainingService(project_manager)
+
+# §7.1.1 asset stores — one per project, keyed by project_id; opened lazily.
+_asset_stores: dict[str, AssetStore] = {}
+
+
+def _asset_store(project_id: str) -> AssetStore:
+    """Return (and cache) the AssetStore for a project's memory.sqlite."""
+    if project_id not in _asset_stores:
+        _, project_dir = project_manager.get_project(project_id)
+        _asset_stores[project_id] = AssetStore(project_dir / "memory.sqlite")
+    return _asset_stores[project_id]
+
+
 integration_snapshot_cache: tuple[float, IntegrationSnapshot] | None = None
 integration_snapshot_lock = threading.Lock()
 
@@ -597,6 +623,286 @@ def create_project_training_job(project_id: str, payload: TrainingJobCreateReque
     except ProjectNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return success_response(MessageKey.SUCCESS_ADD0, result.model_dump(mode="json"))
+
+
+# ---------------------------------------------------------------------------
+# §7.1.1 — CharacterSheet routes  (/api/v1/projects/{project_id}/characters)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/projects/{project_id}/characters", response_model=ApiResponse)
+def list_character_sheets(project_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/characters", project_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    items = store.list_character_sheets(project_id)
+    return success_response(MessageKey.SUCCESS_FETCH0, {"characters": [item.model_dump(mode="json") for item in items]})
+
+
+@app.post("/api/v1/projects/{project_id}/characters", response_model=ApiResponse)
+def create_character_sheet(project_id: str, payload: CharacterSheetCreateRequest) -> ApiResponse:
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/%s/characters name=%s", project_id, payload.name)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.create_character_sheet(project_id, payload)
+    return success_response(MessageKey.SUCCESS_ADD0, {"character": item.model_dump(mode="json")})
+
+
+@app.get("/api/v1/projects/{project_id}/characters/{character_id}", response_model=ApiResponse)
+def get_character_sheet(project_id: str, character_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/characters/%s", project_id, character_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.get_character_sheet(project_id, character_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Character sheet not found: {character_id}")
+    return success_response(MessageKey.SUCCESS_FETCH0, {"character": item.model_dump(mode="json")})
+
+
+@app.patch("/api/v1/projects/{project_id}/characters/{character_id}", response_model=ApiResponse)
+def update_character_sheet(project_id: str, character_id: str, payload: CharacterSheetUpdateRequest) -> ApiResponse:
+    if IS_DEV:
+        logger.info("PATCH /api/v1/projects/%s/characters/%s", project_id, character_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.update_character_sheet(project_id, character_id, payload)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Character sheet not found: {character_id}")
+    return success_response(MessageKey.SUCCESS_SWITCH0, {"character": item.model_dump(mode="json")})
+
+
+@app.delete("/api/v1/projects/{project_id}/characters/{character_id}", response_model=ApiResponse)
+def delete_character_sheet(project_id: str, character_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("DELETE /api/v1/projects/%s/characters/%s", project_id, character_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    deleted = store.delete_character_sheet(project_id, character_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Character sheet not found: {character_id}")
+    return success_response(MessageKey.SUCCESS_SWITCH0, {"deleted": character_id})
+
+
+# ---------------------------------------------------------------------------
+# §7.1.1 — DatasetPack routes  (/api/v1/projects/{project_id}/dataset-packs)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/projects/{project_id}/dataset-packs", response_model=ApiResponse)
+def list_dataset_packs(project_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/dataset-packs", project_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    items = store.list_dataset_packs(project_id)
+    return success_response(MessageKey.SUCCESS_FETCH0, {"dataset_packs": [item.model_dump(mode="json") for item in items]})
+
+
+@app.post("/api/v1/projects/{project_id}/dataset-packs", response_model=ApiResponse)
+def create_dataset_pack(project_id: str, payload: DatasetPackCreateRequest) -> ApiResponse:
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/%s/dataset-packs source=%s", project_id, payload.source)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.create_dataset_pack(project_id, payload)
+    return success_response(MessageKey.SUCCESS_ADD0, {"dataset_pack": item.model_dump(mode="json")})
+
+
+@app.get("/api/v1/projects/{project_id}/dataset-packs/{pack_id}", response_model=ApiResponse)
+def get_dataset_pack(project_id: str, pack_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/dataset-packs/%s", project_id, pack_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.get_dataset_pack(project_id, pack_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Dataset pack not found: {pack_id}")
+    return success_response(MessageKey.SUCCESS_FETCH0, {"dataset_pack": item.model_dump(mode="json")})
+
+
+@app.patch("/api/v1/projects/{project_id}/dataset-packs/{pack_id}", response_model=ApiResponse)
+def update_dataset_pack(project_id: str, pack_id: str, payload: DatasetPackUpdateRequest) -> ApiResponse:
+    if IS_DEV:
+        logger.info("PATCH /api/v1/projects/%s/dataset-packs/%s", project_id, pack_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.update_dataset_pack(project_id, pack_id, payload)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Dataset pack not found: {pack_id}")
+    return success_response(MessageKey.SUCCESS_SWITCH0, {"dataset_pack": item.model_dump(mode="json")})
+
+
+@app.delete("/api/v1/projects/{project_id}/dataset-packs/{pack_id}", response_model=ApiResponse)
+def delete_dataset_pack(project_id: str, pack_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("DELETE /api/v1/projects/%s/dataset-packs/%s", project_id, pack_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    deleted = store.delete_dataset_pack(project_id, pack_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Dataset pack not found: {pack_id}")
+    return success_response(MessageKey.SUCCESS_SWITCH0, {"deleted": pack_id})
+
+
+# ---------------------------------------------------------------------------
+# §7.1.1 — TrainingRecipe routes  (/api/v1/projects/{project_id}/training-recipes)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/projects/{project_id}/training-recipes", response_model=ApiResponse)
+def list_training_recipes(project_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/training-recipes", project_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    items = store.list_training_recipes(project_id)
+    return success_response(MessageKey.SUCCESS_FETCH0, {"training_recipes": [item.model_dump(mode="json") for item in items]})
+
+
+@app.post("/api/v1/projects/{project_id}/training-recipes", response_model=ApiResponse)
+def create_training_recipe(project_id: str, payload: TrainingRecipeCreateRequest) -> ApiResponse:
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/%s/training-recipes base_model=%s", project_id, payload.base_model)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.create_training_recipe(project_id, payload)
+    return success_response(MessageKey.SUCCESS_ADD0, {"training_recipe": item.model_dump(mode="json")})
+
+
+@app.get("/api/v1/projects/{project_id}/training-recipes/{recipe_id}", response_model=ApiResponse)
+def get_training_recipe(project_id: str, recipe_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/training-recipes/%s", project_id, recipe_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.get_training_recipe(project_id, recipe_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Training recipe not found: {recipe_id}")
+    return success_response(MessageKey.SUCCESS_FETCH0, {"training_recipe": item.model_dump(mode="json")})
+
+
+@app.patch("/api/v1/projects/{project_id}/training-recipes/{recipe_id}", response_model=ApiResponse)
+def update_training_recipe(project_id: str, recipe_id: str, payload: TrainingRecipeUpdateRequest) -> ApiResponse:
+    if IS_DEV:
+        logger.info("PATCH /api/v1/projects/%s/training-recipes/%s", project_id, recipe_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.update_training_recipe(project_id, recipe_id, payload)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Training recipe not found: {recipe_id}")
+    return success_response(MessageKey.SUCCESS_SWITCH0, {"training_recipe": item.model_dump(mode="json")})
+
+
+@app.delete("/api/v1/projects/{project_id}/training-recipes/{recipe_id}", response_model=ApiResponse)
+def delete_training_recipe(project_id: str, recipe_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("DELETE /api/v1/projects/%s/training-recipes/%s", project_id, recipe_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    deleted = store.delete_training_recipe(project_id, recipe_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Training recipe not found: {recipe_id}")
+    return success_response(MessageKey.SUCCESS_SWITCH0, {"deleted": recipe_id})
+
+
+# ---------------------------------------------------------------------------
+# §7.1.1 — LoraPreset routes  (/api/v1/projects/{project_id}/lora-presets)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/projects/{project_id}/lora-presets", response_model=ApiResponse)
+def list_lora_presets(project_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/lora-presets", project_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    items = store.list_lora_presets(project_id)
+    return success_response(MessageKey.SUCCESS_FETCH0, {"lora_presets": [item.model_dump(mode="json") for item in items]})
+
+
+@app.post("/api/v1/projects/{project_id}/lora-presets", response_model=ApiResponse)
+def create_lora_preset(project_id: str, payload: LoraPresetCreateRequest) -> ApiResponse:
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/%s/lora-presets name=%s", project_id, payload.name)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.create_lora_preset(project_id, payload)
+    return success_response(MessageKey.SUCCESS_ADD0, {"lora_preset": item.model_dump(mode="json")})
+
+
+@app.get("/api/v1/projects/{project_id}/lora-presets/{preset_id}", response_model=ApiResponse)
+def get_lora_preset(project_id: str, preset_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/lora-presets/%s", project_id, preset_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.get_lora_preset(project_id, preset_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"LoRA preset not found: {preset_id}")
+    return success_response(MessageKey.SUCCESS_FETCH0, {"lora_preset": item.model_dump(mode="json")})
+
+
+@app.patch("/api/v1/projects/{project_id}/lora-presets/{preset_id}", response_model=ApiResponse)
+def update_lora_preset(project_id: str, preset_id: str, payload: LoraPresetUpdateRequest) -> ApiResponse:
+    if IS_DEV:
+        logger.info("PATCH /api/v1/projects/%s/lora-presets/%s", project_id, preset_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    item = store.update_lora_preset(project_id, preset_id, payload)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"LoRA preset not found: {preset_id}")
+    return success_response(MessageKey.SUCCESS_SWITCH0, {"lora_preset": item.model_dump(mode="json")})
+
+
+@app.delete("/api/v1/projects/{project_id}/lora-presets/{preset_id}", response_model=ApiResponse)
+def delete_lora_preset(project_id: str, preset_id: str) -> ApiResponse:
+    if IS_DEV:
+        logger.info("DELETE /api/v1/projects/%s/lora-presets/%s", project_id, preset_id)
+    try:
+        store = _asset_store(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    deleted = store.delete_lora_preset(project_id, preset_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"LoRA preset not found: {preset_id}")
+    return success_response(MessageKey.SUCCESS_SWITCH0, {"deleted": preset_id})
 
 
 @app.post("/api/v1/workers/{worker_name}/install", response_model=ApiResponse)

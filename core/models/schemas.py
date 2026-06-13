@@ -561,5 +561,131 @@ class TrainingWorkspaceData(BaseModel):
     jobs: list[TrainingJob] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# §7.1.1 — Character sheet / dataset pack / training recipe / LoRA preset
+# ---------------------------------------------------------------------------
+
+class CharacterSheet(BaseModel):
+    """Spec §7.1.1 — character identity record for multi-character LoRA workflows."""
+
+    id: str
+    project_id: str
+    name: str  # 角色名
+    visual_anchors: list[str] = Field(default_factory=list)  # 外觀錨點
+    trigger_words: list[str] = Field(default_factory=list)   # 觸發詞
+    forbidden_features: list[str] = Field(default_factory=list)  # 禁忌特徵
+    reference_image_refs: list[str] = Field(default_factory=list)  # 參考圖 (relative paths)
+    created_at: datetime
+    updated_at: datetime
+
+
+class CharacterSheetCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    visual_anchors: list[str] = Field(default_factory=list)
+    trigger_words: list[str] = Field(default_factory=list)
+    forbidden_features: list[str] = Field(default_factory=list)
+    reference_image_refs: list[str] = Field(default_factory=list)
+
+
+class CharacterSheetUpdateRequest(BaseModel):
+    name: str | None = None
+    visual_anchors: list[str] | None = None
+    trigger_words: list[str] | None = None
+    forbidden_features: list[str] | None = None
+    reference_image_refs: list[str] | None = None
+
+
+class DatasetPack(BaseModel):
+    """Spec §7.1.1 — dataset collection record for LoRA training."""
+
+    id: str
+    project_id: str
+    source: str  # 蒐集來源
+    cleaning_status: str  # 清洗狀態 (e.g. raw / cleaned / tagged)
+    tags: list[str] = Field(default_factory=list)
+    license: str = ""  # 授權
+    split_strategy: str = ""  # 切分方式
+    members: list[str] = Field(default_factory=list)  # file refs / member list
+    created_at: datetime
+    updated_at: datetime
+
+
+class DatasetPackCreateRequest(BaseModel):
+    source: str = Field(min_length=1)
+    cleaning_status: str = Field(min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    license: str = ""
+    split_strategy: str = ""
+    members: list[str] = Field(default_factory=list)
+
+
+class DatasetPackUpdateRequest(BaseModel):
+    source: str | None = None
+    cleaning_status: str | None = None
+    tags: list[str] | None = None
+    license: str | None = None
+    split_strategy: str | None = None
+    members: list[str] | None = None
+
+
+class TrainingRecipe(BaseModel):
+    """Spec §7.1.1 — hyperparameter recipe for LoRA / fine-tune runs."""
+
+    id: str
+    project_id: str
+    base_model: str  # 底模
+    rank: int  # LoRA rank
+    epochs: int
+    optimizer: str  # e.g. AdamW8bit
+    caption_strategy: str  # e.g. wd14 / blip / manual
+    created_at: datetime
+    updated_at: datetime
+
+
+class TrainingRecipeCreateRequest(BaseModel):
+    base_model: str = Field(min_length=1)
+    rank: int = Field(ge=1)
+    epochs: int = Field(ge=1)
+    optimizer: str = Field(min_length=1)
+    caption_strategy: str = Field(min_length=1)
+
+
+class TrainingRecipeUpdateRequest(BaseModel):
+    base_model: str | None = None
+    rank: int | None = Field(default=None, ge=1)
+    epochs: int | None = Field(default=None, ge=1)
+    optimizer: str | None = None
+    caption_strategy: str | None = None
+
+
+class LoraLayer(BaseModel):
+    """A single LoRA layer in a LoraPreset stack."""
+
+    kind: str  # e.g. character / costume / style
+    lora_ref: str  # path or identifier
+    weight: float = 1.0
+
+
+class LoraPreset(BaseModel):
+    """Spec §7.1.1 — named stack of LoRA layers (character/costume/style combos)."""
+
+    id: str
+    project_id: str
+    name: str
+    layers: list[LoraLayer] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class LoraPresetCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    layers: list[LoraLayer] = Field(default_factory=list)
+
+
+class LoraPresetUpdateRequest(BaseModel):
+    name: str | None = None
+    layers: list[LoraLayer] | None = None
+
+
 ConversationEntry.model_rebuild()
 ProjectWorkspaceData.model_rebuild()

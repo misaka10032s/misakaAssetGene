@@ -952,6 +952,7 @@ project workspace 的 conversation history 不可一次完整渲染所有訊息�
 
 ### 7.1.1 多角色 LoRA 與資料集工作流
 > v0.6: 新增章節。
+> v0.9.3 (M4.a): 四個實體已實作 SQLite 持久化（詳見下方儲存模型注釋）。
 
 對於「指定角色 → 蒐集訓練資料 → 訓練 → 大量生成動作/背景 → 圖轉影音」這類需求，完整規格必須包含：
 
@@ -962,6 +963,22 @@ project workspace 的 conversation history 不可一次完整渲染所有訊息�
 - `image-to-video recipes`：從 accepted image 版本延伸到動畫/短影片
 
 這些資料若缺少，系統就只能做到「單次生成」，無法真正成為角色量產工廠。
+
+#### §7.1.1 儲存模型（M4.a 決策，2026-06-13）
+
+四個實體均持久化於各專案資料夾內的 `memory.sqlite`（與顧問 sessions 表同一檔案）。
+
+| 實體 | SQLite 表名 | 主要欄位 |
+|---|---|---|
+| CharacterSheet | `character_sheets` | `id`, `project_id`, `name`, `visual_anchors` (JSON), `trigger_words` (JSON), `forbidden_features` (JSON), `reference_image_refs` (JSON), `created_at`, `updated_at` |
+| DatasetPack | `dataset_packs` | `id`, `project_id`, `source`, `cleaning_status`, `tags` (JSON), `license`, `split_strategy`, `members` (JSON), `created_at`, `updated_at` |
+| TrainingRecipe | `training_recipes` | `id`, `project_id`, `base_model`, `rank`, `epochs`, `optimizer`, `caption_strategy`, `created_at`, `updated_at` |
+| LoraPreset | `lora_presets` | `id`, `project_id`, `name`, `layers` (JSON array of `{kind, lora_ref, weight}`), `created_at`, `updated_at` |
+
+- 實作位置：`core/training/asset_store.py` (`AssetStore` class)
+- Pydantic schemas：`core/models/schemas.py`（`CharacterSheet`, `DatasetPack`, `TrainingRecipe`, `LoraPreset` 及各 CreateRequest / UpdateRequest）
+- REST API：`/api/v1/projects/{project_id}/characters`, `/dataset-packs`, `/training-recipes`, `/lora-presets`
+- 訓練執行（kohya_ss executor）延後至 M4.c。
 
 ### 7.2 TTS Voice Clone
 
