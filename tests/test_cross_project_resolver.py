@@ -642,6 +642,43 @@ def test_resolve_reference_legitimate_refs_still_work(tmp_path: Path) -> None:
     assert result["path"].read_bytes() == content
 
 
+def test_copy_external_asset_rejects_absolute_rel_path(tmp_path: Path) -> None:
+    """copy_external_asset must raise when relative_asset_path is absolute.
+
+    Absolute paths like '/etc/passwd' bypass the _external/ root entirely.
+    After the fix a ValueError must be raised before any file is written.
+    """
+    import sys
+    projects_root = tmp_path / "projects"
+    dest_dir = _make_project(projects_root, "dest")
+    source_file = tmp_path / "source.txt"
+    source_file.write_bytes(b"payload")
+
+    # POSIX absolute path
+    with pytest.raises(ValueError, match="Security"):
+        copy_external_asset(source_file, dest_dir, "some-proj", "/etc/passwd")
+
+
+def test_copy_external_asset_rejects_drive_letter_rel_path(tmp_path: Path) -> None:
+    """copy_external_asset must raise when relative_asset_path contains a drive letter.
+
+    Windows-style absolute paths like 'C:\\Windows\\secret.txt' bypass the
+    _external/ root.  The lexical guard must catch the anchor/drive component.
+    """
+    import sys
+    if sys.platform != "win32":
+        pytest.skip("Drive-letter path test is Windows-specific")
+    projects_root = tmp_path / "projects"
+    dest_dir = _make_project(projects_root, "dest")
+    source_file = tmp_path / "source.txt"
+    source_file.write_bytes(b"payload")
+
+    with pytest.raises(ValueError, match="Security"):
+        copy_external_asset(
+            source_file, dest_dir, "some-proj", r"C:\Windows\secret.txt"
+        )
+
+
 def test_copy_external_asset_legitimate_path_still_works(tmp_path: Path) -> None:
     """Positive test: copy_external_asset with a normal rel_path succeeds after fix."""
     projects_root = tmp_path / "projects"
@@ -661,6 +698,57 @@ def test_copy_external_asset_legitimate_path_still_works(tmp_path: Path) -> None
     # Must be inside _external/
     assert dest_file.resolve().is_relative_to(
         (dest_dir / "_external").resolve()
+    )
+
+
+def test_copy_external_asset_symlink_escape_blocked(tmp_path: Path) -> None:
+    """copy_external_asset must raise when the parent dir contains a symlink
+    pointing outside _external/ (symlink escape attack).
+
+    This test verifies that the post-mkdir parent-resolve check catches symlinks.
+    On Windows, symlink creation typically requires elevated privileges; if
+    os.symlink raises PermissionError or NotImplementedError the test is skipped
+    (the parent-resolve guard is still present in the code; the test cannot run
+    without symlink privilege).  The lexical pre-validation layer alone already
+    blocks '..' and absolute paths without needing symlinks.
+    """
+    import sys
+    projects_root = tmp_path / "projects"
+    dest_dir = _make_project(projects_root, "dest")
+    (dest_dir / "_external").mkdir(parents=True, exist_ok=True)
+
+    # Create the real directory for source project under _external/
+    (dest_dir / "_external" / "src-proj").mkdir(parents=True, exist_ok=True)
+
+    # Create a directory OUTSIDE _external/ to act as the escape target.
+    outside_dir = tmp_path / "outside_escape"
+    outside_dir.mkdir()
+
+    # Plant a symlink inside _external/src-proj/images -> outside_escape
+    symlink_parent = dest_dir / "_external" / "src-proj" / "images"
+    try:
+        symlink_parent.symlink_to(outside_dir)
+    except (PermissionError, NotImplementedError, OSError) as exc:
+        pytest.skip(
+            f"Symlink creation not available (likely requires elevated privileges): {exc}"
+        )
+
+    source_file = tmp_path / "payload.bin"
+    source_file.write_bytes(b"secret-payload")
+
+    # Attempt to write through the symlink:
+    # "images/hero.png" — "images" is the symlink pointing outside _external/.
+    with pytest.raises(ValueError, match="Security"):
+        copy_external_asset(
+            source_file,
+            dest_dir,
+            "src-proj",
+            "images/hero.png",
+        )
+
+    # The file must NOT have been written outside _external/
+    assert not (outside_dir / "hero.png").exists(), (
+        "Symlink escape succeeded: file was written outside _external/"
     )
 
 

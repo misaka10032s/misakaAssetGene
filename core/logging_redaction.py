@@ -4,8 +4,15 @@ This module provides:
   - ``REDACT_RE`` — the single, precompiled regex covering all secret patterns.
   - ``redact(text)`` — pure function; replace secrets + local user paths.
   - ``RedactionFilter`` — ``logging.Filter`` subclass; installs on any logger.
-  - ``install_redaction_filter()`` — installs the filter on the root logger so
-    every logger in the process inherits it automatically.
+  - ``install_redaction_filter()`` — installs the filter on **handlers** (not
+    the root logger) so that records propagating up from child loggers (e.g.
+    ``misaka.core.anything``) are redacted before they reach the output.
+
+    Python filters attached to a **logger** only run for records emitted
+    directly to that logger.  A propagated record bypasses the parent logger's
+    own ``.filters`` and goes straight to the parent's *handlers*.  Therefore
+    the filter must be on each **handler** to guarantee redaction of all
+    propagated records.
 
 Controlled by env var ``MISAKA_LOG_REDACT`` (default: ``"1"`` = ON).
 Set it to ``"0"`` or ``"false"`` to disable for local deep-debugging.
@@ -198,17 +205,30 @@ class RedactionFilter(logging.Filter):
 _FILTER_INSTALLED: bool = False
 _FILTER_SENTINEL: Optional[RedactionFilter] = None
 
+# Track which handler objects already carry our sentinel so idempotency works
+# even when new handlers are added between two install_redaction_filter() calls.
+_INSTALLED_HANDLER_IDS: set[int] = set()
+
 
 def install_redaction_filter() -> bool:
-    """Install ``RedactionFilter`` on the root logger (idempotent).
+    """Install ``RedactionFilter`` on every **handler** of the root logger (idempotent).
+
+    Attaching the filter to handlers (rather than to the logger itself) ensures
+    that records propagated up from child loggers (e.g. ``misaka.core.anything``)
+    are redacted before they reach the output stream.  A filter on a logger
+    only runs for records emitted *directly* to that logger; propagated records
+    skip the logger's own ``.filters`` and go straight to the logger's handlers.
+
+    Call this function **after** ``logging.basicConfig`` (or any other call that
+    adds handlers to the root logger) so that the handlers already exist.
 
     Controlled by ``MISAKA_LOG_REDACT`` env var:
       - ``"1"`` (default) or any truthy value → filter installed.
       - ``"0"`` or ``"false"`` → filter NOT installed; raw logs pass through.
 
     Returns:
-        True if the filter was installed (or already installed), False if
-        disabled by the env toggle.
+        True if the filter was installed (or already installed on all current
+        handlers), False if disabled by the env toggle.
     """
     global _FILTER_INSTALLED, _FILTER_SENTINEL
 
@@ -218,10 +238,14 @@ def install_redaction_filter() -> bool:
     if not enabled:
         return False
 
-    if _FILTER_INSTALLED:
-        return True
+    if _FILTER_SENTINEL is None:
+        _FILTER_SENTINEL = RedactionFilter()
 
-    _FILTER_SENTINEL = RedactionFilter()
-    logging.root.addFilter(_FILTER_SENTINEL)
+    # Add the sentinel to every root handler not yet carrying it.
+    for handler in logging.root.handlers:
+        if id(handler) not in _INSTALLED_HANDLER_IDS:
+            handler.addFilter(_FILTER_SENTINEL)
+            _INSTALLED_HANDLER_IDS.add(id(handler))
+
     _FILTER_INSTALLED = True
     return True

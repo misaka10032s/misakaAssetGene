@@ -110,16 +110,20 @@ settings = get_settings()
 APP_ENV = settings.misaka_env.lower()
 IS_DEV = settings.is_dev
 
-# Install the app-wide redaction filter BEFORE basicConfig so the filter is
-# present on the root logger before any handler is attached.  The filter runs
-# on every LogRecord produced by any logger in this process (all core loggers
-# inherit it via the root).  Controlled by MISAKA_LOG_REDACT (default ON).
-install_redaction_filter()
-
+# Configure logging first so that root handlers exist before we install
+# the redaction filter on them.  The filter must be on each HANDLER (not the
+# root logger itself) so that records propagated from child loggers like
+# misaka.core.anything are redacted before they reach the output stream.
+# A filter on a logger only runs for records emitted directly to that logger;
+# propagated records skip the logger's .filters and go straight to handlers.
 logging.basicConfig(
     level=logging.INFO if IS_DEV else logging.WARNING,
     format="[%(asctime)s] %(levelname)s %(name)s: %(message)s",
 )
+
+# Install AFTER basicConfig so root handlers already exist.
+# Controlled by MISAKA_LOG_REDACT (default ON).
+install_redaction_filter()
 logger = logging.getLogger("misaka.core")
 
 app = FastAPI(title="MisakaAssetGene Core Service", version="0.1.0")

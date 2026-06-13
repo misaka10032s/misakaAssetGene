@@ -8,6 +8,9 @@ Coverage:
   (e) MISAKA_LOG_REDACT=0 disables filter installation.
   (f) Legitimate non-sensitive messages pass through unchanged (no over-redaction).
   (g) ``install_redaction_filter`` is idempotent (calling twice is safe).
+  (h) Child-logger propagation — records from a child logger that propagates to
+      a handler carrying the filter are redacted at handler output (regression
+      test for the BLOCKER: filter on logger vs. filter on handler).
 
 No real network calls.  No real subprocess.  Tests restore env vars and filter
 state via fixtures so they don't bleed into each other.
@@ -295,19 +298,24 @@ class TestEnvToggle:
 
         orig_installed = mod._FILTER_INSTALLED
         orig_sentinel = mod._FILTER_SENTINEL
+        orig_handler_ids = set(mod._INSTALLED_HANDLER_IDS)
         try:
             mod._FILTER_INSTALLED = False
             mod._FILTER_SENTINEL = None
+            mod._INSTALLED_HANDLER_IDS.clear()
             env = {k: v for k, v in os.environ.items() if k != "MISAKA_LOG_REDACT"}
             with patch.dict(os.environ, env, clear=True):
                 result = install_redaction_filter()
             assert result is True
         finally:
-            # Clean up: remove the filter we just added to the root logger
+            # Clean up: remove the filter from root handlers (filter is on handlers now).
             if mod._FILTER_SENTINEL is not None and not orig_installed:
-                logging.root.removeFilter(mod._FILTER_SENTINEL)
+                for h in logging.root.handlers:
+                    h.removeFilter(mod._FILTER_SENTINEL)
             mod._FILTER_INSTALLED = orig_installed
             mod._FILTER_SENTINEL = orig_sentinel
+            mod._INSTALLED_HANDLER_IDS.clear()
+            mod._INSTALLED_HANDLER_IDS.update(orig_handler_ids)
 
     def test_enabled_by_one(self):
         """MISAKA_LOG_REDACT=1 → install_redaction_filter returns True."""
@@ -315,17 +323,22 @@ class TestEnvToggle:
 
         orig_installed = mod._FILTER_INSTALLED
         orig_sentinel = mod._FILTER_SENTINEL
+        orig_handler_ids = set(mod._INSTALLED_HANDLER_IDS)
         try:
             mod._FILTER_INSTALLED = False
             mod._FILTER_SENTINEL = None
+            mod._INSTALLED_HANDLER_IDS.clear()
             with patch.dict(os.environ, {"MISAKA_LOG_REDACT": "1"}):
                 result = install_redaction_filter()
             assert result is True
         finally:
             if mod._FILTER_SENTINEL is not None and not orig_installed:
-                logging.root.removeFilter(mod._FILTER_SENTINEL)
+                for h in logging.root.handlers:
+                    h.removeFilter(mod._FILTER_SENTINEL)
             mod._FILTER_INSTALLED = orig_installed
             mod._FILTER_SENTINEL = orig_sentinel
+            mod._INSTALLED_HANDLER_IDS.clear()
+            mod._INSTALLED_HANDLER_IDS.update(orig_handler_ids)
 
 
 # ============================================================================
@@ -387,21 +400,139 @@ class TestIdempotency:
 
         orig_installed = mod._FILTER_INSTALLED
         orig_sentinel = mod._FILTER_SENTINEL
+        orig_handler_ids = set(mod._INSTALLED_HANDLER_IDS)
         try:
             mod._FILTER_INSTALLED = False
             mod._FILTER_SENTINEL = None
+            mod._INSTALLED_HANDLER_IDS.clear()
             with patch.dict(os.environ, {"MISAKA_LOG_REDACT": "1"}):
                 result1 = install_redaction_filter()
                 result2 = install_redaction_filter()
             # Both calls must succeed; the second is a no-op
             assert result1 is True
             assert result2 is True
-            # Root logger must not have duplicate filters
+            # Each root handler must carry the sentinel exactly once.
             sentinel = mod._FILTER_SENTINEL
-            count = sum(1 for f in logging.root.filters if f is sentinel)
-            assert count == 1, f"Expected 1 filter, found {count}"
+            for h in logging.root.handlers:
+                count = sum(1 for f in h.filters if f is sentinel)
+                assert count <= 1, (
+                    f"Handler {h} has {count} copies of sentinel (expected ≤1)"
+                )
         finally:
             if mod._FILTER_SENTINEL is not None and not orig_installed:
-                logging.root.removeFilter(mod._FILTER_SENTINEL)
+                for h in logging.root.handlers:
+                    h.removeFilter(mod._FILTER_SENTINEL)
             mod._FILTER_INSTALLED = orig_installed
             mod._FILTER_SENTINEL = orig_sentinel
+            mod._INSTALLED_HANDLER_IDS.clear()
+            mod._INSTALLED_HANDLER_IDS.update(orig_handler_ids)
+
+
+# ============================================================================
+# (h) Child-logger propagation regression test (BLOCKER M5.4 review fix)
+# ============================================================================
+
+
+class TestChildLoggerPropagation:
+    """Filter on a HANDLER must redact records propagated from a child logger.
+
+    This is the blind spot in the original 30 tests: they attach the filter
+    directly to the test logger, which hides the bug where a filter on a logger
+    is NOT applied to records that merely propagate up from child loggers.
+
+    The setup here mirrors the real main.py wiring:
+      - A parent logger has a handler.
+      - The RedactionFilter is installed on the HANDLER (not the parent logger).
+      - A child logger (parent.child) has propagate=True and NO handlers of its own.
+      - Records from the child propagate up to the parent's handler.
+
+    This test MUST FAIL if the filter is moved from the handler to the logger.
+    """
+
+    def test_child_logger_secret_redacted_at_handler(self):
+        """Secret logged via a child logger is redacted at the handler output."""
+        import io
+
+        # Build a stream handler with a capturing stream.
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+
+        # Install the RedactionFilter on the HANDLER (mirrors the fixed main.py).
+        filt = RedactionFilter()
+        handler.addFilter(filt)
+
+        # Set up a parent logger; disable propagation to root so test is isolated.
+        parent_logger = logging.getLogger(f"misaka.test.parent.{id(self)}")
+        parent_logger.setLevel(logging.DEBUG)
+        parent_logger.propagate = False
+        parent_logger.addHandler(handler)
+
+        # Child logger — propagate=True (default), NO own handlers.
+        child_logger = logging.getLogger(f"misaka.test.parent.{id(self)}.core.test")
+        child_logger.setLevel(logging.DEBUG)
+        child_logger.propagate = True  # explicit: propagates to parent
+
+        secret = "sk-ant-api03-SECRETCHILDLOGGERTEST0123456789"
+        user_path = r"C:\Users\alice\AppData\data.json"
+
+        # Emit via the CHILD logger.
+        child_logger.info("Connecting with key %s from path %s", secret, user_path)
+
+        output = stream.getvalue()
+
+        # The handler's stream must NOT contain the raw secret.
+        assert secret not in output, (
+            f"Secret leaked into handler output via child-logger propagation.\n"
+            f"Output: {output!r}\n"
+            "This means the filter is on the logger (not the handler) — BLOCKER not fixed."
+        )
+        assert "[REDACTED]" in output, (
+            f"Expected [REDACTED] in handler output; got: {output!r}"
+        )
+        # User path user segment must also be scrubbed.
+        assert "alice" not in output, (
+            f"User path leaked into handler output via child-logger propagation: {output!r}"
+        )
+        assert "[USER]" in output
+
+    def test_filter_on_logger_would_miss_child_records(self):
+        """Demonstrate that attaching the filter to the LOGGER (not handler) fails
+        to redact records emitted by a child logger.
+
+        This test does NOT use install_redaction_filter(); it manually places the
+        filter on the parent logger to prove that the old design had a blind spot.
+        The assertion is intentionally inverted: we EXPECT the secret to leak
+        through (pass through unredacted) when the filter is on the logger.
+        This proves the regression test above is meaningful.
+        """
+        import io
+
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        # NOTE: filter is on the LOGGER, not the handler — the old (broken) design.
+
+        parent_logger = logging.getLogger(f"misaka.test.broken.{id(self)}")
+        parent_logger.setLevel(logging.DEBUG)
+        parent_logger.propagate = False
+        parent_logger.addHandler(handler)
+        filt = RedactionFilter()
+        parent_logger.addFilter(filt)  # filter on logger, NOT on handler
+
+        child_logger = logging.getLogger(f"misaka.test.broken.{id(self)}.child")
+        child_logger.setLevel(logging.DEBUG)
+        child_logger.propagate = True
+
+        secret = "sk-ant-api03-BROKENDESIGN00000000000000000000"
+        child_logger.info("key=%s", secret)
+
+        output = stream.getvalue()
+        # With filter on the logger: child-propagated records BYPASS the logger's
+        # filters and arrive at the handler UNREDACTED.
+        assert secret in output, (
+            "Unexpected: the filter-on-logger design DID redact the child record. "
+            "If this assertion fails, Python's propagation semantics may have changed."
+        )

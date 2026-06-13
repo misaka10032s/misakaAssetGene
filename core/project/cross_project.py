@@ -181,27 +181,80 @@ def copy_external_asset(
     The lock prevents two concurrent processes/threads from writing the same
     _external/ entry simultaneously (RESEARCH_LOG §3.4).
 
-    Security: dest_file is verified to resolve INSIDE dest_project_dir/_external/
-    before the copy occurs; a traversal attempt (relative_asset_path containing
-    '..') raises ValueError rather than writing outside the boundary.
+    Security — layered guard (M5.3 review fix):
+    1. Lexical pre-validation (race-free, no resolve on non-existent leaf):
+       Reject if source_project_id or relative_asset_path is absolute, contains a
+       drive letter/anchor, or has any '..' component.  Then do a lexical
+       containment check (normpath startswith) so pure-lexical traversals are
+       blocked without ever calling resolve() on a non-existent path.
+    2. Symlink-safe post-mkdir containment:
+       After creating the parent directory (which now EXISTS), resolve() the
+       existing parent and confirm it stays within external_root.resolve().
+       This canonicalises any symlink chain in the parent without racing on a
+       non-existent leaf — only the final single-component leaf name (already
+       lexically validated) is appended.
     """
+    # --- Step 1: Lexical pre-validation (race-free) -------------------------
+    # Reject absolute paths, drive-letter paths, and '..' components.
+    source_id_path = Path(source_project_id)
+    rel_path_obj = Path(relative_asset_path)
+
+    if source_id_path.is_absolute() or source_id_path.anchor:
+        raise ValueError(
+            f"Security: source_project_id '{source_project_id}' must be a "
+            "relative identifier with no drive/anchor."
+        )
+    if any(part == ".." for part in source_id_path.parts):
+        raise ValueError(
+            f"Security: source_project_id '{source_project_id}' contains '..' "
+            "components. Traversal is not permitted."
+        )
+    if rel_path_obj.is_absolute() or rel_path_obj.anchor:
+        raise ValueError(
+            f"Security: relative_asset_path '{relative_asset_path}' must be a "
+            "relative path with no drive/anchor."
+        )
+    if any(part == ".." for part in rel_path_obj.parts):
+        raise ValueError(
+            f"Security: relative_asset_path '{relative_asset_path}' contains '..' "
+            "components. Traversal in relative_asset_path is not permitted."
+        )
+
     dest_external = dest_project_dir / "_external" / source_project_id
     dest_file = dest_external / relative_asset_path
 
-    # BLOCKER 3 guard: reject any dest_file that escapes the _external/ root.
-    external_root = (dest_project_dir / "_external").resolve()
-    try:
-        dest_file.resolve().relative_to(external_root)
-    except ValueError:
+    # Lexical containment check: ensure the normalised dest_file path string
+    # starts with the normalised external root prefix.  This catches residual
+    # lexical tricks (e.g. repeated slashes, mixed separators) without resolve().
+    external_root_norm = os.path.normpath(str(dest_project_dir / "_external"))
+    dest_file_norm = os.path.normpath(str(dest_file))
+    if not (dest_file_norm == external_root_norm or
+            dest_file_norm.startswith(external_root_norm + os.sep)):
         raise ValueError(
-            f"Security: destination path {dest_file} resolves outside "
-            f"the _external/ boundary {external_root}. "
+            f"Security: destination path {dest_file} is outside the "
+            f"_external/ boundary {external_root_norm}. "
             "Traversal in relative_asset_path is not permitted."
         )
 
     lock_path = _external_lock_path(dest_project_dir)
     with _acquire_file_lock(lock_path, timeout=lock_timeout):
+        # Create the parent directory (now it EXISTS before we resolve it).
         dest_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # --- Step 2: Symlink-safe containment (parent now exists, no race) ---
+        # resolve() the existing parent to canonicalise any symlink chain,
+        # then verify it is still inside external_root.
+        external_root_resolved = (dest_project_dir / "_external").resolve()
+        parent_resolved = dest_file.parent.resolve()
+        try:
+            parent_resolved.relative_to(external_root_resolved)
+        except ValueError:
+            raise ValueError(
+                f"Security: resolved parent directory {parent_resolved} is outside "
+                f"the _external/ boundary {external_root_resolved}. "
+                "Symlink escape in relative_asset_path is not permitted."
+            )
+
         shutil.copy2(source_path, dest_file)
 
     return dest_file
