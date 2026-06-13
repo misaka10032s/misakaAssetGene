@@ -403,3 +403,64 @@ Delta fields: `prompt_delta`, `param_delta`, `mask_diff`, `recipe_diff`, `strate
 `uv run --extra dev pytest tests/ -q` → **323 passed, 3 warnings**.
 
 **狀態：已完成**
+
+---
+
+## 13. 2026-06-13 — M5.2 License Report 完整版（commercial bool + attribution + NSFW + export summary）
+
+### 13.1 Schema 變更（LicenseReportEntry / ProjectLicenseReport）
+
+**問題**：`LicenseReportEntry.commercial` 是 `str | None`；spec §2 要求真正的 boolean；attribution + NSFW + summary 欄位均缺席。
+
+**結論（已實作）**：
+
+| 欄位 | 型別 | 來源 |
+|---|---|---|
+| `commercial` | `bool \| None` | worker definition `commercial` key；None = 未指定（不猜測）|
+| `attribution` | `bool \| None` | SPDX id 查表（25+ 授權）；unknown license → None |
+| `attribution_note` | `str \| None` | 對應 SPDX 授權的說明文字 |
+| `nsfw` | `bool \| None` | worker definition 優先，次查 registry by display_name；None = 未指定 |
+
+新增 `LicenseReportSummary` model：`total_workers`, `commercial_ok/no/unknown`, `attribution_required/not_required/unknown`, `nsfw_present/absent/unknown`, `has_nsfw`。
+
+`ProjectLicenseReport` 新增 `summary: LicenseReportSummary` 欄位。
+
+### 13.2 Attribution lookup table
+
+25+ SPDX id 對照表於 `core/reporting/license.py`。涵蓋 Apache-2.0、MIT、BSD-2/3-Clause、GPL-2/3、LGPL-2.1/3、AGPL-3.0、CC-BY-\*、CC0-1.0、Unlicense、0BSD 等。Custom / Flux 等非 SPDX 自定授權回傳 `(None, None)` — truthful-delivery，不猜測。
+
+### 13.3 NSFW 欄位加入 registry.json
+
+`core/models/registry.json` 升版至 `schema_version: 2`。所有 5 個現有 entries 加入 `nsfw` 欄位：
+- `Qwen3.6-14B-Instruct`: `false`（text-only LLM）
+- `Flux.1-dev`: `null`（custom license，NSFW 能力未明確記錄）
+- `MusicGen`: `false`
+- `GPT-SoVITS`: `false`
+- `Wan 2.1`: `null`（custom license，NSFW 能力未明確記錄）
+
+**原則**：只對文件明確記載的 model 設 `true`；無法確定者設 `null` — 不虛構 NSFW 判定（法律風險）。
+
+### 13.4 commercial 舊字串相容性保護
+
+若 workers/manifest.json 有 `"commercial": "true"` 等字串值（legacy），系統會：
+- `"true"` → `True`
+- `"false"` → `False`
+- 其他字串 → `None` + warning 加入 report.warnings
+
+### 13.5 Export 整合
+
+`core/project/export.py` 無需修改；`license_report` 為傳入的 dict，已自動攜帶 enriched 欄位。
+
+### 13.6 驗證
+
+`uv run --extra dev pytest tests/ -q` → **356 passed, 3 warnings**（含 33 個新測試在 `tests/test_license_report.py`）。
+
+測試涵蓋：
+- commercial bool 讀取 7 cases（True / False / absent / null / 字串 true/false / 非法字串 + warning）
+- attribution 偵測 12 cases（Apache / MIT / CC-BY-NC / CC0 / Unlicense / custom / Flux / None / GPL3 / BSD3 + entry 層級驗證）
+- NSFW rollup 9 cases（none/some、worker definition / registry fallback / absent=unknown）
+- summary counts 3 cases（多 worker totals / summary 型別 / empty）
+- export 整合 1 case（zip 內含 enriched license-report.json with summary）
+- registry 結構驗證 2 cases（所有 entry 有 nsfw 欄位、commercial 為 bool 或 null）
+
+**狀態：已完成**

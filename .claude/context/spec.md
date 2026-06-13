@@ -72,7 +72,7 @@
 | **風格指南** | 專案級 style guide（色票、關鍵字、IP-Adapter 錨定圖、自訓 LoRA） | P1 |
 | **自動 Style Guide Propose** | 雙重門檻（啟發式 + LLM 置信度）+ 自適應調整 | P1 |
 | **批次變體** | 一次產 N 個候選讓使用者挑 | P1 |
-| **License Report** | Export 時自動產授權報告（商用/署名/NSFW 狀態） | P1 |
+| **License Report** | Export 時自動產授權報告（商用/署名/NSFW 狀態）— **M5.2 已實作** | P1 |
 | **版本樹狀 UI** | 從線性升級為 parent-child 樹 + diff | P1 |
 | **Prompt 模板庫** | 儲存/匯入常用模板 | P2 |
 | **遊戲引擎匯出** | 匯出為 Unity / Godot / Unreal 可用的資料夾結構與 metadata | P2 |
@@ -1291,32 +1291,38 @@ misaka_origin_path     = {optional}
 
 ### 9.3 Model Registry
 
+> **M5.2 schema_version 2 (2026-06-13)**: Added `nsfw` boolean field to all entries.
+> `commercial` is a boolean (true/false/null). `nsfw` is boolean (true/false/null).
+> `null` = not specified / unknown — never invent a value.
+
 **`core/models/registry.json`**（git 追蹤，隨 app release 更新，也支援遠端拉取）：
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "categories": {
     "consultant_llm": [
       {
         "name": "Qwen3.6-14B-Instruct",
         "version": "3.6.0",
-        "supersedes": ["Qwen3-14B-Instruct", "Qwen2.5-14B-Instruct"],
-        "released": "2026-03-15",
-        "changelog": "長 context 256k；指令遵循改善",
-        "size_gb": 8.5,
-        "vram_min_gb": 12,
         "license": "Apache-2.0",
         "commercial": true,
-        "scores": { "chinese": 5, "instruction": 5, "speed_tps": 25 },
-        "strengths": ["長 context", "中日文強"],
-        "weaknesses": ["VRAM 需求高"],
+        "nsfw": false,
+        "vram_min_gb": 12,
         "download_url": "hf://Qwen/Qwen3.6-14B-Instruct-GGUF"
       }
     ],
-    "image_checkpoint": [...],
-    "music": [...],
-    "tts": [...],
-    "video": [...]
+    "image_checkpoint": [
+      { "name": "Flux.1-dev", "license": "Flux", "commercial": false, "nsfw": null }
+    ],
+    "music": [
+      { "name": "MusicGen", "license": "CC-BY-NC-4.0", "commercial": false, "nsfw": false }
+    ],
+    "tts": [
+      { "name": "GPT-SoVITS", "license": "Apache-2.0", "commercial": true, "nsfw": false }
+    ],
+    "video": [
+      { "name": "Wan 2.1", "license": "custom", "commercial": null, "nsfw": null }
+    ]
   }
 }
 ```
