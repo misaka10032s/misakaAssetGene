@@ -349,3 +349,57 @@ PowerShell parse check：`0 errors`。
 Bash parse check：`bash -n` 通過。
 
 **狀態：已完成（Tauri 封裝 DEFERRED）**
+
+---
+
+## 12. 2026-06-13 — M5.1 Version Tree BACKEND (spec §8.2)
+
+### 12.1 Audit: parent_version_id wiring (spec §5.11)
+
+**問題**：refine→accept 流程是否確實將 `parent_version_id` 寫入產出的 `AssetRecord`？
+
+**結論：已正確實作（pre-existing）**。追蹤路徑：
+
+- `refine_asset()` (`core/generation/service.py:198`) → sets `parent_asset_id` on the `GenerationJob`
+- On job execution, `_persist_generated_artifact()` (`service.py:437`) → reads `job.parent_asset_id` → writes into `AssetRecord.parent_version_id` (line 465)
+- `AssetRecord` schema (`schemas.py:416`) declares `parent_version_id: str | None = None` with refine metadata fields: `refine_strategy`, `mask_asset_id`, `prompt_delta`, `param_delta` — all populated from the job in `_persist_generated_artifact`
+- Root versions (non-refine) have `parent_version_id=None` (line 465: `job.parent_asset_id if job else None`)
+
+No fix required.  All §5.11 metadata fields were already wired.
+
+### 12.2 Tree API endpoint
+
+`GET /api/v1/projects/{project_id}/versions/tree` → `VersionTreeData` envelope.
+
+Node shape (`VersionTreeNode`): `id`, `parent_id`, `asset_type`, `modality`, `title`, `status`, `created_at`, `prompt_hash`, `refine_strategy`, `prompt_delta`, `param_delta`, `mask_asset_id`, `backend`, `is_orphaned`.
+
+Robustness:
+- **Cycle detection**: ancestor-chain walk with a visited-set; cycle → `cycle_detected=True`, offending `parent_id` broken to `null` on that node.
+- **Orphan handling**: `parent_version_id` pointing to missing asset → `is_orphaned=True`; node still returned, no crash.
+- **Node cap**: 2000 nodes max (`GenerationService._TREE_NODE_CAP`); `capped=True` + log warning when hit; no silent truncation.
+
+### 12.3 Diff endpoint
+
+`GET /api/v1/projects/{project_id}/versions/diff?from_id=<id>&to_id=<id>` → `VersionDiffData`.
+
+Delta fields: `prompt_delta`, `param_delta`, `mask_diff`, `recipe_diff`, `strategy_diff`, `backend_diff`. Fields are `null`/`{}` when both versions share the same value. Pure/deterministic (no side effects). Both ids must exist or 404 is returned.
+
+### 12.4 Schema additions
+
+`core/models/schemas.py`: `VersionTreeNode`, `VersionTreeData`, `VersionDiffRequest`, `VersionDiffData`.
+
+### 12.5 Tests
+
+`tests/test_version_tree.py` — 20 tests:
+- parent_id written on refine-accept (3 tests: parent_version_id set, strategy+prompt_delta recorded, root=None)
+- tree DAG correctness (4 tests: single root, linear chain, multi-child branch, sorted order)
+- diff delta shape (5 tests: identical assets → empty, root→refined captures prompt+strategy, param_delta, missing from/to → 404)
+- cycle detection (2 tests: cycle detected without hang, clean DAG → no flag)
+- orphan handling (2 tests: orphaned node flagged, normal node unflagged)
+- API smoke (4 tests: tree 200, tree 404, diff 200 same asset, diff 404 missing version)
+
+### 12.6 驗證
+
+`uv run --extra dev pytest tests/ -q` → **323 passed, 3 warnings**.
+
+**狀態：已完成**

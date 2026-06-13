@@ -564,6 +564,100 @@ class ProjectVersionGraph(BaseModel):
     edges: list[ProjectVersionEdge] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------------------
+# M5.1 — Version Tree DAG (spec §8.2 git-log-style nodes)
+# ---------------------------------------------------------------------------
+
+class VersionTreeNode(BaseModel):
+    """One node in the version-tree DAG (spec §8.2 / M5.1).
+
+    Fields
+    ------
+    id              : asset id (``asset:<uuid>``) or job id (``job:<uuid>``)
+    parent_id       : parent asset id, or None for root versions
+    asset_type      : e.g. "image", "music", "voice"
+    modality        : Modality enum value
+    title           : human-readable title
+    status          : asset_type string (for assets) or job status string (for jobs)
+    created_at      : creation timestamp
+    prompt_hash     : sha256 of the generation prompt (may be None)
+    refine_strategy : strategy used when this version was refined from its parent
+    prompt_delta    : prompt fragment that changed versus the parent
+    param_delta     : parameter diff dict versus the parent
+    mask_asset_id   : mask used for inpaint refine (if any)
+    backend         : worker / backend name used to produce this version
+    is_orphaned     : True when parent_id is set but the parent node is missing
+    """
+
+    id: str
+    parent_id: str | None = None
+    asset_type: str
+    modality: Modality
+    title: str
+    status: str
+    created_at: datetime
+    prompt_hash: str | None = None
+    refine_strategy: RefineStrategy | None = None
+    prompt_delta: str | None = None
+    param_delta: dict[str, Any] = Field(default_factory=dict)
+    mask_asset_id: str | None = None
+    backend: str | None = None
+    is_orphaned: bool = False
+
+
+class VersionTreeData(BaseModel):
+    """Response envelope for the version-tree endpoint (spec §8.2 / M5.1).
+
+    ``nodes`` are sorted by ``created_at`` (oldest first).
+    ``cycle_detected`` is set to True when a parent_version_id chain contains
+    a cycle — in that case the affected nodes are still included but the cycle
+    edge is not followed (no infinite loop).
+    ``node_cap`` documents the maximum number of nodes returned; if the actual
+    count reached the cap, ``capped`` is True.
+    """
+
+    nodes: list[VersionTreeNode] = Field(default_factory=list)
+    cycle_detected: bool = False
+    capped: bool = False
+    node_cap: int = 2000
+
+
+class VersionDiffRequest(BaseModel):
+    """Request body for the version diff endpoint (spec §8.2 / M5.1)."""
+
+    from_id: str = Field(min_length=1)
+    to_id: str = Field(min_length=1)
+
+
+class VersionDiffData(BaseModel):
+    """Structured delta between two asset versions (spec §8.2 / M5.1).
+
+    All fields are ``None`` when the two versions share the same value.
+
+    Fields
+    ------
+    from_id / to_id : asset ids being compared
+    prompt_delta    : prompt text that changed (from ``to`` node's prompt_delta
+                      relative to its parent, or a synthetic diff)
+    param_delta     : parameter dict diff (keys present in ``to`` but absent or
+                      different in ``from``)
+    mask_diff       : None unless one or both versions used a mask; records
+                      ``from_mask`` and ``to_mask`` asset ids
+    recipe_diff     : None unless the refine recipe / strategy changed
+    strategy_diff   : None unless the refine strategy changed
+    backend_diff    : None unless the backend changed between versions
+    """
+
+    from_id: str
+    to_id: str
+    prompt_delta: str | None = None
+    param_delta: dict[str, Any] = Field(default_factory=dict)
+    mask_diff: dict[str, str | None] | None = None
+    recipe_diff: dict[str, str | None] | None = None
+    strategy_diff: dict[str, str | None] | None = None
+    backend_diff: dict[str, str | None] | None = None
+
+
 class TrainingJobStatus(str, Enum):
     PLANNED = "planned"
     QUEUED = "queued"

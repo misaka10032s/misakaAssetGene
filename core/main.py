@@ -68,6 +68,7 @@ from core.models.schemas import (
     TrainingRecipeCreateRequest,
     TrainingRecipeUpdateRequest,
     TrainingWorkspaceData,
+    VersionDiffRequest,
     WorkerSmokeResult,
 )
 from core.network.service import NetworkStateService
@@ -612,6 +613,46 @@ def project_versions(project_id: str) -> ApiResponse:
     try:
         payload = generation_service.build_version_graph(project_id)
     except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return success_response(MessageKey.SUCCESS_FETCH0, payload.model_dump(mode="json"))
+
+
+@app.get("/api/v1/projects/{project_id}/versions/tree", response_model=ApiResponse)
+def project_versions_tree(project_id: str) -> ApiResponse:
+    """Version-tree DAG for a project (spec §8.2 / M5.1).
+
+    Returns all asset versions as a parent-child DAG suitable for rendering a
+    git-log-style branching graph.  Cycle detection and orphan handling are
+    applied server-side (see VersionTreeData envelope fields).
+    """
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/versions/tree", project_id)
+    try:
+        payload = generation_service.build_version_tree(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return success_response(MessageKey.SUCCESS_FETCH0, payload.model_dump(mode="json"))
+
+
+@app.get("/api/v1/projects/{project_id}/versions/diff", response_model=ApiResponse)
+def project_versions_diff(
+    project_id: str,
+    from_id: str = Query(..., description="Source version asset id"),
+    to_id: str = Query(..., description="Target version asset id"),
+) -> ApiResponse:
+    """Structured delta between two asset versions (spec §8.2 / M5.1).
+
+    Returns prompt delta, parameter diff, mask/source difference, recipe
+    difference and backend difference.  Both ``from_id`` and ``to_id`` must
+    exist in the project.
+    """
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/versions/diff from=%s to=%s", project_id, from_id, to_id)
+    try:
+        payload = generation_service.diff_versions(project_id, from_id, to_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return success_response(MessageKey.SUCCESS_FETCH0, payload.model_dump(mode="json"))
 

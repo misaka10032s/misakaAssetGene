@@ -34,6 +34,9 @@ from core.models.schemas import (
     ProjectVersionEdge,
     ProjectVersionGraph,
     ProjectVersionNode,
+    VersionDiffData,
+    VersionTreeData,
+    VersionTreeNode,
 )
 from core.scheduler.vram import ModelScheduler
 
@@ -380,6 +383,192 @@ class GenerationService:
 
         nodes.sort(key=lambda node: node.created_at)
         return ProjectVersionGraph(nodes=nodes, edges=edges)
+
+    # ------------------------------------------------------------------
+    # M5.1 — Version Tree DAG  (spec §8.2)
+    # ------------------------------------------------------------------
+
+    # Maximum number of nodes returned by build_version_tree.
+    # Protects against enormous projects; callers get ``capped=True`` when hit.
+    _TREE_NODE_CAP: int = 2000
+
+    def build_version_tree(self, project_id: str) -> VersionTreeData:
+        """Build the parent-child DAG of asset versions for a project (spec §8.2 / M5.1).
+
+        Robustness guarantees:
+        - Cycle detection: a malformed parent_version_id chain is detected by
+          tracking already-visited ids during ancestor traversal.  Cycles are
+          surfaced via ``cycle_detected=True``; no infinite loop occurs.
+        - Orphan handling: when ``parent_version_id`` points to a missing asset,
+          the node's ``is_orphaned`` flag is set to True and it is still included
+          in the response.  The missing parent is NOT fabricated.
+        - Node cap: at most ``_TREE_NODE_CAP`` nodes are returned.  If the project
+          exceeds this, ``capped=True`` is set in the envelope and a warning is
+          logged.  No silent truncation — the cap is documented in the response.
+        """
+        import logging as _logging
+        _log = _logging.getLogger("misaka.core.versioning")
+
+        _, project_dir = self.project_manager.get_project(project_id)
+        assets = self._read_assets(project_dir)
+
+        # Build a fast lookup by asset id.
+        asset_by_id: dict[str, object] = {a.id: a for a in assets}
+        known_ids: set[str] = set(asset_by_id)
+
+        # Cycle detection: walk ancestor chains, record every id visited within
+        # that chain.  If we encounter an id already in the current chain path
+        # we have a cycle.
+        cycle_detected = False
+
+        def _has_cycle(start_id: str) -> bool:
+            """Return True if following parent_version_id from start_id hits a cycle."""
+            visited: set[str] = set()
+            current_id: str | None = start_id
+            while current_id is not None:
+                if current_id in visited:
+                    return True
+                visited.add(current_id)
+                asset = asset_by_id.get(current_id)
+                if asset is None:
+                    break
+                current_id = asset.parent_version_id  # type: ignore[attr-defined]
+            return False
+
+        nodes: list[VersionTreeNode] = []
+        for asset in assets:
+            if len(nodes) >= self._TREE_NODE_CAP:
+                _log.warning(
+                    "build_version_tree: node cap %d reached for project %s — %d assets truncated",
+                    self._TREE_NODE_CAP,
+                    project_id,
+                    len(assets) - len(nodes),
+                )
+                break
+
+            parent_id: str | None = getattr(asset, "parent_version_id", None)
+            is_orphaned = parent_id is not None and parent_id not in known_ids
+
+            # Check for cycles starting from this node's parent chain.
+            if parent_id is not None and _has_cycle(parent_id):
+                cycle_detected = True
+                # Break the cycle by treating this node as a root to avoid
+                # following the malformed chain.
+                parent_id = None
+
+            nodes.append(
+                VersionTreeNode(
+                    id=asset.id,
+                    parent_id=parent_id,
+                    asset_type=asset.asset_type,
+                    modality=asset.modality,
+                    title=asset.title,
+                    status=asset.asset_type,
+                    created_at=asset.created_at,
+                    prompt_hash=getattr(asset, "prompt_hash", None),
+                    refine_strategy=getattr(asset, "refine_strategy", None),
+                    prompt_delta=getattr(asset, "prompt_delta", None),
+                    param_delta=dict(getattr(asset, "param_delta", None) or {}),
+                    mask_asset_id=getattr(asset, "mask_asset_id", None),
+                    backend=getattr(asset, "backend", None),
+                    is_orphaned=is_orphaned,
+                )
+            )
+
+        capped = len(assets) > self._TREE_NODE_CAP
+        nodes.sort(key=lambda n: n.created_at)
+        return VersionTreeData(
+            nodes=nodes,
+            cycle_detected=cycle_detected,
+            capped=capped,
+            node_cap=self._TREE_NODE_CAP,
+        )
+
+    # ------------------------------------------------------------------
+    # M5.1 — Version Diff  (spec §8.2)
+    # ------------------------------------------------------------------
+
+    def diff_versions(self, project_id: str, from_id: str, to_id: str) -> VersionDiffData:
+        """Compute a structured delta between two asset versions (spec §8.2 / M5.1).
+
+        Pure / deterministic: no I/O beyond reading the asset index.
+        Returns a ``VersionDiffData`` whose fields are set only when the two
+        versions actually differ.  Both ``from_id`` and ``to_id`` must exist in
+        the project; raises ``FileNotFoundError`` otherwise.
+        """
+        _, project_dir = self.project_manager.get_project(project_id)
+        assets = self._read_assets(project_dir)
+        asset_by_id: dict[str, object] = {a.id: a for a in assets}
+
+        from_asset = asset_by_id.get(from_id)
+        to_asset = asset_by_id.get(to_id)
+        if from_asset is None:
+            raise FileNotFoundError(f"Version not found: {from_id}")
+        if to_asset is None:
+            raise FileNotFoundError(f"Version not found: {to_id}")
+
+        # --- prompt delta ---
+        # Use the recorded prompt_delta on the ``to`` node when available
+        # (set during refine-accept, spec §5.11).  Fall back to comparing
+        # prompt_hash values to surface a synthetic "hashes differ" note.
+        to_prompt_delta: str | None = getattr(to_asset, "prompt_delta", None)
+        from_hash = getattr(from_asset, "prompt_hash", None)
+        to_hash = getattr(to_asset, "prompt_hash", None)
+        if not to_prompt_delta and from_hash != to_hash and (from_hash or to_hash):
+            to_prompt_delta = f"prompt_hash: {from_hash or '(none)'} → {to_hash or '(none)'}"
+
+        # --- param delta ---
+        from_params: dict = dict(getattr(from_asset, "params", None) or {})
+        to_params: dict = dict(getattr(to_asset, "params", None) or {})
+        # Only include keys that differ or are new in ``to``.
+        param_delta: dict = {
+            k: v for k, v in to_params.items()
+            if k not in from_params or from_params[k] != v
+        }
+        # If ``to`` has a recorded param_delta, prefer it (more authoritative).
+        recorded_param_delta: dict = dict(getattr(to_asset, "param_delta", None) or {})
+        if recorded_param_delta:
+            param_delta = recorded_param_delta
+
+        # --- mask diff ---
+        from_mask = getattr(from_asset, "mask_asset_id", None)
+        to_mask = getattr(to_asset, "mask_asset_id", None)
+        mask_diff: dict | None = None
+        if from_mask != to_mask:
+            mask_diff = {"from_mask": from_mask, "to_mask": to_mask}
+
+        # --- recipe diff ---
+        from_strategy = getattr(from_asset, "refine_strategy", None)
+        to_strategy = getattr(to_asset, "refine_strategy", None)
+        strategy_diff: dict | None = None
+        if from_strategy != to_strategy:
+            strategy_diff = {
+                "from": from_strategy.value if from_strategy else None,
+                "to": to_strategy.value if to_strategy else None,
+            }
+
+        # recipe_diff mirrors strategy_diff in this model (both derived from
+        # refine_strategy; a richer multi-field recipe comparison is left for
+        # when a dedicated ``recipe`` field is added to AssetRecord).
+        recipe_diff: dict | None = strategy_diff
+
+        # --- backend diff ---
+        from_backend = getattr(from_asset, "backend", None)
+        to_backend = getattr(to_asset, "backend", None)
+        backend_diff: dict | None = None
+        if from_backend != to_backend:
+            backend_diff = {"from": from_backend, "to": to_backend}
+
+        return VersionDiffData(
+            from_id=from_id,
+            to_id=to_id,
+            prompt_delta=to_prompt_delta or None,
+            param_delta=param_delta,
+            mask_diff=mask_diff,
+            recipe_diff=recipe_diff,
+            strategy_diff=strategy_diff,
+            backend_diff=backend_diff,
+        )
 
     def _build_job(
         self,

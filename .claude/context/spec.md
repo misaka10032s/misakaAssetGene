@@ -1106,6 +1106,65 @@ CREATE TABLE versions (
 - 分支顯示
 - 兩節點 side-by-side diff
 
+#### 8.2.1 Version Tree API (M5.1 BACKEND — 已完成)
+
+**Tree endpoint:**
+```
+GET /api/v1/projects/{project_id}/versions/tree
+```
+Response (`VersionTreeData`):
+```json
+{
+  "nodes": [
+    {
+      "id": "<asset_id>",
+      "parent_id": "<parent_asset_id or null>",
+      "asset_type": "image",
+      "modality": "image",
+      "title": "Base portrait",
+      "status": "image",
+      "created_at": "<iso8601>",
+      "prompt_hash": "<sha256 or null>",
+      "refine_strategy": "img2img or null",
+      "prompt_delta": "<text or null>",
+      "param_delta": {},
+      "mask_asset_id": "<id or null>",
+      "backend": "comfyui or null",
+      "is_orphaned": false
+    }
+  ],
+  "cycle_detected": false,
+  "capped": false,
+  "node_cap": 2000
+}
+```
+- `parent_id=null` → root version (never refined from another).
+- `is_orphaned=true` → `parent_id` is set but the parent node is missing from the project.
+- `cycle_detected=true` → malformed `parent_version_id` chain contained a cycle; affected nodes are still included with `parent_id` broken to `null` to prevent infinite loops.
+- `capped=true` → project has more than `node_cap` versions; only the first 2000 (oldest-first) are returned.  No silent truncation — the cap is documented in the envelope.
+
+**Diff endpoint:**
+```
+GET /api/v1/projects/{project_id}/versions/diff?from_id=<id>&to_id=<id>
+```
+Response (`VersionDiffData`):
+```json
+{
+  "from_id": "<id>",
+  "to_id": "<id>",
+  "prompt_delta": "<text or null>",
+  "param_delta": {},
+  "mask_diff": {"from_mask": "<id or null>", "to_mask": "<id or null>"} ,
+  "recipe_diff": {"from": "img2img or null", "to": "inpaint or null"},
+  "strategy_diff": {"from": "img2img or null", "to": "inpaint or null"},
+  "backend_diff": {"from": "comfyui or null", "to": "comfyui or null"}
+}
+```
+- Fields are `null` / `{}` when the two versions share the same value.
+- `param_delta` uses the recorded `param_delta` on the `to` asset when present (authoritative); otherwise synthesised from `params` field diff.
+- `prompt_delta` uses `to.prompt_delta` when set; falls back to `prompt_hash` divergence note.
+- Both `recipe_diff` and `strategy_diff` are derived from `refine_strategy` (unified until a dedicated `recipe` field is added to `AssetRecord`).
+
 ### 8.3 檔案自描述 (Self-documenting Assets)
 
 產出檔案**本身帶身分證**，即使被移出專案資料夾也能溯源。
