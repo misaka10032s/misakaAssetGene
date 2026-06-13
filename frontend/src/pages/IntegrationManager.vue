@@ -1,12 +1,25 @@
 <script setup lang="ts">
-import { onMounted, reactive } from "vue";
+import { computed, onMounted, reactive } from "vue";
+import { useI18n } from "vue-i18n";
 
+import StatusBadge from "@/components/StatusBadge.vue";
 import { useAppStore } from "@/stores/app";
 import { useWindowSize } from "@/composables/useWindowSize";
-import { ProviderStatus } from "@/types/enums";
+import { NetworkState, ProviderStatus } from "@/types/enums";
 
 const appStore = useAppStore();
+const { t } = useI18n();
 const { tripleGridClass } = useWindowSize();
+
+/** Maps an effective network state to its localized badge label. */
+const networkStateLabel = computed<string>(() => {
+  const labels: Record<NetworkState, string> = {
+    [NetworkState.ONLINE]: t("settings.networkStateOnline"),
+    [NetworkState.DEGRADED]: t("settings.networkStateDegraded"),
+    [NetworkState.OFFLINE]: t("settings.networkStateOffline"),
+  };
+  return labels[appStore.networkState];
+});
 const modelForm = reactive({
   url: "",
 });
@@ -77,9 +90,24 @@ async function smokeWorker(workerName: string): Promise<void> {
           </p>
         </div>
         <div class="rounded-xl border border-app-border bg-app-surfaceAlt p-3">
+          <p class="app-muted">{{ $t("settings.networkState") }}</p>
+          <div class="mt-1">
+            <StatusBadge :label="networkStateLabel" :tone="appStore.networkStateTone" />
+          </div>
+        </div>
+        <div class="rounded-xl border border-app-border bg-app-surfaceAlt p-3">
           <p class="app-muted">{{ $t("settings.networkSummary") }}</p>
           <p class="mt-1 text-sm text-app-text">{{ appStore.integration.network.summary || "-" }}</p>
         </div>
+      </div>
+      <div class="mt-3 rounded-xl border border-app-border bg-app-surfaceAlt p-3">
+        <p class="app-muted">{{ $t("settings.networkRecentTransitions") }}</p>
+        <ul v-if="appStore.integration.network.recent_transitions.length" class="mt-1 grid gap-1 text-sm text-app-text">
+          <li v-for="(transition, index) in appStore.integration.network.recent_transitions" :key="index">
+            {{ transition.from_state ?? "-" }} &rarr; {{ transition.to_state }} ({{ transition.at }})
+          </li>
+        </ul>
+        <p v-else class="mt-1 text-sm app-muted">{{ $t("settings.networkNoTransitions") }}</p>
       </div>
     </div>
 

@@ -24,7 +24,7 @@ from core.integration.model_registry import ModelRegistryService
 from core.integration.tools import ToolsService
 from core.integration.workers import WorkersService
 from core.llm.local_manager import LocalLlmManager
-from core.llm.router import list_providers
+from core.llm.router import gate_providers, list_providers
 from core.llm.service import optimize_synopsis as llm_optimize_synopsis
 from core.models.schemas import (
     ApiErrorResponse,
@@ -493,20 +493,22 @@ def integration_snapshot() -> ApiResponse:
             cached_at, cached_payload = integration_snapshot_cache
             if time.monotonic() - cached_at <= 3.0:
                 return success_response(MessageKey.SUCCESS_FETCH0, cached_payload.model_dump())
+        network_snapshot = network_state_service.snapshot(
+            settings.misaka_network_mode,
+            [
+                settings.anthropic_api_base_url,
+                settings.openai_api_base_url,
+                settings.gemini_api_base_url,
+            ],
+            local_urls=[f"{settings.misaka_ollama_base_url.rstrip('/')}/api/tags"],
+        )
         payload = IntegrationSnapshot(
             tools=tools_service.list_tools(),
             workers=workers_service.list_workers(refresh=True),
-            providers=list_providers(settings),
+            providers=gate_providers(list_providers(settings), network_snapshot.state),
             registry_categories=model_registry_service.list_categories(),
             model_search_paths=settings.model_search_paths,
-            network=network_state_service.snapshot(
-                settings.misaka_network_mode,
-                [
-                    settings.anthropic_api_base_url,
-                    settings.openai_api_base_url,
-                    settings.gemini_api_base_url,
-                ],
-            ),
+            network=network_snapshot,
         )
         integration_snapshot_cache = (time.monotonic(), payload)
     return success_response(MessageKey.SUCCESS_FETCH0, payload.model_dump())

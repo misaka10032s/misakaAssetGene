@@ -3,6 +3,8 @@ import {
   GenerationJobStatus,
   MessageKey,
   Modality,
+  NetworkMode,
+  NetworkState,
   PageKey,
   ProviderMode,
   ProviderName,
@@ -180,10 +182,20 @@ export interface WorkerSnapshot {
   readiness_note: string | null;
 }
 
+export interface NetworkTransition {
+  mode: NetworkMode;
+  from_state: NetworkState | null;
+  to_state: NetworkState;
+  at: string;
+}
+
 export interface NetworkSnapshot {
-  mode: string;
+  mode: NetworkMode;
+  state: NetworkState;
   reachable: boolean;
+  local_available: boolean;
   summary: string;
+  recent_transitions: NetworkTransition[];
 }
 
 export interface ProviderSnapshot {

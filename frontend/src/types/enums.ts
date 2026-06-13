@@ -25,6 +25,20 @@ export enum NetworkStatus {
   CORE_OFFLINE = "coreOffline",
 }
 
+/** User-selected network policy (spec §11.5 three modes). */
+export enum NetworkMode {
+  AUTO = "auto",
+  ALWAYS_OFFLINE = "always_offline",
+  ALWAYS_ONLINE = "always_online",
+}
+
+/** Effective network state derived from mode plus live probes (spec §11.5). */
+export enum NetworkState {
+  ONLINE = "online",
+  DEGRADED = "degraded",
+  OFFLINE = "offline",
+}
+
 export enum Modality {
   TEXT = "text",
   MUSIC = "music",

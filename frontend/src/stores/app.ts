@@ -24,7 +24,7 @@ import type {
   TrainingJob,
   WorkerSmokeResult,
 } from "@/types/api";
-import { MessageKey, NetworkStatus, NetworkTone } from "@/types/enums";
+import { MessageKey, NetworkMode, NetworkState, NetworkStatus, NetworkTone } from "@/types/enums";
 
 const isDevDiagnostics = appEnv.diagnosticsEnabled;
 const PROJECT_DRAFT_STORAGE_KEY = "misaka.projectDraft";
@@ -70,9 +70,12 @@ export const useAppStore = defineStore("app", () => {
     registry_categories: [],
     model_search_paths: [],
     network: {
-      mode: "auto",
+      mode: NetworkMode.AUTO,
+      state: NetworkState.OFFLINE,
       reachable: false,
+      local_available: false,
       summary: "",
+      recent_transitions: [],
     },
   });
   const localLlmStatus = ref<LocalLlmStatus | null>(null);
@@ -130,6 +133,17 @@ export const useAppStore = defineStore("app", () => {
       return NetworkTone.SUCCESS;
     }
     if (networkStatus.value === NetworkStatus.CORE_OFFLINE) {
+      return NetworkTone.WARNING;
+    }
+    return NetworkTone.NEUTRAL;
+  });
+  // Effective offline three-state (spec §11.5), distinct from core API health.
+  const networkState = computed<NetworkState>(() => integration.value.network.state);
+  const networkStateTone = computed<NetworkTone>(() => {
+    if (networkState.value === NetworkState.ONLINE) {
+      return NetworkTone.SUCCESS;
+    }
+    if (networkState.value === NetworkState.DEGRADED) {
       return NetworkTone.WARNING;
     }
     return NetworkTone.NEUTRAL;
@@ -623,6 +637,8 @@ export const useAppStore = defineStore("app", () => {
     lastDownloadedModel,
     lastMessageKey,
     localLlmStatus,
+    networkState,
+    networkStateTone,
     networkStatus,
     networkTone,
     projectAssets,

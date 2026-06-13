@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from core.network.state import NetworkMode
+from core.network.state import NetworkMode, NetworkState
 from core.scheduler.vram import RuntimeState
 
 
@@ -102,10 +102,20 @@ class WorkerSnapshot(BaseModel):
     readiness_note: str | None = None
 
 
+class NetworkTransition(BaseModel):
+    mode: NetworkMode
+    from_state: NetworkState | None = None
+    to_state: NetworkState
+    at: datetime
+
+
 class NetworkSnapshot(BaseModel):
     mode: NetworkMode
+    state: NetworkState
     reachable: bool
+    local_available: bool = False
     summary: str
+    recent_transitions: list[NetworkTransition] = Field(default_factory=list)
 
 
 class ProviderSnapshot(BaseModel):
