@@ -142,11 +142,18 @@ else:
 "@
         & $VENV_PYTHON -c $diagScript
     } else {
-        # Venv not yet available — minimal fallback classification
+        # Venv not yet available — minimal fallback classification.
+        # Redact API-key-shaped strings (≥20 alphanumeric chars, or sk-/AIza/Bearer prefix)
+        # before any text is written to setup.log or printed to console.
+        $redacted = [regex]::Replace(
+            $ErrorText,
+            '(?:(?:sk-|AIza|AIZA|Bearer\s+)[A-Za-z0-9_\-]{10,}|[A-Za-z0-9][A-Za-z0-9+/=_\-]{19,})',
+            '[REDACTED]'
+        )
         Write-Host ("⚠ 步驟 [{0}/{1}] 發生錯誤" -f $StageIndex, $STAGE_TOTAL) -ForegroundColor Yellow
-        Write-Host ("   摘要: {0}" -f $ErrorText)
+        Write-Host ("   摘要: {0}" -f $redacted)
         Write-Host ("   完整記錄已寫入 {0}" -f $SETUP_LOG)
-        Add-Content -Path $SETUP_LOG -Value ("[{0}] Stage [{1}/{2}] error: {3}" -f (Get-Date -Format "o"), $StageIndex, $STAGE_TOTAL, $ErrorText)
+        Add-Content -Path $SETUP_LOG -Value ("[{0}] Stage [{1}/{2}] error: {3}" -f (Get-Date -Format "o"), $StageIndex, $STAGE_TOTAL, $redacted)
     }
 }
 

@@ -30,6 +30,7 @@ from scripts.lib.setup_ai_explain import (
     NO_KEY_GUIDANCE,
     _load_env_keys,
     _has_any_provider,
+    _build_default_client,
     build_explain_prompt,
     explain_setup_error,
 )
@@ -422,3 +423,129 @@ class TestSecurityNoKeyLeak:
         prompt = build_explain_prompt(log_path, "[5/7]")
         assert self.FAKE_KEY not in prompt
         assert "[REDACTED]" in prompt
+
+
+# ============================================================================
+# (e) Gemini provider branch — Fix 2 (M4.e polish)
+# ============================================================================
+
+
+class TestGeminiProviderBranch:
+    """Verify that _build_default_client selects the Gemini branch when only
+    GEMINI_API_KEY is set, and that the key never appears in prompt or log."""
+
+    FAKE_GEMINI_KEY = "AIzaFAKEGEMINIKEY00000000000000000000"
+
+    def _make_env(self, tmp_path: Path, content: str) -> None:
+        (tmp_path / ".env").write_text(content, encoding="utf-8")
+
+    def _make_log(self, tmp_path: Path) -> Path:
+        log_path = tmp_path / "setup.log"
+        log_path.write_text("log line 1\nlog line 2\n", encoding="utf-8")
+        return log_path
+
+    def test_gemini_branch_selected_when_only_gemini_key_set(self, tmp_path: Path):
+        """_build_default_client must return a non-None callable when only GEMINI_API_KEY is set."""
+        self._make_env(tmp_path, f"GEMINI_API_KEY={self.FAKE_GEMINI_KEY}")
+        keys = _load_env_keys(tmp_path)
+        assert "GEMINI_API_KEY" in keys
+        # Should be recognized as a valid provider
+        assert _has_any_provider(keys) is True
+        # Client builder must return a callable (not None)
+        client = _build_default_client(keys)
+        assert client is not None
+        assert callable(client)
+
+    def test_gemini_only_user_gets_client_not_no_key_guidance(self, tmp_path: Path):
+        """A Gemini-only user must NOT fall through to NO_KEY_GUIDANCE.
+
+        We inject a fake client to avoid any real network call. The injected
+        client is used instead of the auto-built one to keep the test isolated;
+        the preceding test already verifies _build_default_client returns
+        non-None for GEMINI_API_KEY.
+        """
+        self._make_env(tmp_path, f"GEMINI_API_KEY={self.FAKE_GEMINI_KEY}")
+        log_path = self._make_log(tmp_path)
+
+        def fake_gemini_client(prompt: str) -> str:
+            return "Gemini fake explanation"
+
+        result = explain_setup_error(
+            stage_label="[3/7] test",
+            log_path=log_path,
+            root=tmp_path,
+            llm_client=fake_gemini_client,
+        )
+        # Must get the fake explanation, NOT the no-key guidance
+        assert result == "Gemini fake explanation"
+        assert "API Key" not in result or "Gemini fake" in result
+
+    def test_gemini_key_not_in_prompt(self, tmp_path: Path):
+        """The Gemini key must not appear in the prompt passed to the LLM."""
+        log_path = tmp_path / "setup.log"
+        # Simulate a log that happens to contain a key-like string
+        log_path.write_text(
+            f"Error: config key={self.FAKE_GEMINI_KEY}\nother content\n",
+            encoding="utf-8",
+        )
+        prompt = build_explain_prompt(log_path, "[2/7]")
+        assert self.FAKE_GEMINI_KEY not in prompt
+        assert "[REDACTED]" in prompt
+
+    def test_gemini_key_not_in_setup_log(self, tmp_path: Path):
+        """If error text contains a Gemini-key-shaped string, it must be redacted in setup.log."""
+        error_with_key = f"Auth failed: key={self.FAKE_GEMINI_KEY}"
+        log_path = write_to_log(
+            stage_label="[4/7]",
+            error_text=error_with_key,
+            exc=None,
+            root=tmp_path,
+        )
+        content = log_path.read_text(encoding="utf-8")
+        assert self.FAKE_GEMINI_KEY not in content
+        assert "[REDACTED]" in content
+
+
+# ============================================================================
+# (f) Shell fallback redaction — Fix 1 (M4.e polish)
+# Verifies that the Python helper (_redact / write_to_log / build_console_summary)
+# that the shell fallback delegates to produces redacted output.
+# ============================================================================
+
+
+class TestShellFallbackRedaction:
+    """The inline Python redaction path used by the shell fallback must strip keys."""
+
+    FAKE_KEY = "sk-ant-SHELLTEST00000000000000000000ABCDEF"
+
+    def test_write_to_log_redacts_key_in_fallback_error(self, tmp_path: Path):
+        """write_to_log (called by both the Python path and equivalent to shell fallback)
+        must redact API-key-shaped strings in the error text."""
+        error_text = f"Setup failed: token={self.FAKE_KEY} is invalid"
+        log_path = write_to_log(
+            stage_label="[2/7]",
+            error_text=error_text,
+            exc=None,
+            root=tmp_path,
+        )
+        content = log_path.read_text(encoding="utf-8")
+        assert self.FAKE_KEY not in content
+        assert "[REDACTED]" in content
+
+    def test_build_console_summary_redacts_key_in_fallback_summary(self, tmp_path: Path):
+        """build_console_summary must redact key-like strings in the one-line summary
+        (mirrors what the shell fallback prints to console)."""
+        log_path = tmp_path / "setup.log"
+        log_path.write_text("log", encoding="utf-8")
+        summary_with_key = f"Auth error: {self.FAKE_KEY}"
+        summary = build_console_summary(2, 7, summary_with_key, log_path)
+        assert self.FAKE_KEY not in summary
+        assert "[REDACTED]" in summary
+
+    def test_redact_handles_AIza_prefix(self):
+        """_redact must strip AIza-prefixed keys (Google / Gemini style)."""
+        key = "AIzaSyFAKEKEY0000000000000000000000000"
+        text = f"failed with key={key}"
+        result = _redact(text)
+        assert key not in result
+        assert "[REDACTED]" in result

@@ -156,11 +156,16 @@ else:
     print(build_console_summary($stage_index, $STAGE_TOTAL, error_text, log))
 PYEOF
     else
+        # Venv not yet available — redact API-key-shaped strings inline before
+        # writing to setup.log or printing to console (security: no raw token exposure).
+        redacted_text="$(printf '%s' "$error_text" | \
+            sed 's/\(sk-\|AIza\|AIZA\|Bearer \)[A-Za-z0-9_-]\{10,\}/[REDACTED]/g; \
+                 s/[A-Za-z0-9][A-Za-z0-9+\/=_-]\{19,\}/[REDACTED]/g')"
         _yellow "⚠ 步驟 [$stage_index/$STAGE_TOTAL] 發生錯誤"
-        echo "   摘要: $error_text"
+        echo "   摘要: $redacted_text"
         echo "   完整記錄已寫入 $SETUP_LOG"
         printf '[%s] Stage [%d/%d] error: %s\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$stage_index" "$STAGE_TOTAL" "$error_text" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$stage_index" "$STAGE_TOTAL" "$redacted_text" \
             >> "$SETUP_LOG"
     fi
 }
@@ -268,20 +273,9 @@ fi
 # ---------------------------------------------------------------------------
 write_stage 7 "初始化資料夾結構..."
 
-"$VENV_PYTHON" - <<'PYEOF'
-import sys, os
-from pathlib import Path
-root = Path(__file__).resolve().parent if False else Path(os.environ.get("REPO_ROOT", "."))
-for d in ["projects", "logs", "tmp"]:
-    (root / d).mkdir(parents=True, exist_ok=True)
-print("folders OK")
-PYEOF
-
-# Override: run inline with correct root
-REPO_ROOT_EXPORT="$REPO_ROOT"
 "$VENV_PYTHON" -c "
 from pathlib import Path
-root = Path('$REPO_ROOT_EXPORT')
+root = Path('$REPO_ROOT')
 for d in ['projects', 'logs', 'tmp']:
     (root / d).mkdir(parents=True, exist_ok=True)
 print('folders OK')

@@ -198,6 +198,40 @@ def _build_openai_client(api_key: str, model: str, base_url: str) -> Callable[[s
     return call
 
 
+def _build_gemini_client(api_key: str, model: str) -> Callable[[str], str]:
+    """Return a callable that calls the Gemini generateContent API.
+
+    ``api_key`` is passed via the ``x-goog-api-key`` header only.
+    It is NEVER placed in a URL query parameter, logged, or echoed.
+    """
+    import httpx
+
+    # Gemini REST endpoint — key goes in header, never in URL query param.
+    base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+    def call(prompt: str) -> str:
+        resp = httpx.post(
+            f"{base_url}/models/{model}:generateContent",
+            timeout=60.0,
+            headers={
+                "x-goog-api-key": api_key,   # key via header only (security)
+                "content-type": "application/json",
+            },
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"maxOutputTokens": 400, "temperature": 0.3},
+            },
+        )
+        resp.raise_for_status()
+        candidates = resp.json().get("candidates") or []
+        if candidates:
+            parts = (candidates[0].get("content") or {}).get("parts") or []
+            return str(parts[0].get("text") or "").strip() if parts else ""
+        return ""
+
+    return call
+
+
 def _build_default_client(
     env_keys: dict[str, str],
 ) -> Optional[Callable[[str], str]]:
@@ -225,6 +259,12 @@ def _build_default_client(
         model = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
         base = os.environ.get("OPENAI_API_BASE_URL", "https://api.openai.com/v1")
         return _build_openai_client(openai_key, model, base)
+
+    # 4. Gemini
+    gemini_key = env_keys.get("GEMINI_API_KEY", "")
+    if gemini_key:
+        model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+        return _build_gemini_client(gemini_key, model)
 
     return None
 

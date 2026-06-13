@@ -318,7 +318,7 @@ uv 下載 URL 格式：`https://github.com/astral-sh/uv/releases/download/{versi
 
 1. `explain_setup_error(stage_label, log_path, root, llm_client=None)` — 公共入口。
 2. **無 provider 路徑**：`_load_env_keys()` 讀 `.env` → `_has_any_provider()` 返回 False → 直接返回 `NO_KEY_GUIDANCE`（provider 列表 + 官方連結），不發起任何 LLM 請求。
-3. **有 provider 路徑**：優先順序 Ollama（local）> Anthropic > OpenAI；`_build_default_client()` 根據 env_keys 選擇。
+3. **有 provider 路徑**：優先順序 Ollama（local）> Anthropic > OpenAI > Gemini；`_build_default_client()` 根據 env_keys 選擇。Gemini key 透過 `x-goog-api-key` header 傳遞，絕不放入 URL query param。
 4. **Prompt 構成**：`build_explain_prompt()` = 最後 50 行 `setup.log`（再次 `_redact`）+ OS / arch / Python 版本資訊 + 階段標籤。
 5. **LLM client 可注入**：測試傳入 fake callable；生產用 `_build_default_client`。
 
