@@ -570,11 +570,11 @@ class CharacterSheet(BaseModel):
 
     id: str
     project_id: str
-    name: str  # 角色名
-    visual_anchors: list[str] = Field(default_factory=list)  # 外觀錨點
-    trigger_words: list[str] = Field(default_factory=list)   # 觸發詞
-    forbidden_features: list[str] = Field(default_factory=list)  # 禁忌特徵
-    reference_image_refs: list[str] = Field(default_factory=list)  # 參考圖 (relative paths)
+    name: str  # character name
+    visual_anchors: list[str] = Field(default_factory=list)  # visual anchors
+    trigger_words: list[str] = Field(default_factory=list)   # trigger words
+    forbidden_features: list[str] = Field(default_factory=list)  # forbidden features
+    reference_image_refs: list[str] = Field(default_factory=list)  # reference images (relative paths)
     created_at: datetime
     updated_at: datetime
 
@@ -600,11 +600,11 @@ class DatasetPack(BaseModel):
 
     id: str
     project_id: str
-    source: str  # 蒐集來源
-    cleaning_status: str  # 清洗狀態 (e.g. raw / cleaned / tagged)
+    source: str  # collection source
+    cleaning_status: str  # cleaning status (e.g. raw / cleaned / tagged)
     tags: list[str] = Field(default_factory=list)
-    license: str = ""  # 授權
-    split_strategy: str = ""  # 切分方式
+    license: str = ""  # license
+    split_strategy: str = ""  # split strategy
     members: list[str] = Field(default_factory=list)  # file refs / member list
     created_at: datetime
     updated_at: datetime
@@ -633,7 +633,7 @@ class TrainingRecipe(BaseModel):
 
     id: str
     project_id: str
-    base_model: str  # 底模
+    base_model: str  # base model
     rank: int  # LoRA rank
     epochs: int
     optimizer: str  # e.g. AdamW8bit
