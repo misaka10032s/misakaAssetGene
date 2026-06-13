@@ -1,7 +1,10 @@
 """GPT-SoVITS voice clone command construction (spec §7.2).
 
 This module is a PURE FUNCTION layer — it builds the CLI argument list that the
-executor will pass to a subprocess, but it does NOT launch any process itself.
+executor will pass to a subprocess.  It does NOT launch any process itself and
+does NOT perform any filesystem I/O.  Directory creation is intentionally
+deferred to the executor so this layer remains side-effect-free and unit-testable
+without a real filesystem.
 
 Real-run deferred / wired-but-not-live-verified:
   The command vectors produced here are complete and correct by contract
@@ -145,7 +148,8 @@ def build_voice_clone_command(
     """
     slug = _slugify(character_name)
     voices_dir = project_models_dir / "voices"
-    voices_dir.mkdir(parents=True, exist_ok=True)
+    # Directory creation is the executor's responsibility at run time.
+    # This function is a pure command builder; it must not perform I/O.
     output_path = voices_dir / f"{slug}_voice.pth"
 
     if mode == "zero_shot":
@@ -165,6 +169,13 @@ def build_voice_clone_command(
     s1_output_dir = voices_dir / f"{slug}_s1"
     s2_output_dir = voices_dir / f"{slug}_s2"
 
+    # DEFERRED: GPT-SoVITS real CLI (s1_train.py / s2_train.py) takes a
+    # --config YAML file rather than the individual --train_files / --val_files
+    # / --total_epoch flags used below.  These placeholder args are structurally
+    # consistent with the script names but have NOT been verified against a live
+    # GPT-SoVITS installation.  The live wiring (generating the YAML config and
+    # passing --config) is deferred to the real-run phase.
+    # See RESEARCH_LOG §10 / spec §7.3 "REAL-RUN DEFERRED".
     s1_args: list[str] = [
         python_bin,
         str(gpt_sovits_dir / "GPT_SoVITS" / "s1_train.py"),

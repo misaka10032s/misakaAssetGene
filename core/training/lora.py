@@ -1,8 +1,11 @@
 """LoRA training command construction for kohya_ss (spec §7.1).
 
 This module is a PURE FUNCTION layer — it builds the CLI argument list and
-working-directory path that the executor will pass to a subprocess, but it
-does NOT launch any process itself.
+working-directory path that the executor will pass to a subprocess.  It does
+NOT launch any process itself and does NOT perform any filesystem I/O.
+Directory creation (``output_dir.mkdir(...)``) is intentionally deferred to
+the executor so this layer remains side-effect-free and unit-testable without
+a real filesystem.
 
 Real-run deferred / wired-but-not-live-verified:
   The command vectors produced here are complete and correct by contract
@@ -101,7 +104,8 @@ def build_lora_command(
     slug = _slugify(character_sheet.name)
     output_name = f"{slug}_lora"
     output_dir = project_models_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Directory creation is the executor's responsibility at run time.
+    # This function is a pure command builder; it must not perform I/O.
     output_path = output_dir / f"{output_name}.safetensors"
 
     # Caption extension: WD14 and BLIP both write .txt sidecars alongside images.
@@ -126,9 +130,6 @@ def build_lora_command(
         # Training
         f"--max_train_epochs={recipe.epochs}",
         f"--optimizer_type={recipe.optimizer}",
-        # Trigger word embedded via output name convention; advanced users
-        # may add --network_args "conv_dim=..." for additional LoRA variants.
-        f"--output_name={output_name}",
         # Precision (safe default; can be overridden via recipe.params in future)
         "--mixed_precision=fp16",
         "--save_precision=fp16",

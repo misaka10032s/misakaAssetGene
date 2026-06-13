@@ -54,7 +54,7 @@ class TrainingService:
 
         # Enqueue for execution if executor is wired.
         if self._executor is not None:
-            self._executor.enqueue(job.id)
+            self._executor.enqueue(project_id, job.id)
             # Refresh jobs (enqueue transitions job to QUEUED).
             jobs = self._read_jobs(project_dir)
 
@@ -68,7 +68,7 @@ class TrainingService:
         """
         if self._executor is None:
             return False
-        return self._executor.cancel_job(job_id)
+        return self._executor.cancel_job(project_id, job_id)
 
     def poll_job(self, project_id: str, job_id: str) -> TrainingJob | None:
         """Return the latest status of a single job, or None if not found."""

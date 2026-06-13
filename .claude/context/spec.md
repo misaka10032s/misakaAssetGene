@@ -1037,20 +1037,27 @@ project workspace 的 conversation history 不可一次完整渲染所有訊息�
 - 產出模型存到 `projects/xxx/models/voices/`
 
 ### 7.3 訓練狀態回報
-> v0.9.3 (M4.d, 2026-06-13): TrainingExecutor 實作完成；kohya_ss 命令建構 + GPT-SoVITS 命令建構已實作；VRAM exclusive lock 已透過 ModelScheduler sentinel 機制串接。Real-run deferred（見下方）。
+> v0.9.4 (M4.d review fix, 2026-06-13): BLOCKER 修正 — VRAM exclusive lock 改為硬鎖（non-evictable）；generation service 透過 is_training_locked() 阻塞生成排隊；per-project job store 修正；live command path 修正。
 
 - 進度條 + 預估剩餘時間（從 worker WebSocket 串流）
-- **已實作（M4.d）**：
+- **已實作（M4.d + review fix）**：
   - `core/training/executor.py` — FIFO 佇列，一次只跑一個 job
-  - VRAM exclusive lock：訓練開始前向 `ModelScheduler` acquire 一個 sentinel ManagedModel（vram_mb = 完整 budget），訓練結束後 evict 回 COLD；使用現有 `core/scheduler/vram.py` API（`acquire` / `evict`），未發明平行 lock
+  - **VRAM exclusive lock（雙向硬鎖）**：
+    - `ModelScheduler.begin_training(holder)` — 設定不可驅逐的硬鎖；此後任何 `acquire()` 立即 raise `SchedulerError`（非 eviction-based）
+    - `ModelScheduler.end_training()` — 釋放鎖，`acquire()` 恢復正常
+    - `ModelScheduler.is_training_locked()` — 可查詢；generation service 在此為 True 時阻塞生成 dispatch
+    - Direction (a)：訓練開始前若有受管模型為 ACTIVE，job 立即 FAIL（避免聲稱未實作的雙向互斥）
+    - `core/generation/service.py`：`execute_job()` + `execute_ready_jobs()` 在 `is_training_locked()==True` 時拒絕執行，以 `blocking_reason="training in progress — generation queued"` 回報（復用既有 blocking-reason 機制，非新 API 介面）
+  - **Per-project job store**：`read_jobs(project_id)` / `write_jobs(project_id, jobs)` — executor 每次讀寫都帶 project_id，不再綁定第一個 project 的 jobs.json
+  - **Live command path**：`submit_job` → `executor.enqueue(project_id, job_id)` → `_resolve_command()` → 從 `AssetStore` 載入 CharacterSheet + DatasetPack + TrainingRecipe → `build_lora_command()` / `build_voice_clone_command()`；實體缺失時 job 立即 FAIL，無 `["echo", ...]` fallback
   - 進度：由 `CommandRunner.on_progress` callback 解析 subprocess stdout 行；訓練期間 `TrainingJob.progress` + `progress_label` 可 poll
   - 中斷：`cancel_job()` 呼叫 `runner.cancel()` → 發送 terminate signal；job status 過渡到 FAILED
   - API：`GET /api/v1/projects/{id}/training/{job_id}`（poll），`POST /api/v1/projects/{id}/training/{job_id}/cancel`
   - `CommandRunner` protocol（可注入），`SubprocessRunner`（預設），`FakeRunner`（測試）
-- **REAL-RUN DEFERRED（wired but not live-verified）**：命令向量在測試中透過 FakeRunner 驗證，但尚未對著真實 kohya_ss 安裝或 GPU 執行過。使用者需要：(1) 安裝 kohya_ss clone、(2) 確認 `workers/manifest.json` 的 `kohya-ss.directory` 路徑、(3) 跑真實 training job
+- **REAL-RUN DEFERRED（wired but not live-verified）**：命令向量在測試中透過 FakeRunner 驗證，但尚未對著真實 kohya_ss 安裝或 GPU 執行過。使用者需要：(1) 安裝 kohya_ss clone、(2) 確認 `workers/manifest.json` 的 `kohya-ss.directory` 路徑、(3) 跑真實 training job。GPT-SoVITS s1_train.py/s2_train.py 實際 CLI 使用 `--config YAML`，目前使用 `--train_files` 等 placeholder flags（DEFERRED）
 - **TODO（spec §7.3 resume / 中間 checkpoint 試聽）**：resume 從 checkpoint 尚未實作。`TrainingJob.resume_checkpoint_path` 欄位預留；未來 phase 解析 kohya_ss `--save_every_n_epochs` 輸出設定此欄，next submit 可帶 `--resume_from_checkpoint`。GPT-SoVITS 同理。
 - 可中斷、可續訓（interrupt 已完成；resume 是 TODO）、可試聽中間 checkpoint（follow-up）
-- 訓練觸發 VRAM Scheduler 進 exclusive 模式，其他生成排隊
+- 訓練觸發 VRAM Scheduler 進 exclusive 模式，其他生成排隊（**已實作雙向硬鎖**）
 
 ---
 

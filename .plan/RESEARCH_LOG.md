@@ -178,25 +178,34 @@ kohya_ss executor / 訓練觸發邏輯延後至 M4.c，不在本 sub-phase 內�
 
 **問題**：kohya_ss / GPT-SoVITS 的訓練 job 需要 FIFO 執行、獨佔 VRAM、可中斷，如何與既有 scheduler 整合？
 
-**結論（已實作）**：
+**結論（已實作 + review fix 2026-06-13）**：
 
 `core/training/executor.py` — `TrainingExecutor`：
 - FIFO `queue.Queue`，background daemon thread，one job at a time
-- 每個 job 執行前 `ModelScheduler.acquire(_TRAINING_SENTINEL_NAME)`，執行後 `ModelScheduler.evict(...)`；sentinel ManagedModel 的 `vram_mb` = 完整 VRAM budget，確保 training 期間 ACTIVE 狀態下其他受管模型受到 VRAM 壓力
+- `read_jobs(project_id)` / `write_jobs(project_id, jobs)` — 每次讀寫帶 project_id，多專案 job 各自獨立（MAJOR 2 fix）
 - `CommandRunner` protocol（dependency-injection seam）：real `SubprocessRunner`（wired but not live-verified），test `FakeRunner`
 - Status transitions：PLANNED → QUEUED（enqueue）→ RUNNING（worker loop）→ COMPLETED | FAILED（exit code）
-- `cancel_job()`：QUEUED job 立即 FAILED；RUNNING job 呼叫 `runner.cancel()` → terminate signal → FAILED on non-zero exit
+- `cancel_job(project_id, job_id)`：QUEUED job 立即 FAILED；RUNNING job 呼叫 `runner.cancel()` → terminate signal → FAILED on non-zero exit
 - `progress` + `progress_label` 欄位從 subprocess stdout 解析（regexp `\d+/\d+`）
 - `TrainingJob` 新增欄位：`progress`, `progress_label`, `exit_code`, `stderr_tail`, `resume_checkpoint_path`
 
-### 10.2 VRAM exclusive lock — 與 ModelScheduler 的整合
+### 10.2 VRAM exclusive lock — 硬鎖（BLOCKER fix 2026-06-13）
 
-**使用的 scheduler API（均來自 `core/scheduler/vram.py`）**：
-- `ModelScheduler.register(ManagedModel)` — 一次性注冊 sentinel（app 啟動時）
-- `ModelScheduler.acquire(_TRAINING_SENTINEL_NAME)` — 訓練開始前取得 VRAM（sentinel 成為 ACTIVE，evicts 其他 ACTIVE 模型）
-- `ModelScheduler.evict(_TRAINING_SENTINEL_NAME, reason="training_done")` — 訓練結束後釋放（sentinel 回到 COLD，恢復完整 VRAM budget）
+**原始實作缺陷**：sentinel ManagedModel 方式是 eviction-based，不具備真正的互斥性（sentinel 可被其他 model 的 `acquire()` evict）。
 
-**Lock semantics**：sentinel 的 `vram_mb = full budget`；任何需要 VRAM 的受管模型在 acquire 時若 sentinel 為 ACTIVE，`_free_vram_for()` 會嘗試 evict sentinel，但 sentinel 是可被 evict 的（scheduler 不支援 non-evictable model）。因此這是「VRAM 壓力型」而非「絕對獨佔型」lock。在實務上，只有應用本身主動 acquire 其他模型才會 evict sentinel；外部 HTTP worker（ComfyUI 等）不受 scheduler 控制，不在範圍內。
+**修正後 API（均來自 `core/scheduler/vram.py`）**：
+- `ModelScheduler.begin_training(holder)` — 設定不可驅逐的硬鎖（`_training_lock_holder` flag）
+- `ModelScheduler.end_training()` — 清除鎖
+- `ModelScheduler.is_training_locked()` — 查詢鎖狀態；generation path 以此 gate dispatch
+- `ModelScheduler.acquire(name)` — 在 `is_training_locked()` 為 True 時立即 raise `SchedulerError`（non-evictable hard refusal）
+
+**Executor 行為**：
+- Direction (a)：`_run_job` 開始前先檢查有無受管模型為 ACTIVE；有則 job 立即 FAIL（誠實報告，不聲稱未實作的雙向互斥）
+- `begin_training(job_id)` 在 job 開始時呼叫，`end_training()` 在 `finally` 中呼叫（確保一定釋放）
+
+**Generation service 串接**：
+- `core/generation/service.py` 接收注入的 `ModelScheduler`
+- `execute_job()` / `execute_ready_jobs()` 呼叫 `_training_lock_blocking_reason()` → 若鎖定則拒絕執行，以 `blocking_reason="training in progress — generation queued"` 回報（復用既有 blocking-reason 機制）
 
 ### 10.3 Command construction
 
@@ -204,48 +213,57 @@ kohya_ss executor / 訓練觸發邏輯延後至 M4.c，不在本 sub-phase 內�
 - 輸入：`CharacterSheet` + `DatasetPack` + `TrainingRecipe` + `project_models_dir` + `kohya_ss_dir`
 - 輸出：`LoraCommandSpec`（`args`, `cwd`, `output_path`）
 - CLI 形式：`python -m accelerate.commands.launch train_network.py --pretrained_model_name_or_path=... --train_data_dir=... --network_module=networks.lora --network_dim=<rank> --max_train_epochs=<epochs> --optimizer_type=<optimizer> ...`
-- Pure function（無 I/O，無 subprocess）
+- **Pure function（無 I/O，無 subprocess）**：`output_dir.mkdir()` 移除，改由 executor 在 run time 建立（MINOR fix）
+- 重複 `--output_name` 已移除（MINOR fix）
 
 **`core/training/voice_clone.py` — `build_voice_clone_command()`**：
 - Zero-shot mode：回傳 `VoiceCloneCommandSpec(s1_args=None, s2_args=None)`（無 subprocess）
 - Fine-tune mode：回傳 S1（`s1_train.py`）+ S2（`s2_train.py`）argv lists
-- Pure function（無 I/O，無 subprocess）
+- **Pure function（無 I/O，無 subprocess）**：`voices_dir.mkdir()` 移除，改由 executor 在 run time 建立（MINOR fix）
+- **DEFERRED**：GPT-SoVITS s1_train.py / s2_train.py 實際 CLI 使用 `--config YAML`，目前使用 `--train_files` 等 placeholder flags，尚未對真實安裝驗證。
 
-### 10.4 Worker manifest — kohya_ss
+### 10.4 Live command path（MAJOR 3 fix）
 
-`workers/manifest.json` 新增 `"kohya-ss"` 條目：
-- `repo: "https://github.com/bmaltais/kohya_ss.git"`, `tag: "v25.0.3"`, `vram_requirement_mb: 8000`
-- `installed: false`（repo-hygiene rule 2：本 repo 不追蹤 kohya_ss clone）
-- `cli_entrypoint: "accelerate launch train_network.py"`
+**原始缺陷**：`submit_job` 呼叫 `executor.enqueue(job_id)`，`_resolve_command()` fallback 到 `["echo", job_id]`。
 
-### 10.5 API surface 新增
+**修正**：
+- `executor.enqueue(project_id, job_id)` — 帶 project_id
+- `_resolve_command(project_id, job_id)` — 解析順序：(1) `_pending_commands` dict、(2) `asset_store_resolver` 載入實體 → `build_lora_command()` / `build_voice_clone_command()`、(3) 兩者皆無 → raise `SchedulerError`（不 fallback 到 echo）
+- `enqueue_with_command()` 使用 `_pending_commands` dict（在 `__init__` 初始化，非 lazy 建立，無 monkey-patch）
+
+### 10.5 Worker manifest — kohya_ss
+
+`workers/manifest.json` 新增 `"kohya-ss"` 條目（同原始 M4.d）。
+
+### 10.6 API surface 新增
 
 - `GET /api/v1/projects/{project_id}/training/{job_id}` — poll single job（`TrainingJobPollData`）
 - `POST /api/v1/projects/{project_id}/training/{job_id}/cancel` — cancel queued or running job
 
-### 10.6 REAL-RUN DEFERRED（wired-but-not-live-verified）
+### 10.7 REAL-RUN DEFERRED（wired-but-not-live-verified）
 
 以下已完成契約設計並通過 FakeRunner 測試，**尚未對真實 GPU 或 worker 安裝執行**：
-- kohya_ss CLI 命令向量
-- GPT-SoVITS S1/S2 命令向量
+- kohya_ss CLI 命令向量（build_lora_command）
+- GPT-SoVITS S1/S2 命令向量（build_voice_clone_command）；S1/S2 CLI arg shape 未對真實安裝驗證（DEFERRED: `--config YAML` vs `--train_files` flags）
 - SubprocessRunner（已實作，未跑過真實 subprocess）
-- TrainingExecutor.enqueue_with_command()（已實作，集成測試待真實 run）
 
 **待使用者操作**：(1) 安裝 kohya_ss + GPT-SoVITS clone，(2) 確認路徑設定，(3) 執行真實 training job。
 
-### 10.7 TODO（resume / 中間 checkpoint 試聽，spec §7.3）
+### 10.8 TODO（resume / 中間 checkpoint 試聽，spec §7.3）
 
 Resume from checkpoint **尚未實作**。`TrainingJob.resume_checkpoint_path` 欄位已預留（schema 層面完成）；實際邏輯（解析 checkpoint dir → `--resume_from_checkpoint` CLI flag）留待後續 phase。Spec 參照：§7.3「可中斷、可續訓、可試聽中間 checkpoint」。
 
-### 10.8 驗證
+### 10.9 驗證
 
-`uv run --extra dev pytest tests/ -q` → **247 passed, 0 failed**（含 33 個新測試在 `tests/test_executor.py`）。
+`uv run --extra dev pytest tests/ -q` → **257 passed, 3 warnings**（含 43 個新測試在 `tests/test_executor.py`）。
 
 涵蓋：
-- (a) kohya_ss 命令建構 10 cases（args 含 base_model / rank / epochs / optimizer / dataset / networks.lora / safetensors）
-- (a) GPT-SoVITS 命令建構 7 cases（zero-shot no-args / fine-tune S1+S2 args / pth output / cwd / epoch param）
-- (b) FIFO 單並發 2 cases（sequential order / max_concurrent=1）
-- (c) VRAM lock 6 cases（sentinel registered / ACTIVE during run / COLD after complete / COLD after fail / training blocks large model / active model evicted）
-- (d) Status transitions 7 cases（success / failure / cancel queued / cancel running / progress update / cancel nonexistent）
+- (a) kohya_ss 命令建構 12 cases（含 --output_name 不重複 / build 不建立 dir）
+- (a) GPT-SoVITS 命令建構 8 cases（含 build 不建立 dir）
+- (b) FIFO 單並發 2 cases
+- (c) 硬鎖 VRAM 10 cases（is_training_locked false/true/after-end / acquire raises while locked / acquire succeeds after end / locked during run / not locked after complete/fail / training refused when model ACTIVE / generation service blocks when locked / execute_ready_jobs skips when locked）
+- (d) Status transitions 7 cases
+- (e) Per-project isolation 1 case（兩 project 各自 jobs.json 獨立）
+- (f) Live command path 1 case（asset_store_resolver → real kohya_ss argv，非 echo）
 
-**狀態：已完成（real-run deferred，resume TODO）**
+**狀態：已完成（real-run deferred，GPT-SoVITS CLI args DEFERRED，resume TODO）**

@@ -35,6 +35,12 @@ from core.models.schemas import (
     ProjectVersionGraph,
     ProjectVersionNode,
 )
+from core.scheduler.vram import ModelScheduler
+
+# Blocking reason token used when the VRAM training lock is held.
+# The generation _refresh_jobs path recognises this prefix and clears it
+# automatically once is_training_locked() returns False.
+_TRAINING_LOCK_REASON = "training in progress — generation queued"
 
 
 def _prompt_hash(prompt: str | None) -> str | None:
@@ -45,9 +51,17 @@ def _prompt_hash(prompt: str | None) -> str | None:
 
 
 class GenerationService:
-    def __init__(self, project_manager: ProjectManager, workers_service: WorkersService) -> None:
+    def __init__(
+        self,
+        project_manager: ProjectManager,
+        workers_service: WorkersService,
+        scheduler: ModelScheduler | None = None,
+    ) -> None:
         self.project_manager = project_manager
         self.workers_service = workers_service
+        # Optional: when the VRAM scheduler is wired, generation dispatch
+        # checks is_training_locked() before running any job (spec §7.3).
+        self._scheduler = scheduler
 
     def list_workspace(self, project_id: str) -> ProjectWorkspaceData:
         _, project_dir = self.project_manager.get_project(project_id)
@@ -89,6 +103,12 @@ class GenerationService:
             raise FileNotFoundError(f"Job not found: {job_id}")
 
         job = jobs[target_index]
+
+        # Guard: refuse generation while the VRAM training lock is held (spec §7.3).
+        training_block = self._training_lock_blocking_reason()
+        if training_block:
+            raise ValueError(training_block)
+
         if job.status == GenerationJobStatus.BLOCKED:
             raise ValueError(job.blocking_reason or "Job is blocked.")
         if job.status == GenerationJobStatus.RUNNING:
@@ -108,6 +128,9 @@ class GenerationService:
         Blocked jobs within the requested set are collected into ``skipped``
         rather than silently ignored, so callers can surface a truthful summary
         (e.g. "executed 2, skipped 1: reason…").
+
+        If the VRAM training lock is held (spec §7.3), ALL jobs in the set are
+        skipped with the training-locked blocking reason rather than proceeding.
         """
         _, project_dir = self.project_manager.get_project(project_id)
         jobs = self._refresh_jobs(self._read_jobs(project_dir))
@@ -116,9 +139,22 @@ class GenerationService:
         requested_ids = set(job_ids or [])
         executed_count = 0
         skipped: list[SkippedJobInfo] = []
+
+        # Guard: if training lock is held, skip everything in this batch.
+        training_block = self._training_lock_blocking_reason()
+
         for index, job in enumerate(list(jobs)):
             # Skip jobs not in the requested set (if a set was given).
             if requested_ids and job.id not in requested_ids:
+                continue
+            if training_block:
+                skipped.append(
+                    SkippedJobInfo(
+                        job_id=job.id,
+                        title=job.title,
+                        reason=training_block,
+                    )
+                )
                 continue
             if job.status == GenerationJobStatus.BLOCKED:
                 skipped.append(
@@ -437,6 +473,16 @@ class GenerationService:
             created_at=datetime.now(timezone.utc),
         )
 
+    def _training_lock_blocking_reason(self) -> str | None:
+        """Return the training-lock blocking reason if the VRAM lock is held, else None.
+
+        Reuses the existing blocking-reason pattern (spec §7.3 / M3 batch-blocking
+        mechanism) so no new error surface is introduced at the API layer.
+        """
+        if self._scheduler is not None and self._scheduler.is_training_locked():
+            return _TRAINING_LOCK_REASON
+        return None
+
     def _build_blocking_reason(self, worker_name: str | None, result: ClarifyResult) -> str | None:
         if result.analysis and result.analysis.required_research:
             return result.analysis.required_research[0]
@@ -609,6 +655,7 @@ class GenerationService:
                 "is not installed yet",
                 "repository is not installed",
                 "no comfyui checkpoint is installed",
+                "training in progress",
             ]
         )
 

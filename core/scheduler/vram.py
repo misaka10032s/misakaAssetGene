@@ -100,6 +100,15 @@ class ModelScheduler:
     can be unit tested without real timing. It performs *accounting* only: actual
     ``model.to('cpu')`` / ``torch.cuda.empty_cache()`` calls are the caller's
     responsibility and are driven by the emitted :class:`TransitionEvent` log.
+
+    Training lock (spec §7.3 "exclusive mode"):
+    ``begin_training(holder)`` sets a non-evictable hard lock; while it is held:
+      - ``acquire()`` for any model raises ``SchedulerError`` immediately.
+      - ``is_training_locked()`` returns True so other subsystems can gate work.
+    ``end_training()`` clears the lock; ``acquire()`` works normally again.
+    The lock is NOT enforced at the scheduler's own ``evict()`` / ``demote()``
+    level — those are internal state-accounting helpers. Only ``acquire()``
+    (the external "I want VRAM" call) is refused while training holds the lock.
     """
 
     def __init__(
@@ -111,6 +120,8 @@ class ModelScheduler:
         self._clock = clock or (lambda: 0.0)
         self._models: dict[str, ManagedModel] = {}
         self._transitions: list[TransitionEvent] = []
+        # Hard training lock state (spec §7.3 exclusive mode).
+        self._training_lock_holder: str | None = None
 
     @property
     def budget(self) -> SchedulerBudget:
@@ -119,6 +130,32 @@ class ModelScheduler:
     @property
     def transitions(self) -> list[TransitionEvent]:
         return list(self._transitions)
+
+    # -- training lock (spec §7.3 "exclusive mode") ---------------------------
+
+    def begin_training(self, holder: str) -> None:
+        """Acquire the exclusive training lock.
+
+        While held, ``acquire()`` raises ``SchedulerError`` for any caller,
+        preventing generation workers from moving models to ACTIVE state.
+
+        Parameters
+        ----------
+        holder
+            An identifier for the current lock holder (e.g. job_id), used only
+            for diagnostic messages.  May not be empty.
+        """
+        if not holder:
+            raise ValueError("Training lock holder must be a non-empty string.")
+        self._training_lock_holder = holder
+
+    def end_training(self) -> None:
+        """Release the exclusive training lock.  ``acquire()`` works normally again."""
+        self._training_lock_holder = None
+
+    def is_training_locked(self) -> bool:
+        """Return True while ``begin_training()`` has been called and not yet released."""
+        return self._training_lock_holder is not None
 
     def register(self, model: ManagedModel) -> ManagedModel:
         if model.vram_mb > self._budget.vram_budget_mb:
@@ -171,7 +208,16 @@ class ModelScheduler:
 
         Restoring a Warm model is preferred (recorded as a fast ``warm_restore``)
         over restoring a Cold one. Returns the resulting state (always ACTIVE).
+
+        Raises ``SchedulerError`` immediately if the training lock is held
+        (see ``begin_training()``), so that generation workers are refused
+        VRAM access while a training job is in progress (spec §7.3).
         """
+        if self._training_lock_holder is not None:
+            raise SchedulerError(
+                f"Training in progress (held by '{self._training_lock_holder}') — "
+                f"cannot acquire '{name}'; generation is queued until training ends."
+            )
         model = self._models[name]
         previous = model.state
         self._free_vram_for(model)

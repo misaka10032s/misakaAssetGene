@@ -121,17 +121,6 @@ tools_service = ToolsService(REPO_ROOT / "tools" / "manifest.json")
 workers_service = WorkersService(REPO_ROOT / "workers" / "manifest.json")
 model_registry_service = ModelRegistryService(REPO_ROOT / "core" / "models" / "registry.json")
 local_llm_manager = LocalLlmManager()
-generation_service = GenerationService(project_manager, workers_service)
-network_state_service = NetworkStateService()
-project_export_service = ProjectExportService()
-license_report_service = LicenseReportService()
-training_service = TrainingService(project_manager)
-
-# M4.d — VRAM scheduler + training executor.
-# The scheduler governs in-process model placement (spec §3.4).
-# The executor acquires the exclusive VRAM lock before each training run (spec §7.3).
-# REAL-RUN NOTE: The executor is wired with SubprocessRunner but has not been
-# verified against a live kohya_ss / GPT-SoVITS installation.  See RESEARCH_LOG §10.
 _vram_scheduler = ModelScheduler(
     SchedulerBudget(
         vram_budget_mb=int(settings.misaka_vram_budget_mb) if hasattr(settings, "misaka_vram_budget_mb") else 12000,
@@ -139,39 +128,13 @@ _vram_scheduler = ModelScheduler(
     )
 )
 
-
-def _make_training_job_rw(project_id: str):  # type: ignore[return]
-    """Return (read_jobs, write_jobs) closures bound to a project."""
-    def read_jobs():  # type: ignore[return-type]
-        _, project_dir = project_manager.get_project(project_id)
-        return training_service._read_jobs(project_dir)
-
-    def write_jobs(jobs):  # type: ignore[return-type]
-        _, project_dir = project_manager.get_project(project_id)
-        training_service._write_jobs(project_dir, jobs)
-
-    return read_jobs, write_jobs
-
-
-# One shared executor; reads/writes are project-aware via the closures.
-# In production each project could get its own executor; for this phase a single
-# global executor serialises all training across projects (FIFO guarantee).
-_training_executor: TrainingExecutor | None = None
-
-
-def _get_or_create_executor(project_id: str) -> TrainingExecutor:
-    """Return the singleton executor, creating it on first call."""
-    global _training_executor
-    if _training_executor is None:
-        read_jobs, write_jobs = _make_training_job_rw(project_id)
-        _training_executor = TrainingExecutor(
-            read_jobs=read_jobs,
-            write_jobs=write_jobs,
-            scheduler=_vram_scheduler,
-            runner=SubprocessRunner(),
-        )
-        training_service.set_executor(_training_executor)
-    return _training_executor
+# M4.d — wire the scheduler into GenerationService so it can gate generation
+# dispatch while the exclusive training lock is held (spec §7.3).
+generation_service = GenerationService(project_manager, workers_service, scheduler=_vram_scheduler)
+network_state_service = NetworkStateService()
+project_export_service = ProjectExportService()
+license_report_service = LicenseReportService()
+training_service = TrainingService(project_manager)
 
 
 # §7.1.1 asset stores — one per project, keyed by project_id; opened lazily.
@@ -184,6 +147,48 @@ def _asset_store(project_id: str) -> AssetStore:
         _, project_dir = project_manager.get_project(project_id)
         _asset_stores[project_id] = AssetStore(project_dir / "memory.sqlite")
     return _asset_stores[project_id]
+
+
+def _project_dir(project_id: str) -> Path:
+    """Return the project directory path."""
+    _, project_dir = project_manager.get_project(project_id)
+    return project_dir
+
+
+# Per-project job read/write callables — take project_id so the executor never
+# binds to the first project's jobs.json (MAJOR 2 fix).
+def _read_training_jobs(project_id: str) -> list:  # type: ignore[return-type]
+    _, project_dir = project_manager.get_project(project_id)
+    return training_service._read_jobs(project_dir)
+
+
+def _write_training_jobs(project_id: str, jobs: list) -> None:  # type: ignore[return-type]
+    _, project_dir = project_manager.get_project(project_id)
+    training_service._write_jobs(project_dir, jobs)
+
+
+# One shared executor for all projects — serialises training globally (FIFO).
+# The executor is project-aware: read_jobs/write_jobs both receive project_id
+# so jobs from different projects are persisted to their own jobs.json files.
+# REAL-RUN NOTE: The executor is wired with SubprocessRunner but has not been
+# verified against a live kohya_ss / GPT-SoVITS installation.  See RESEARCH_LOG §10.
+_training_executor: TrainingExecutor | None = None
+
+
+def _get_or_create_executor() -> TrainingExecutor:
+    """Return the singleton executor, creating it on first call."""
+    global _training_executor
+    if _training_executor is None:
+        _training_executor = TrainingExecutor(
+            read_jobs=_read_training_jobs,
+            write_jobs=_write_training_jobs,
+            scheduler=_vram_scheduler,
+            runner=SubprocessRunner(),
+            asset_store_resolver=_asset_store,
+            project_dir_resolver=_project_dir,
+        )
+        training_service.set_executor(_training_executor)
+    return _training_executor
 
 
 integration_snapshot_cache: tuple[float, IntegrationSnapshot] | None = None
@@ -673,7 +678,7 @@ def create_project_training_job(project_id: str, payload: TrainingJobCreateReque
         logger.info("POST /api/v1/projects/%s/training worker=%s", project_id, payload.worker or "auto")
     # Ensure the executor is initialised for this project before submitting.
     try:
-        _get_or_create_executor(project_id)
+        _get_or_create_executor()
     except ProjectNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     try:
