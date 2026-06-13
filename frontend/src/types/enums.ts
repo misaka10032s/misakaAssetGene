@@ -145,6 +145,17 @@ export enum RefineStrategy {
   FULL_REGEN = "full_regen",
 }
 
+/**
+ * Tri-state value for license fields that can be true, false, or unknown (null).
+ * Use this to drive visual rendering — UNKNOWN must never look like NO.
+ * Matches backend `bool | None` pattern (spec §2 / M5.2 truthful delivery).
+ */
+export enum TriState {
+  YES = "yes",
+  NO = "no",
+  UNKNOWN = "unknown",
+}
+
 /** Version-tree node status labels used in the DAG UI (spec §8.2). */
 export enum VersionNodeStatus {
   /** Asset is a completed root or refined version. */

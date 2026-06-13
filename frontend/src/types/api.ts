@@ -356,6 +356,11 @@ export interface ConsultantPlanRecord {
   created_at: string;
 }
 
+/**
+ * Per-worker license report entry (spec §2 / §9.3 — M5.2).
+ * Tri-state fields (`boolean | null`) use `null` for "unknown" — never render
+ * null as a confident yes/no; it must be visually distinct from false.
+ */
 export interface LicenseReportEntry {
   worker_name: string;
   display_name: string;
@@ -363,11 +368,37 @@ export interface LicenseReportEntry {
   recommended_reference: string;
   installed_reference: string | null;
   license: string | null;
-  commercial: string | null;
+  /** true = commercial OK; false = commercial NOT OK; null = unknown */
+  commercial: boolean | null;
+  /** true = attribution required; false = not required; null = cannot determine */
+  attribution: boolean | null;
+  /** Short human-readable attribution note (e.g. "Apache-2.0 requires NOTICE file"). */
+  attribution_note: string | null;
+  /** true = NSFW; false = explicitly not NSFW; null = not specified in registry */
+  nsfw: boolean | null;
   job_count: number;
   asset_count: number;
   modalities: string[];
   readiness_note: string | null;
+}
+
+/**
+ * Project-level license summary for the export-confirm dialog (spec §2 / M5.2).
+ * Counts are over the set of workers/models used in the project's jobs.
+ */
+export interface LicenseReportSummary {
+  total_workers: number;
+  commercial_ok: number;
+  commercial_no: number;
+  commercial_unknown: number;
+  attribution_required: number;
+  attribution_not_required: number;
+  attribution_unknown: number;
+  nsfw_present: number;
+  nsfw_absent: number;
+  nsfw_unknown: number;
+  /** True when at least one worker is marked NSFW. */
+  has_nsfw: boolean;
 }
 
 export interface ProjectLicenseReport {
@@ -375,6 +406,8 @@ export interface ProjectLicenseReport {
   project_name: string;
   generated_at: string | null;
   entries: LicenseReportEntry[];
+  /** Project-level summary counts — used by the export-confirm dialog. */
+  summary: LicenseReportSummary;
   warnings: string[];
 }
 

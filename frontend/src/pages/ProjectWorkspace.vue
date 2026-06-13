@@ -5,6 +5,8 @@ import { useI18n } from "vue-i18n";
 
 import { apiClient } from "@/api/client";
 import { useAppStore } from "@/stores/app";
+import ExportConfirmDialog from "@/components/ExportConfirmDialog.vue";
+import LicenseReportView from "@/components/LicenseReportView.vue";
 import TrainingEntities from "@/components/TrainingEntities.vue";
 import type { AssetRecord, ConsultantAnalysis, ConversationEntry, GenerationJob } from "@/types/api";
 import { Modality, PageKey } from "@/types/enums";
@@ -79,10 +81,30 @@ const jobMaskDrafts = ref<Record<string, string>>({});
 const sourceUploadFiles = ref<Record<string, File | null>>({});
 const maskUploadFiles = ref<Record<string, File | null>>({});
 const loadingLicenseReport = ref<boolean>(false);
+/** Controls visibility of the export-confirm dialog (spec §2 / M5.7). */
+const showExportConfirm = ref<boolean>(false);
 
 const exportDownloadUrl = computed<string>(() =>
   projectId.value ? apiClient.exportProjectDownloadUrl(projectId.value, true) : "#",
 );
+
+/** Opens the export-confirm dialog instead of downloading directly. */
+function openExportConfirm(): void {
+  if (!projectId.value) {
+    return;
+  }
+  showExportConfirm.value = true;
+}
+
+/** Called when the user cancels the export-confirm dialog. */
+function onExportCancelled(): void {
+  showExportConfirm.value = false;
+}
+
+/** Called after the user confirmed — dialog closes. */
+function onExportConfirmed(): void {
+  showExportConfirm.value = false;
+}
 
 function formatList(items: string[], separator = " / "): string {
   return items.length ? items.join(separator) : "-";
@@ -438,9 +460,10 @@ async function createTrainingJob(): Promise<void> {
           <button class="app-button-secondary" type="button" @click="appStore.setAssetDrawerOpen(true)">
             {{ $t("assets.title") }}
           </button>
-          <a class="app-button-secondary" :href="exportDownloadUrl" target="_blank" rel="noreferrer">
+          <!-- Export opens the license-confirm dialog before downloading (spec §2 / M5.7). -->
+          <button class="app-button-secondary" type="button" :disabled="!projectId" @click="openExportConfirm">
             {{ $t("project.exportAction") }}
-          </a>
+          </button>
           <button class="app-button-secondary" type="button" :disabled="loadingLicenseReport" @click="loadLicenseReport">
             {{ loadingLicenseReport ? $t("project.loadingLicenseAction") : $t("project.licenseAction") }}
           </button>
@@ -452,46 +475,27 @@ async function createTrainingJob(): Promise<void> {
         <p v-if="batchSummary" class="mt-1 text-sm app-muted">{{ batchSummary }}</p>
       </section>
 
-      <section v-if="projectLicenseReport" class="app-panel grid gap-4">
+      <!-- License Report view (spec §2 / M5.7): enriched tri-state per-worker table + summary -->
+      <section v-if="projectLicenseReport" class="app-panel grid gap-5">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 class="app-section-title">{{ $t("project.licenseReportTitle") }}</h3>
+            <h3 class="app-section-title">{{ $t("licenseReport.title") }}</h3>
             <p class="app-muted">{{ projectLicenseReport.project_name }}</p>
           </div>
           <p class="text-sm text-app-muted">{{ formatDateTime(projectLicenseReport.generated_at) }}</p>
         </div>
-        <div v-if="projectLicenseReport.warnings.length" class="grid gap-2">
-          <div
-            v-for="warning in projectLicenseReport.warnings"
-            :key="warning"
-            class="rounded-xl border border-app-warning/30 bg-app-warning/10 px-3 py-2 text-sm text-app-text"
-          >
-            {{ warning }}
-          </div>
-        </div>
-        <div class="grid gap-3 xl:grid-cols-2">
-          <article
-            v-for="entry in projectLicenseReport.entries"
-            :key="entry.worker_name"
-            class="rounded-2xl border border-app-border bg-app-surfaceAlt p-4"
-          >
-            <div class="flex items-start justify-between gap-3">
-              <div>
-                <h4 class="font-semibold text-app-text">{{ entry.display_name }}</h4>
-                <p class="break-all text-sm text-app-muted">{{ entry.repo }}</p>
-              </div>
-              <span class="app-chip">{{ entry.license ?? $t("project.licenseUnknown") }}</span>
-            </div>
-            <div class="mt-3 grid gap-1 text-sm text-app-text">
-              <p>{{ $t("project.licenseJobs") }}: {{ entry.job_count }}</p>
-              <p>{{ $t("project.licenseAssets") }}: {{ entry.asset_count }}</p>
-              <p>{{ $t("project.licenseModalities") }}: {{ formatList(entry.modalities) }}</p>
-              <p>{{ $t("project.licenseCommercial") }}: {{ entry.commercial ?? "-" }}</p>
-              <p v-if="entry.readiness_note" class="text-app-warning">{{ entry.readiness_note }}</p>
-            </div>
-          </article>
-        </div>
+        <!-- Delegates all rendering to LicenseReportView for re-use in the export dialog -->
+        <LicenseReportView :report="projectLicenseReport" />
       </section>
+
+      <!-- Export-confirm dialog (spec §2 / M5.7): shown before the user downloads the zip -->
+      <ExportConfirmDialog
+        v-if="showExportConfirm && projectId"
+        :project-id="projectId"
+        :download-url="exportDownloadUrl"
+        @cancel="onExportCancelled"
+        @confirmed="onExportConfirmed"
+      />
 
       <section class="grid gap-5 2xl:grid-cols-[minmax(0,1.38fr)_23rem] 2xl:items-start">
         <div class="grid gap-5">
