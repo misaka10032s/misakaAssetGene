@@ -40,6 +40,8 @@ import type {
   TrainingRecipe,
   TrainingRecipeCreatePayload,
   TrainingRecipeUpdatePayload,
+  VersionDiffResponse,
+  VersionTreeResponse,
   WorkerSmokeResult,
 } from "@/types/api";
 import { MessageKey, NetworkMode, NetworkState, NetworkStatus, NetworkTone } from "@/types/enums";
@@ -119,6 +121,8 @@ export const useAppStore = defineStore("app", () => {
   const projectAssets = ref<Record<string, AssetRecord[]>>({});
   const projectLicenseReports = ref<Record<string, ProjectLicenseReport>>({});
   const projectVersionGraphs = ref<Record<string, ProjectVersionGraph>>({});
+  /** Per-project version-tree DAG data (spec §8.2 / M5.6). Key = project_id. */
+  const projectVersionTrees = ref<Record<string, VersionTreeResponse>>({});
   const projectTrainingJobs = ref<Record<string, TrainingJob[]>>({});
   const assetDrawerOpen = ref<boolean>(false);
   const workerSmokeResults = ref<Record<string, WorkerSmokeResult>>({});
@@ -397,6 +401,30 @@ export const useAppStore = defineStore("app", () => {
       ...projectVersionGraphs.value,
       [projectId]: response,
     };
+    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
+    errorMessageKey.value = null;
+    return response;
+  }
+
+  /** Loads the version-tree DAG (spec §8.2 / M5.6). Stores result in projectVersionTrees. */
+  async function loadProjectVersionTree(projectId: string): Promise<VersionTreeResponse> {
+    const response = await apiClient.projectVersionTree(projectId);
+    projectVersionTrees.value = {
+      ...projectVersionTrees.value,
+      [projectId]: response,
+    };
+    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
+    errorMessageKey.value = null;
+    return response;
+  }
+
+  /** Fetches the structured diff between two asset versions (spec §8.2 / M5.6). */
+  async function loadProjectVersionDiff(
+    projectId: string,
+    fromId: string,
+    toId: string,
+  ): Promise<VersionDiffResponse> {
+    const response = await apiClient.projectVersionDiff(projectId, fromId, toId);
     lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
     errorMessageKey.value = null;
     return response;
@@ -840,6 +868,7 @@ export const useAppStore = defineStore("app", () => {
     projectTrainingEntities,
     projectTrainingJobs,
     projectVersionGraphs,
+    projectVersionTrees,
     projectSchema,
     projectTypes,
     projects,
@@ -864,6 +893,8 @@ export const useAppStore = defineStore("app", () => {
     loadProjectLicenseReport,
     loadProjectTrainingWorkspace,
     loadProjectVersionGraph,
+    loadProjectVersionTree,
+    loadProjectVersionDiff,
     loadProjectWorkspace,
     loadProjects,
     advanceConsultantSession,

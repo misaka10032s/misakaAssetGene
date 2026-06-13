@@ -53,6 +53,8 @@ import type {
     SelectProjectPayload,
     SynopsisOptimizePayload,
     SynopsisOptimizeResult,
+    VersionDiffResponse,
+    VersionTreeResponse,
     WorkerSmokeResult,
   } from "@/types/api";
 import { MessageKey } from "@/types/enums";
@@ -540,5 +542,26 @@ export const apiClient = {
 
   exportProjectDownloadUrl: (projectId: string, resolveRefs = true) =>
     `${appEnv.apiBaseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/export/download?resolve_refs=${resolveRefs ? "true" : "false"}`,
+
+  // ---------------------------------------------------------------------------
+  // §8.2 — Version Tree DAG endpoints (M5.6)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Loads the version-tree DAG for a project (spec §8.2 / M5.1).
+   * Backend key: `data` is `VersionTreeData` (nodes, cycle_detected, capped, node_cap).
+   */
+  projectVersionTree: (projectId: string) =>
+    request<VersionTreeResponse>(`/api/v1/projects/${projectId}/versions/tree`),
+
+  /**
+   * Loads the structured diff between two asset versions (spec §8.2 / M5.1).
+   * Backend key: `data` is `VersionDiffData`.
+   */
+  projectVersionDiff: (projectId: string, fromId: string, toId: string) =>
+    request<VersionDiffResponse>(
+      `/api/v1/projects/${projectId}/versions/diff?from_id=${encodeURIComponent(fromId)}&to_id=${encodeURIComponent(toId)}`,
+    ),
+
   ApiClientError,
 };

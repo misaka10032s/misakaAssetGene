@@ -135,3 +135,22 @@ export enum LoraLayerKind {
   COSTUME = "costume",
   STYLE = "style",
 }
+
+/** Refine strategy ladder (spec §6.2 / §8.2). Matches Python RefineStrategy enum. */
+export enum RefineStrategy {
+  METADATA_ONLY = "metadata_only",
+  PARAM_RETUNE = "param_retune",
+  IMG2IMG = "img2img",
+  INPAINT = "inpaint",
+  FULL_REGEN = "full_regen",
+}
+
+/** Version-tree node status labels used in the DAG UI (spec §8.2). */
+export enum VersionNodeStatus {
+  /** Asset is a completed root or refined version. */
+  COMPLETED = "completed",
+  /** Asset is still being generated. */
+  RUNNING = "running",
+  /** Asset generation failed. */
+  FAILED = "failed",
+}

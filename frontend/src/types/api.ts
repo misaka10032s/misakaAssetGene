@@ -9,6 +9,7 @@ import {
   ProviderMode,
   ProviderName,
   ProviderStatus,
+  RefineStrategy,
   TrainingEntityKind,
 } from "@/types/enums";
 
@@ -657,4 +658,79 @@ export interface TrainingSuggestionCard {
   prefilled: Record<string, unknown>;
   reason: string;
   existing_id: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// §8.2 — Version Tree DAG interfaces (M5.6 frontend)
+// Field names mirror the Python VersionTreeNode / VersionTreeData /
+// VersionDiffData models in core/models/schemas.py exactly.
+// ---------------------------------------------------------------------------
+
+/** One node in the version-tree DAG (spec §8.2 / M5.1). */
+export interface VersionTreeNode {
+  id: string;
+  parent_id: string | null;
+  asset_type: string;
+  modality: Modality;
+  title: string;
+  status: string;
+  created_at: string;
+  prompt_hash: string | null;
+  refine_strategy: RefineStrategy | null;
+  prompt_delta: string | null;
+  param_delta: Record<string, unknown>;
+  mask_asset_id: string | null;
+  backend: string | null;
+  is_orphaned: boolean;
+}
+
+/**
+ * Response envelope for GET /api/v1/projects/{id}/versions/tree.
+ * Backend emits `{"message": ..., "data": VersionTreeData}`.
+ * The `data` key carries this object directly (no extra wrapper key).
+ */
+export interface VersionTreeData {
+  nodes: VersionTreeNode[];
+  cycle_detected: boolean;
+  capped: boolean;
+  node_cap: number;
+}
+
+/**
+ * Typed response interface for the version-tree endpoint.
+ * Backend route: GET /versions/tree → success_response(key, payload.model_dump())
+ * payload.model_dump() serialises VersionTreeData fields directly into `data`.
+ */
+export interface VersionTreeResponse {
+  nodes: VersionTreeNode[];
+  cycle_detected: boolean;
+  capped: boolean;
+  node_cap: number;
+}
+
+/** Structured delta between two asset versions (spec §8.2 / M5.1). */
+export interface VersionDiffData {
+  from_id: string;
+  to_id: string;
+  prompt_delta: string | null;
+  param_delta: Record<string, unknown>;
+  mask_diff: { from_mask: string | null; to_mask: string | null } | null;
+  recipe_diff: { from: string | null; to: string | null } | null;
+  strategy_diff: { from: string | null; to: string | null } | null;
+  backend_diff: { from: string | null; to: string | null } | null;
+}
+
+/**
+ * Typed response interface for the version-diff endpoint.
+ * Backend route: GET /versions/diff?from_id=&to_id= → success_response(key, payload.model_dump())
+ */
+export interface VersionDiffResponse {
+  from_id: string;
+  to_id: string;
+  prompt_delta: string | null;
+  param_delta: Record<string, unknown>;
+  mask_diff: { from_mask: string | null; to_mask: string | null } | null;
+  recipe_diff: { from: string | null; to: string | null } | null;
+  strategy_diff: { from: string | null; to: string | null } | null;
+  backend_diff: { from: string | null; to: string | null } | null;
 }
