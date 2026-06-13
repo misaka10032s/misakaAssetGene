@@ -6,6 +6,7 @@ CLAUDE.local.md
 .env
 .env.*
 !.env.example
+*.log
 
 # Python
 __pycache__/
@@ -58,7 +59,17 @@ smoke-*.mp3
 smoke-*.mp4
 
 # Editors and OS
-.vscode/
+.vscode/*
+!.vscode/extensions.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# Agent / browser-test artifacts — never tracked
+final_runs/
+screenshots/
+**/screenshots/
+*.screenshot.png
+.impeccable/
+impeccable-out/
+*.local.*

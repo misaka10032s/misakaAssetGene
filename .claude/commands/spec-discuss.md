@@ -3,7 +3,7 @@
 以 `architect` 角色主導需求討論。
 
 ## 目標
-- 先讀 `spec.md`
+- 先讀 `.claude/context/spec.md`
 - 對照 `.plan/DEVELOPMENT_PLAN.md` 與 `.plan/RESEARCH_LOG.md`
 - 分析新需求的可行性、架構衝擊、資料流、風險與實作範圍
 - 產出建議的 spec 變更點，但**先不直接實作**

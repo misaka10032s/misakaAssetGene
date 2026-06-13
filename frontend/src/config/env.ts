@@ -5,7 +5,7 @@ const defaultLocale = (import.meta.env.VITE_MISAKA_DEFAULT_LOCALE as string | un
 const appMode = (import.meta.env.VITE_MISAKA_ENV as string | undefined) ?? "production";
 
 export const appEnv: Readonly<AppEnv> = Object.freeze({
-  apiBaseUrl: (import.meta.env.VITE_MISAKA_API_BASE as string | undefined) ?? "http://127.0.0.1:7500",
+  apiBaseUrl: (import.meta.env.VITE_MISAKA_API_BASE as string | undefined) ?? "http://127.0.0.1:8401",
   appMode,
   diagnosticsEnabled: import.meta.env.DEV && appMode === "dev",
   defaultLocale,

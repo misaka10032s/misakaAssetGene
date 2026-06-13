@@ -25,7 +25,7 @@
 
 ### 2.1 研究與策略 (Research & Strategy)
 - 所有 Feature 在開發前必須撰寫 **「技術方案筆記」**，說明是否引用現有庫。
-- API 介面變更必須先更新 `spec.md` 或對應的 API Schema。
+- API 介面變更必須先更新 `.claude/context/spec.md` 或對應的 API Schema。
 
 ### 2.2 實作與驗證 (Act & Validate)
 - **Git 管理：** 採用 Feature Branch 模式。
@@ -39,7 +39,7 @@
 
 - **里程碑驗收閘**：每個里程碑（M0–M5）結束時，須經**使用者驗收 checkpoint** 才能進入下一里程碑。未通過驗收的功能需補齊後再關閉。
 - **實作 → 審查 chain**：每個里程碑的實作由 implementer agent 執行，完成後必須交由**獨立 reviewer agent** 進行 code review；implementer 不得自審。Reviewer 意見由 PM（main agent）彙整後回饋給 implementer 修正。
-- **規格優先**：任何實作前若需求與 `spec.md` 不一致，須先更新 spec（走 spec-discuss → update-spec 流程），再進行實作。
+- **規格優先**：任何實作前若需求與 `.claude/context/spec.md` 不一致，須先更新 spec（走 spec-discuss → update-spec 流程），再進行實作。
 - 本節規定適用於所有未完成的里程碑（M2 起）。
 
 ---
