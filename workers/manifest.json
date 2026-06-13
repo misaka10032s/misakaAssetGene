@@ -155,6 +155,33 @@
       "health_check": "http://127.0.0.1:8791/",
       "smoke_test": "scripts/smoke/ultimate_rvc.py",
       "vram_requirement_mb": 5000
+    },
+    "kohya-ss": {
+      "display_name": "kohya_ss",
+      "directory": "kohya-ss",
+      "repo": "https://github.com/bmaltais/kohya_ss.git",
+      "auto_start": false,
+      "installed": false,
+      "recommended": {
+        "tag": "v25.0.3",
+        "verified_at": "2026-06-13",
+        "note": "LoRA / DreamBooth training via Stable Diffusion scripts (spec §7.1). Not installed; clone separately. CLI entrypoint: accelerate launch train_network.py"
+      },
+      "known_good": [
+        {
+          "tag": "v25.0.3",
+          "date": "2026-05-01",
+          "note": "Stable tag with SDXL LoRA support."
+        }
+      ],
+      "python": "3.10",
+      "install_cmd": "bash setup.sh",
+      "start_cmd": null,
+      "health_check": null,
+      "smoke_test": null,
+      "cli_entrypoint": "accelerate launch train_network.py",
+      "vram_requirement_mb": 8000,
+      "notes": "kohya_ss is a training-only tool; it does not run a persistent server. The executor launches it as a one-shot subprocess per training job. Repo-hygiene rule 2: only this manifest entry is tracked, not the cloned repo."
     }
   }
 }

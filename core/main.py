@@ -63,6 +63,7 @@ from core.models.schemas import (
     RefineRequest,
     SynopsisOptimizeRequest,
     TrainingJobCreateRequest,
+    TrainingJobPollData,
     TrainingRecipe,
     TrainingRecipeCreateRequest,
     TrainingRecipeUpdateRequest,
@@ -81,7 +82,9 @@ from core.project.manager import (
     ProjectValidationError,
 )
 from core.reporting.license import LicenseReportService
+from core.scheduler.vram import ModelScheduler, SchedulerBudget
 from core.training.asset_store import AssetStore
+from core.training.executor import SubprocessRunner, TrainingExecutor
 from core.training.service import TrainingService
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -123,6 +126,53 @@ network_state_service = NetworkStateService()
 project_export_service = ProjectExportService()
 license_report_service = LicenseReportService()
 training_service = TrainingService(project_manager)
+
+# M4.d — VRAM scheduler + training executor.
+# The scheduler governs in-process model placement (spec §3.4).
+# The executor acquires the exclusive VRAM lock before each training run (spec §7.3).
+# REAL-RUN NOTE: The executor is wired with SubprocessRunner but has not been
+# verified against a live kohya_ss / GPT-SoVITS installation.  See RESEARCH_LOG §10.
+_vram_scheduler = ModelScheduler(
+    SchedulerBudget(
+        vram_budget_mb=int(settings.misaka_vram_budget_mb) if hasattr(settings, "misaka_vram_budget_mb") else 12000,
+        ram_budget_mb=int(settings.misaka_ram_budget_mb) if hasattr(settings, "misaka_ram_budget_mb") else 32000,
+    )
+)
+
+
+def _make_training_job_rw(project_id: str):  # type: ignore[return]
+    """Return (read_jobs, write_jobs) closures bound to a project."""
+    def read_jobs():  # type: ignore[return-type]
+        _, project_dir = project_manager.get_project(project_id)
+        return training_service._read_jobs(project_dir)
+
+    def write_jobs(jobs):  # type: ignore[return-type]
+        _, project_dir = project_manager.get_project(project_id)
+        training_service._write_jobs(project_dir, jobs)
+
+    return read_jobs, write_jobs
+
+
+# One shared executor; reads/writes are project-aware via the closures.
+# In production each project could get its own executor; for this phase a single
+# global executor serialises all training across projects (FIFO guarantee).
+_training_executor: TrainingExecutor | None = None
+
+
+def _get_or_create_executor(project_id: str) -> TrainingExecutor:
+    """Return the singleton executor, creating it on first call."""
+    global _training_executor
+    if _training_executor is None:
+        read_jobs, write_jobs = _make_training_job_rw(project_id)
+        _training_executor = TrainingExecutor(
+            read_jobs=read_jobs,
+            write_jobs=write_jobs,
+            scheduler=_vram_scheduler,
+            runner=SubprocessRunner(),
+        )
+        training_service.set_executor(_training_executor)
+    return _training_executor
+
 
 # §7.1.1 asset stores — one per project, keyed by project_id; opened lazily.
 _asset_stores: dict[str, AssetStore] = {}
@@ -621,11 +671,47 @@ def project_training_workspace(project_id: str) -> ApiResponse:
 def create_project_training_job(project_id: str, payload: TrainingJobCreateRequest) -> ApiResponse:
     if IS_DEV:
         logger.info("POST /api/v1/projects/%s/training worker=%s", project_id, payload.worker or "auto")
+    # Ensure the executor is initialised for this project before submitting.
+    try:
+        _get_or_create_executor(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
     try:
         result = training_service.submit_job(project_id, payload)
     except ProjectNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return success_response(MessageKey.SUCCESS_ADD0, result.model_dump(mode="json"))
+
+
+@app.get("/api/v1/projects/{project_id}/training/{job_id}", response_model=ApiResponse)
+def poll_training_job(project_id: str, job_id: str) -> ApiResponse:
+    """Poll the status of a single training job (spec §7.3 progress)."""
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/training/%s", project_id, job_id)
+    try:
+        job = training_service.poll_job(project_id, job_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Training job not found: {job_id}")
+    return success_response(MessageKey.SUCCESS_FETCH0, TrainingJobPollData(job=job).model_dump(mode="json"))
+
+
+@app.post("/api/v1/projects/{project_id}/training/{job_id}/cancel", response_model=ApiResponse)
+def cancel_training_job(project_id: str, job_id: str) -> ApiResponse:
+    """Cancel a queued or running training job (spec §7.3 interrupt)."""
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/%s/training/%s/cancel", project_id, job_id)
+    try:
+        cancelled = training_service.cancel_job(project_id, job_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    if not cancelled:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job {job_id} could not be cancelled (not found or not in a cancellable state).",
+        )
+    return success_response(MessageKey.SUCCESS_SWITCH0, {"job_id": job_id, "cancelled": True})
 
 
 # ---------------------------------------------------------------------------

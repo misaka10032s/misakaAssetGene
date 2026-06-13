@@ -1,2 +1,164 @@
+"""LoRA training command construction for kohya_ss (spec §7.1).
+
+This module is a PURE FUNCTION layer — it builds the CLI argument list and
+working-directory path that the executor will pass to a subprocess, but it
+does NOT launch any process itself.
+
+Real-run deferred / wired-but-not-live-verified:
+  The command vectors produced here are complete and correct by contract
+  (tested with mocked subprocess in tests/test_executor.py), but they have
+  NOT been verified against a live kohya_ss installation or GPU.  The user
+  must supply a real kohya_ss clone and run the executor to verify end-to-end.
+  See spec §7.3 and RESEARCH_LOG §10.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from core.models.schemas import CharacterSheet, DatasetPack, TrainingRecipe
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+class LoraCommandSpec:
+    """Fully-resolved kohya_ss CLI invocation (pure data, no I/O).
+
+    Attributes
+    ----------
+    args        Full argv list suitable for ``subprocess.run(args, ...)``.
+                First element is always the Python interpreter path (or
+                "python" when the venv root is not known).
+    cwd         Working directory for the subprocess — should be the
+                kohya_ss clone root so relative config paths resolve.
+    output_path Absolute path where kohya_ss will write the output
+                ``.safetensors`` file.
+    """
+
+    def __init__(self, args: list[str], cwd: Path, output_path: Path) -> None:
+        self.args = args
+        self.cwd = cwd
+        self.output_path = output_path
+
+    def __repr__(self) -> str:
+        return (
+            f"LoraCommandSpec(args={self.args!r}, cwd={self.cwd!r}, "
+            f"output_path={self.output_path!r})"
+        )
+
+
+def build_lora_command(
+    *,
+    character_sheet: CharacterSheet,
+    dataset_pack: DatasetPack,
+    recipe: TrainingRecipe,
+    project_models_dir: Path,
+    kohya_ss_dir: Path,
+    python_bin: str = "python",
+) -> LoraCommandSpec:
+    """Build the kohya_ss accelerate-launch invocation for LoRA training.
+
+    Parameters
+    ----------
+    character_sheet
+        CharacterSheet entity — supplies trigger words and the character name
+        used to derive the output filename.
+    dataset_pack
+        DatasetPack entity — supplies the training data directory path.
+    recipe
+        TrainingRecipe entity — supplies base_model, rank, epochs, optimizer
+        and caption_strategy.
+    project_models_dir
+        Absolute path to ``<project>/models/``.  The output ``.safetensors``
+        is written to ``<project_models_dir>/<slug>_lora.safetensors``.
+    kohya_ss_dir
+        Absolute path to the kohya_ss clone root.
+    python_bin
+        Path to the Python interpreter inside the kohya_ss venv.  Defaults
+        to ``"python"`` for testability.
+
+    Returns
+    -------
+    LoraCommandSpec
+        Pure data object carrying args + cwd + output_path.  The executor
+        reads these fields and passes them verbatim to the subprocess runner.
+
+    Notes
+    -----
+    Spec §7.1 mandates kohya_ss CLI via ``accelerate launch train_network.py``.
+    The ``--network_module`` is ``networks.lora`` (standard kohya_ss module).
+    Caption strategy ``wd14`` uses ``--caption_extension .txt`` (pre-generated
+    captions); ``blip`` and ``manual`` use the same convention (captions must
+    already exist in the dataset directory).
+
+    REAL-RUN DEFERRED: This command has NOT been verified against a live
+    kohya_ss installation.  See spec §7.3 and RESEARCH_LOG §10.
+    """
+    trigger_word = character_sheet.trigger_words[0] if character_sheet.trigger_words else character_sheet.name
+    slug = _slugify(character_sheet.name)
+    output_name = f"{slug}_lora"
+    output_dir = project_models_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{output_name}.safetensors"
+
+    # Caption extension: WD14 and BLIP both write .txt sidecars alongside images.
+    caption_extension = ".txt"
+
+    args: list[str] = [
+        python_bin,
+        "-m", "accelerate.commands.launch",
+        str(kohya_ss_dir / "train_network.py"),
+        # Model
+        f"--pretrained_model_name_or_path={recipe.base_model}",
+        # Dataset
+        f"--train_data_dir={dataset_pack.source}",
+        f"--caption_extension={caption_extension}",
+        # Output
+        f"--output_dir={output_dir}",
+        f"--output_name={output_name}",
+        # Network (LoRA)
+        "--network_module=networks.lora",
+        f"--network_dim={recipe.rank}",
+        f"--network_alpha={recipe.rank // 2}",
+        # Training
+        f"--max_train_epochs={recipe.epochs}",
+        f"--optimizer_type={recipe.optimizer}",
+        # Trigger word embedded via output name convention; advanced users
+        # may add --network_args "conv_dim=..." for additional LoRA variants.
+        f"--output_name={output_name}",
+        # Precision (safe default; can be overridden via recipe.params in future)
+        "--mixed_precision=fp16",
+        "--save_precision=fp16",
+        "--save_model_as=safetensors",
+        # Logging
+        "--logging_dir=logs",
+        "--log_prefix=misaka_lora",
+    ]
+
+    return LoraCommandSpec(args=args, cwd=kohya_ss_dir, output_path=output_path)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _slugify(text: str) -> str:
+    """Convert a name to a filesystem-safe slug."""
+    import re
+    slug = text.strip().lower()
+    slug = re.sub(r"[^\w一-鿿぀-ヿ]+", "_", slug)
+    slug = slug.strip("_")
+    return slug or "character"
+
+
+# ---------------------------------------------------------------------------
+# Legacy stub (kept for backward-compatibility; delegates to build_lora_command
+# when called without arguments from old call sites)
+# ---------------------------------------------------------------------------
+
 def plan_training() -> dict[str, str]:
-    return {"status": "not_implemented", "type": "lora"}
+    """Legacy stub; replaced by build_lora_command().  Do not use in new code."""
+    return {"status": "use_build_lora_command", "type": "lora"}

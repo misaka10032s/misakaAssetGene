@@ -589,6 +589,16 @@ class TrainingJob(BaseModel):
     dataset_path: str
     status: TrainingJobStatus
     note: str | None = None
+    # Executor fields (spec §7.3 / M4.d) — populated by TrainingExecutor.
+    progress: int = 0                   # 0–100 polled from runner output
+    progress_label: str | None = None   # human-readable progress description
+    exit_code: int | None = None        # subprocess exit code on completion/failure
+    stderr_tail: str | None = None      # last ~20 lines of stderr on failure
+    # TODO(spec §7.3 resume): mid-checkpoint resume is not yet implemented.
+    #   When the executor is interrupted, resume_checkpoint_path can be set
+    #   to the last saved checkpoint directory so a future run can pass
+    #   --resume_from_checkpoint to kohya_ss / GPT-SoVITS.
+    resume_checkpoint_path: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -763,6 +773,12 @@ class ImageToVideoRecipeUpdateRequest(BaseModel):
     fps: int | None = Field(default=None, ge=1)
     motion_strength: float | None = Field(default=None, ge=0.0)
     notes: str | None = None
+
+
+class TrainingJobPollData(BaseModel):
+    """Response envelope for polling a single training job (spec §7.3)."""
+
+    job: TrainingJob
 
 
 ConversationEntry.model_rebuild()
