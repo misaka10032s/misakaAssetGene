@@ -504,3 +504,111 @@ def test_diff_api_404_for_missing_version(client: TestClient) -> None:
         params={"from_id": asset_id, "to_id": "ghost"},
     )
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 7. Regression tests for M5.10 — cap path and self-parent cycle (M5.1 review)
+# ---------------------------------------------------------------------------
+
+def test_tree_node_cap_enforced(svc_ctx, tmp_path: Path) -> None:
+    """Building a tree with more than _TREE_NODE_CAP assets must return capped=True,
+    exactly _TREE_NODE_CAP nodes, and no surviving node whose parent_id was dropped."""
+    from core.generation.service import GenerationService
+
+    svc, manager, project_id = svc_ctx
+    cap = GenerationService._TREE_NODE_CAP
+
+    _, project_dir = manager.get_project(project_id)
+    assets_dir = project_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    index_path = assets_dir / "index.json"
+
+    now = datetime.now(timezone.utc).isoformat()
+    # Build cap + 1 independent root nodes (no parent chains needed to verify cap).
+    assets = [
+        {
+            "id": f"node-{i:04d}",
+            "job_id": None,
+            "modality": "image",
+            "asset_type": "image",
+            "title": f"Node {i}",
+            "path": f"assets/images/node_{i}.png",
+            "description": "",
+            "parent_version_id": None,
+            "refine_strategy": None,
+            "mask_asset_id": None,
+            "prompt_delta": None,
+            "param_delta": {},
+            "prompt_hash": None,
+            "backend": None,
+            "params": {},
+            "tags": [],
+            "user_note": None,
+            "is_favorite": False,
+            "created_at": now,
+        }
+        for i in range(cap + 1)
+    ]
+    index_path.write_text(json.dumps({"assets": assets}), encoding="utf-8")
+
+    tree = svc.build_version_tree(project_id)
+
+    assert tree.capped is True, "Expected capped=True when asset count exceeds cap"
+    assert len(tree.nodes) == cap, f"Expected {cap} nodes, got {len(tree.nodes)}"
+
+    # No surviving node should reference a dropped node as parent.
+    surviving_ids = {n.id for n in tree.nodes}
+    for node in tree.nodes:
+        if node.parent_id is not None:
+            assert node.parent_id in surviving_ids or node.is_orphaned, (
+                f"Node {node.id} has parent {node.parent_id} which was dropped and not flagged orphaned"
+            )
+
+
+def test_self_parent_cycle_detected_and_no_infinite_loop(svc_ctx, tmp_path: Path) -> None:
+    """A node whose parent_version_id equals its own id (self-loop) must trigger
+    cycle_detected=True, complete without hanging, and the offending node's parent
+    must be nulled out in the returned tree."""
+    svc, manager, project_id = svc_ctx
+
+    _, project_dir = manager.get_project(project_id)
+    assets_dir = project_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    index_path = assets_dir / "index.json"
+
+    now = datetime.now(timezone.utc).isoformat()
+    self_id = "self-loop-node"
+    assets = [
+        {
+            "id": self_id,
+            "job_id": None,
+            "modality": "image",
+            "asset_type": "image",
+            "title": "SelfLoop",
+            "path": "assets/images/self.png",
+            "description": "",
+            "parent_version_id": self_id,  # points to itself
+            "refine_strategy": None,
+            "mask_asset_id": None,
+            "prompt_delta": None,
+            "param_delta": {},
+            "prompt_hash": None,
+            "backend": None,
+            "params": {},
+            "tags": [],
+            "user_note": None,
+            "is_favorite": False,
+            "created_at": now,
+        }
+    ]
+    index_path.write_text(json.dumps({"assets": assets}), encoding="utf-8")
+
+    tree = svc.build_version_tree(project_id)
+
+    assert tree.cycle_detected is True, "Expected cycle_detected=True for self-parent node"
+    assert len(tree.nodes) == 1
+    # The offending parent_id must be nulled to break the cycle.
+    node = tree.nodes[0]
+    assert node.parent_id is None, (
+        f"Expected parent_id=None after cycle-break, got {node.parent_id!r}"
+    )

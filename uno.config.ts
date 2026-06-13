@@ -14,6 +14,8 @@ export default defineConfig({
         primary: "#7c88ff",
         success: "#14b8a6",
         warning: "#f59e0b",
+        danger: "#ef4444",
+        error: "#ef4444",
       },
     },
   },

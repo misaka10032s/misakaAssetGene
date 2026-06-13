@@ -30,7 +30,7 @@ const badgeClass = computed<string>(() => {
       return "bg-app-warning/20 border-app-warning text-app-text font-semibold";
     case CrossRefStatus.BROKEN:
       // Error / danger — file is unavailable; blocks generation.
-      return "bg-red-500/20 border-red-400 text-red-200 font-semibold";
+      return "bg-app-danger/20 border-app-danger/60 text-app-danger font-semibold";
     default:
       return "bg-app-surfaceAlt border-app-border text-app-muted";
   }

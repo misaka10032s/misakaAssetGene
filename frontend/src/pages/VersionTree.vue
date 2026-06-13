@@ -52,6 +52,8 @@ const V_GAP = 56; // vertical gap between generations
 const PADDING = 24; // SVG outer padding
 
 // Branch colours (UnoCSS token-safe stroke values matched to theme palette).
+// Entries 5-6 (#a855f7, #06b6d4) are intentionally literal — this is a multi-colour
+// branch palette, not a semantic state colour; no theme token maps to these shades.
 const BRANCH_STROKES = [
   "var(--un-color-primary, #6366f1)",
   "var(--un-color-success, #22c55e)",
@@ -319,6 +321,18 @@ function formatDate(isoString: string): string {
   }
 }
 
+/**
+ * Returns the localized label for a refine strategy enum value.
+ * Falls back to the raw value string if the key is not found in the locale.
+ */
+function localizeRefineStrategy(strategy: string | null | undefined): string {
+  if (!strategy) return "";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const resolved = t(`versions.refineStrategy.${strategy}` as any);
+  // vue-i18n returns the key itself when a translation is missing; show raw value then.
+  return resolved !== `versions.refineStrategy.${strategy}` ? String(resolved) : strategy;
+}
+
 /** Returns a displayable diff value — shows key+value pairs or a "no change" label. */
 function formatDictDiff(val: Record<string, unknown> | null | undefined): string {
   if (!val || Object.keys(val).length === 0) return t("versions.diffNoChange");
@@ -501,7 +515,7 @@ function selectionSlot(id: string): number {
               style="font-size: 10px"
             >
               {{ ln.node.modality }}
-              <tspan v-if="ln.node.refine_strategy"> · {{ ln.node.refine_strategy }}</tspan>
+              <tspan v-if="ln.node.refine_strategy"> · {{ localizeRefineStrategy(ln.node.refine_strategy) }}</tspan>
             </text>
 
             <!-- Status chip -->
@@ -542,7 +556,7 @@ function selectionSlot(id: string): number {
                   {{ formatDate(selectedNode(slot)!.created_at) }}
                 </p>
                 <p v-if="selectedNode(slot)!.refine_strategy" class="text-xs text-app-muted mt-0.5">
-                  {{ $t("versions.nodeStrategy") }}: {{ selectedNode(slot)!.refine_strategy }}
+                  {{ $t("versions.nodeStrategy") }}: {{ localizeRefineStrategy(selectedNode(slot)!.refine_strategy) }}
                 </p>
                 <p v-if="selectedNode(slot)!.backend" class="text-xs text-app-muted mt-0.5">
                   {{ $t("versions.nodeBackend") }}: {{ selectedNode(slot)!.backend }}

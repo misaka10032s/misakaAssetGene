@@ -360,10 +360,10 @@ Bash parse check：`bash -n` 通過。
 
 **結論：已正確實作（pre-existing）**。追蹤路徑：
 
-- `refine_asset()` (`core/generation/service.py:198`) → sets `parent_asset_id` on the `GenerationJob`
-- On job execution, `_persist_generated_artifact()` (`service.py:437`) → reads `job.parent_asset_id` → writes into `AssetRecord.parent_version_id` (line 465)
-- `AssetRecord` schema (`schemas.py:416`) declares `parent_version_id: str | None = None` with refine metadata fields: `refine_strategy`, `mask_asset_id`, `prompt_delta`, `param_delta` — all populated from the job in `_persist_generated_artifact`
-- Root versions (non-refine) have `parent_version_id=None` (line 465: `job.parent_asset_id if job else None`)
+- `refine_asset()` (`core/generation/service.py` — search `def refine_asset`) → sets `parent_asset_id` on the `GenerationJob`
+- On job execution, `_persist_generated_artifact()` (`service.py` — search `def _persist_generated_artifact`) → reads `job.parent_asset_id` → writes into `AssetRecord.parent_version_id` (`job.parent_asset_id if job else None`)
+- `AssetRecord` schema (`schemas.py` — search `parent_version_id`) declares `parent_version_id: str | None = None` with refine metadata fields: `refine_strategy`, `mask_asset_id`, `prompt_delta`, `param_delta` — all populated from the job in `_persist_generated_artifact`
+- Root versions (non-refine) have `parent_version_id=None`
 
 No fix required.  All §5.11 metadata fields were already wired.
 

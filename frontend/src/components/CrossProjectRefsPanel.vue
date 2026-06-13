@@ -130,7 +130,7 @@ onMounted(() => {
     </div>
 
     <!-- Error -->
-    <p v-if="error" class="text-sm text-red-300">{{ error }}</p>
+    <p v-if="error" class="text-sm text-app-danger">{{ error }}</p>
 
     <!-- Empty state -->
     <p v-else-if="data && data.refs.length === 0" class="app-muted">
@@ -189,7 +189,7 @@ onMounted(() => {
       <p class="font-semibold text-app-text">
         {{ t("refs.materializeResultTitle", { count: materializeResult.materialized.length }) }}
       </p>
-      <p v-if="materializeResult.broken.length > 0" class="mt-1 font-semibold text-red-300">
+      <p v-if="materializeResult.broken.length > 0" class="mt-1 font-semibold text-app-danger">
         {{ t("refs.materializeBrokenCount", { count: materializeResult.broken.length }) }}
       </p>
       <!-- Broken ref details -->
@@ -202,6 +202,6 @@ onMounted(() => {
     </div>
 
     <!-- Materialize error -->
-    <p v-if="materializeError" class="text-sm text-red-300">{{ materializeError }}</p>
+    <p v-if="materializeError" class="text-sm text-app-danger">{{ materializeError }}</p>
   </div>
 </template>
