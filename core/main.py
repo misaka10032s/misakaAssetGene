@@ -1,5 +1,6 @@
 import json
 import logging
+import mimetypes
 import threading
 import time
 from pathlib import Path
@@ -599,6 +600,56 @@ def refine_project_asset(project_id: str, asset_id: str, payload: RefineRequest)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return success_response(MessageKey.SUCCESS_ADD0, result.model_dump(mode="json"))
+
+
+@app.get("/api/v1/projects/{project_id}/assets/{asset_id}/file")
+def get_project_asset_file(project_id: str, asset_id: str) -> FileResponse:
+    """Serve the raw file bytes for a project asset (M5.9).
+
+    Security: the resolved file path is verified to be strictly inside the
+    project's assets/ directory before any bytes are served.  A path that
+    escapes the root (via '..' or symlink) returns 404, never the file.
+    """
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/assets/%s/file", project_id, asset_id)
+    # Step 1: resolve project; 404 if unknown.
+    try:
+        _, project_dir = project_manager.get_project(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+    # Step 2: read assets index and locate the requested asset.
+    assets = generation_service._read_assets(project_dir)
+    asset = next((a for a in assets if a.id == asset_id), None)
+    if asset is None:
+        raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
+
+    # Step 3: build file path and apply path-containment guard.
+    # asset.path is relative to project_dir (e.g. "assets/images/foo.png").
+    # We only permit files that reside inside project_dir/assets/ to prevent
+    # directory-traversal attacks and symlink escapes.
+    assets_root = (project_dir / "assets").resolve()
+    file_path = (project_dir / asset.path).resolve()
+    try:
+        file_path.relative_to(assets_root)
+    except ValueError:
+        # Resolved path escapes the assets root — refuse to serve.
+        raise HTTPException(status_code=404, detail="Asset file path is outside the permitted directory.")
+
+    # Step 4: 404 if the file does not exist on disk.
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Asset file not found on disk: {asset.path}")
+
+    # Step 5: infer media_type from extension; fall back to octet-stream.
+    guessed, _ = mimetypes.guess_type(file_path.name)
+    media_type = guessed or "application/octet-stream"
+
+    # Return as inline so browsers render images directly (not force-download).
+    return FileResponse(
+        path=file_path,
+        media_type=media_type,
+        headers={"Content-Disposition": f'inline; filename="{file_path.name}"'},
+    )
 
 
 @app.get("/api/v1/integration", response_model=ApiResponse)
