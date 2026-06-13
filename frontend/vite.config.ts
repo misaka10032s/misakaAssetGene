@@ -29,6 +29,7 @@ export default defineConfig(({ mode }) => {
       UnoCSS(),
     ],
     server: {
+      host: "127.0.0.1",
       port: Number(env.MISAKA_FRONTEND_PORT || "8400"),
       strictPort: true,
     },
