@@ -149,7 +149,20 @@ class ConsultantEngine:
         # (spec §5.12) and persist it on the session.
         missing = state_machine.missing_slots(effective_modality, session.slots)
         if target is ConsultantState.GENERATE and result.analysis is not None:
-            session.plan = result.analysis
+            plan = result.analysis
+            # For training-flow sessions, thread entity IDs from accepted slots
+            # into the plan so the frontend / caller can reference them directly
+            # (spec §7.1.1 / M4.b deliverable 2).
+            from core.models.schemas import Modality as _Modality
+            if effective_modality is _Modality.TRAINING and session.slots:
+                plan = plan.model_copy(update={
+                    "training_character_sheet_id": session.slots.get("character_sheet") or None,
+                    "training_dataset_pack_id": session.slots.get("dataset_pack") or None,
+                    "training_recipe_id": session.slots.get("training_recipe") or None,
+                    "training_lora_preset_id": session.slots.get("lora_preset") or None,
+                    "training_i2v_recipe_id": session.slots.get("i2v_recipe") or None,
+                })
+            session.plan = plan
 
         store.save(session)
         return ConsultantSessionData(session=session, result=result, missing_slots=missing)

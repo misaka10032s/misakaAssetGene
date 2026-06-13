@@ -132,6 +132,35 @@ kohya_ss executor / 訓練觸發邏輯延後至 M4.c，不在本 sub-phase 內�
 
 ---
 
+## 9. 2026-06-13 — M4.b 顧問訓練流擴充（BACKEND ONLY）
+
+### 9.1 訓練意圖偵測（Training-intent detection）
+**問題**：顧問如何在不依賴 LLM 的情況下偵測使用者意圖為訓練 / 角色工廠工作流？  
+**結論**：採用關鍵詞集合（訓練、LoRA、lora、資料集、kohya、trigger word、gpt-sovits、voice clone、聲線複製、角色工廠等）搭配 `re.compile` 在 `planner._is_training_intent()` 中靜態判斷。偵測在 `_infer_modalities()` 優先執行，避免訓練相關 prompt 被誤判為 IMAGE 模態。
+
+### 9.2 TRAINING modality 與 checklist
+**問題**：是否應新增一個獨立的 `TRAINING` modality 還是複用既有 modality？  
+**結論**：新增 `Modality.TRAINING = "training"`，將訓練流嵌入既有 state machine 與 session store 的 checklist/slots 機制，不發明平行系統。`REQUIRED_SLOTS["training"]` 定義四個必填 slot：`character_sheet`、`dataset_pack`、`training_recipe`、`lora_preset`；`i2v_recipe` 為選填，缺席不阻擋 checklist 完成。
+
+### 9.3 TrainingSuggestionCard schema（spec §4.4）
+**問題**：建議卡片的後端資料形狀如何定義？  
+**結論**：新增 Pydantic model `TrainingSuggestionCard`（欄位：`entity_kind`、`action`、`prefilled`、`reason`、`existing_id`）於 `core/models/schemas.py`。顧問在分析時為每個缺失的必填實體產生一張卡片，`existing_id` 預設 None（不查 DB，由前端決定是否比對）。前端渲染為可點擊按鈕，建議卡片**不**自動執行建立（§4.4）。
+
+### 9.4 Plan 實體 ID 引用（spec §5.12 / §7.1.1）
+**問題**：training plan 如何引用已選擇的實體 ID？  
+**結論**：`ConsultantAnalysis` 新增五個 training 擴充欄位（`is_training_flow`、`training_character_sheet_id`、`training_dataset_pack_id`、`training_recipe_id`、`training_lora_preset_id`、`training_i2v_recipe_id`）。在 Summary → Generate 邊（`engine._run_clarify`）從 `session.slots` 取出各 slot 值並以 `model_copy(update=...)` 填入 plan，使 plan 成為帶 entity ID 引用的結構化規劃資料。非訓練流時所有欄位為空值，向後相容。
+
+### 9.5 執行步驟（§7.1 sequence）
+**問題**：訓練流的 execution_steps 應涵蓋哪些階段？  
+**結論**：6 個必選步驟：(a) 確認 CharacterSheet → (b) 確認 DatasetPack → (c) 確認 TrainingRecipe → (d) 確認 LoraPreset → 訓練 LoRA（kohya_ss） → 批次生成（comfyui）。若 prompt 含語音克隆關鍵詞，插入 GPT-SoVITS 步驟；若含影片關鍵詞，附加 i2v 步驟。訓練執行（M4.c）不在此 phase。
+
+### 9.6 驗證
+`uv run --extra dev pytest tests/ -q` → **212 passed, 0 failed**（含新增 41 個測試在 `tests/test_training_flow.py`）。涵蓋：訓練意圖偵測 14 cases、REQUIRED_SLOTS 驗證 4 cases、checklist 進展 5 cases、plan 實體 ID 引用 5 cases、建議卡片發射 9 cases、summary/next_step 3 cases、session persistence 1 case。
+
+**狀態：已完成**
+
+---
+
 ## 8. 2026-06-13 — M4.a 第五實體 ImageToVideoRecipe 補齊
 
 **問題**：§7.1.1 規格定義五個實體，但 M4.a 初始 commit `b997a3c` 只實作了四個，遺漏了 `image-to-video recipes`。  

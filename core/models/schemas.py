@@ -35,6 +35,7 @@ class Modality(str, Enum):
     IMAGE = "image"
     VOICE = "voice"
     VIDEO = "video"
+    TRAINING = "training"  # spec §7.1.1 multi-character LoRA / voice-clone workflow
 
 
 class ProviderName(str, Enum):
@@ -221,6 +222,32 @@ class ConsultantDeliverable(BaseModel):
     worker: str | None = None
 
 
+class TrainingSuggestionCard(BaseModel):
+    """Backend data shape for a suggestion card the frontend renders as an inline
+    create action (spec §4.4 / M4.b).
+
+    The card describes a proposed entity creation action with prefilled fields.
+    The frontend renders it as a clickable UI button; the consultant NEVER
+    auto-executes creation (spec §4.4).
+
+    Fields
+    ------
+    entity_kind   : one of "character_sheet" | "dataset_pack" |
+                    "training_recipe" | "lora_preset" | "i2v_recipe"
+    action        : always "create" in the current phase
+    prefilled     : dict of fields the UI should pre-populate in the creation form
+    reason        : one-line explanation of why this entity is needed now
+    existing_id   : if a matching entity already exists in the project,
+                    its id is surfaced here so the user can pick it instead
+    """
+
+    entity_kind: str  # "character_sheet" | "dataset_pack" | "training_recipe" | "lora_preset" | "i2v_recipe"
+    action: str = "create"
+    prefilled: dict[str, Any] = Field(default_factory=dict)
+    reason: str = ""
+    existing_id: str | None = None
+
+
 class ConsultantAnalysis(BaseModel):
     objective: str
     inferred_modalities: list[Modality] = Field(default_factory=list)
@@ -238,6 +265,15 @@ class ConsultantAnalysis(BaseModel):
     execution_steps: list[ConsultantPlanStep] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)
     guidance_path: list[str] = Field(default_factory=list)
+    # Training-flow extensions (spec §7.1.1 / M4.b) — populated when
+    # is_training_flow=True; empty lists otherwise to keep backward compatibility.
+    is_training_flow: bool = False
+    training_character_sheet_id: str | None = None  # selected or asked-for entity id
+    training_dataset_pack_id: str | None = None
+    training_recipe_id: str | None = None
+    training_lora_preset_id: str | None = None
+    training_i2v_recipe_id: str | None = None
+    suggestion_cards: list[TrainingSuggestionCard] = Field(default_factory=list)
 
 
 class ClarifyResult(BaseModel):

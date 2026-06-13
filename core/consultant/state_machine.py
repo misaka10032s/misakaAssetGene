@@ -19,6 +19,13 @@ REQUIRED_SLOTS: dict[str, list[str]] = {
     Modality.VOICE.value: ["persona", "tone", "language", "lipsync"],
     Modality.VIDEO.value: ["usage", "duration", "audio_track", "camera"],
     Modality.TEXT.value: ["objective"],
+    # spec §7.1.1 — M4.b training-flow checklist (sequential §7.1 steps):
+    #   (a) character_sheet  — pick or create a CharacterSheet
+    #   (b) dataset_pack     — pick or create a DatasetPack (source/cleaning/license/split)
+    #   (c) training_recipe  — pick or create a TrainingRecipe (base model/rank/epochs/…)
+    #   (d) lora_preset      — choose a LoraPreset stack
+    #   (e) i2v_recipe       — optional ImageToVideoRecipe; NOT required to close the checklist
+    Modality.TRAINING.value: ["character_sheet", "dataset_pack", "training_recipe", "lora_preset"],
 }
 
 # Legal forward transitions. Refine can loop back to Generate; any state can be

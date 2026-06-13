@@ -790,6 +790,7 @@ M0 前端工作台至少要有以下主要 route / workspace：
 
 ### 5.12 顧問解析與工作區任務
 > v0.9: 新增章節。顧問 session 狀態持久化決策見 §4.1.1（決策日：2026-06-12，屬 M2 範疇）。
+> v0.9.4 (M4.b): 訓練流程擴充。新增 `TRAINING` modality、訓練流 checklist、`TrainingSuggestionCard` schema、實體 ID 欄位。詳見下方。
 
 當使用者在 `/project/:projectId` 內提交需求時，顧問不可只回傳泛用 checklist；至少要轉成以下 structured planning 資料：
 
@@ -802,6 +803,49 @@ M0 前端工作台至少要有以下主要 route / workspace：
 - `recommended_workers`
 - `execution_steps`
 - `blocking_reasons`
+
+#### §5.12.1 訓練流顧問（M4.b，2026-06-13）
+
+當顧問偵測到訓練 / 角色工廠意圖（關鍵詞：訓練、LoRA、lora、資料集、kohya、trigger word、gpt-sovits、voice clone、角色工廠等），session 的 modality 設為 `TRAINING`，並驅動以下流程：
+
+**Checklist slots（四個必填 + 一個選填）**
+
+| 步驟 | Slot key | 對應實體 | 必填 |
+|---|---|---|---|
+| (a) | `character_sheet` | CharacterSheet ID | ✓ |
+| (b) | `dataset_pack` | DatasetPack ID | ✓ |
+| (c) | `training_recipe` | TrainingRecipe ID | ✓ |
+| (d) | `lora_preset` | LoraPreset ID | ✓ |
+| (e) | `i2v_recipe` | ImageToVideoRecipe ID | 選填 |
+
+Checklist 在四個必填 slot 都填入後才視為完成，進入 Summary → Generate。`i2v_recipe` 缺席不阻擋進度。
+
+**TrainingSuggestionCard schema（§4.4 建議卡片後端資料）**
+
+```python
+class TrainingSuggestionCard(BaseModel):
+    entity_kind: str   # "character_sheet" | "dataset_pack" | "training_recipe" | "lora_preset" | "i2v_recipe"
+    action: str        # always "create" in M4.b
+    prefilled: dict    # fields pre-populated in the create form
+    reason: str        # one-line reason why this entity is needed
+    existing_id: str | None  # if a matching entity already exists, surface its ID
+```
+
+顧問在分析時為每個缺少的實體產生一張建議卡片，前端渲染為可點擊按鈕。建議卡片 **不** 自動執行建立（spec §4.4）。
+
+**ConsultantAnalysis 訓練流擴充欄位**
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `is_training_flow` | `bool` | 是否為訓練流意圖 |
+| `training_character_sheet_id` | `str \| None` | 已選 CharacterSheet 的 ID（從 slots 填入） |
+| `training_dataset_pack_id` | `str \| None` | 已選 DatasetPack 的 ID |
+| `training_recipe_id` | `str \| None` | 已選 TrainingRecipe 的 ID |
+| `training_lora_preset_id` | `str \| None` | 已選 LoraPreset 的 ID |
+| `training_i2v_recipe_id` | `str \| None` | 已選 ImageToVideoRecipe 的 ID（選填） |
+| `suggestion_cards` | `list[TrainingSuggestionCard]` | 缺少實體的建議卡片清單 |
+
+以上欄位在非訓練流分析中為空值，向後相容。
 
 若需求像是「某角色的所有官方服裝立繪圖」，系統必須先判定這不是可直接渲染的單張 prompt，而是 **reference collection → variant matrix planning → preview render → refine → upscale** 的批次工作流。
 
@@ -964,7 +1008,7 @@ project workspace 的 conversation history 不可一次完整渲染所有訊息�
 
 這些資料若缺少，系統就只能做到「單次生成」，無法真正成為角色量產工廠。
 
-#### §7.1.1 儲存模型（M4.a 決策，2026-06-13；第五實體補齊 2026-06-13）
+#### §7.1.1 儲存模型（M4.a 決策，2026-06-13；第五實體補齊 2026-06-13；顧問訓練流 M4.b 2026-06-13）
 
 五個實體均持久化於各專案資料夾內的 `memory.sqlite`（與顧問 sessions 表同一檔案）。
 

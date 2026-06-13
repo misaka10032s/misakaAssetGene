@@ -10,6 +10,7 @@ from core.models.schemas import (
     ConsultantDeliverable,
     ConsultantPlanStep,
     Modality,
+    TrainingSuggestionCard,
 )
 
 _QUOTED_TERM_RE = re.compile(r"[\"'「『](.+?)[\"'」』]")
@@ -50,6 +51,17 @@ def _analyze_request(request: ClarifyRequest) -> ConsultantAnalysis:
     execution_steps = _build_execution_steps(primary_modality, prompt, deliverables, required_research, recommended_workers)
     guidance_path = _build_guidance_path(primary_modality, required_research, deliverables)
 
+    # Training-flow extensions (spec §7.1.1 / M4.b).
+    is_training = primary_modality is Modality.TRAINING
+    suggestion_cards: list[TrainingSuggestionCard] = []
+    if is_training:
+        suggestion_cards = _build_training_suggestion_cards(prompt, characters)
+        training_steps = _build_training_execution_steps(prompt, characters)
+        execution_steps = training_steps
+        if not recommended_workers:
+            recommended_workers = ["kohya_ss", "gpt-sovits"]
+        guidance_path = _build_training_guidance_path()
+
     return ConsultantAnalysis(
         objective=prompt,
         inferred_modalities=inferred_modalities,
@@ -67,6 +79,15 @@ def _analyze_request(request: ClarifyRequest) -> ConsultantAnalysis:
         execution_steps=execution_steps,
         blocking_reasons=blocking_reasons,
         guidance_path=guidance_path,
+        is_training_flow=is_training,
+        # Entity IDs are unknown at analysis time (session slots populate them);
+        # leave None so the engine can fill them from accepted slots.
+        training_character_sheet_id=None,
+        training_dataset_pack_id=None,
+        training_recipe_id=None,
+        training_lora_preset_id=None,
+        training_i2v_recipe_id=None,
+        suggestion_cards=suggestion_cards,
     )
 
 
@@ -177,6 +198,11 @@ def _extract_style_keywords(prompt: str) -> list[str]:
 def _infer_modalities(prompt: str, explicit_modality: Modality | None) -> list[Modality]:
     if explicit_modality is not None:
         return [explicit_modality]
+    # Training-intent detection takes priority when explicit markers are present
+    # (spec §7.1.1 / M4.b).  Detection runs before the generic modality map so
+    # that "訓練 LoRA" is not misclassified as IMAGE.
+    if _is_training_intent(prompt):
+        return [Modality.TRAINING]
     modality_map: list[tuple[Modality, tuple[str, ...]]] = [
         (Modality.IMAGE, ("圖", "圖片", "立繪", "插圖", "image", "portrait", "illustration")),
         (Modality.VOICE, ("語音", "配音", "聲音", "tts", "voice", "speaker")),
@@ -192,6 +218,29 @@ def _infer_modalities(prompt: str, explicit_modality: Modality | None) -> list[M
                 unique.append(modality)
         return unique
     return [Modality.TEXT]
+
+
+# ---------------------------------------------------------------------------
+# Training-intent detection (spec §7.1.1 / M4.b)
+# ---------------------------------------------------------------------------
+
+# Keywords that strongly indicate a training / character-factory workflow.
+_TRAINING_KEYWORDS_ZH = (
+    "訓練", "LoRA", "lora", "角色工廠", "資料集", "訓練配方", "voice clone",
+    "語音複製", "聲線複製", "fine-tune", "fine tune", "finetune",
+    "kohya", "gpt-sovits", "gpt sovits", "character sheet", "角色卡",
+    "dataset", "trigger word", "觸發詞",
+)
+
+_TRAINING_PATTERN = re.compile(
+    r"(" + "|".join(re.escape(kw) for kw in _TRAINING_KEYWORDS_ZH) + r")",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_training_intent(prompt: str) -> bool:
+    """Return True when the prompt signals a LoRA / voice-clone training workflow."""
+    return bool(_TRAINING_PATTERN.search(prompt))
 
 
 def _build_required_research(prompt: str, franchise: str | None, characters: list[str], outfits: list[str]) -> list[str]:
@@ -411,6 +460,15 @@ def _build_guidance_path(
 
 
 def _build_summary(modality: Modality, analysis: ConsultantAnalysis) -> str:
+    if analysis.is_training_flow:
+        char_hint = f" for {analysis.characters[0]}" if analysis.characters else ""
+        return (
+            f"Training-flow request detected{char_hint}: the consultant will guide you through "
+            "the §7.1 sequence — CharacterSheet → DatasetPack → TrainingRecipe → LoraPreset "
+            "(→ optional ImageToVideoRecipe). Each missing entity surfaces a suggestion card "
+            "for inline creation. Training execution (kohya_ss / GPT-SoVITS) is offered only "
+            "after all required entities are confirmed (spec §4.4)."
+        )
     if len(analysis.inferred_modalities) > 1:
         deliverable_modes = ", ".join(modality.value for modality in analysis.inferred_modalities)
         return f"Multimodal request detected: plan coordinated {deliverable_modes} outputs with shared references, staged previews, and follow-up clarification on missing inputs."
@@ -448,8 +506,220 @@ def _build_questions(modality: Modality, analysis: ConsultantAnalysis) -> list[s
 
 
 def _build_next_step(analysis: ConsultantAnalysis) -> str:
+    if analysis.is_training_flow:
+        return (
+            "Complete the training-flow checklist: confirm the CharacterSheet, DatasetPack, "
+            "TrainingRecipe, and LoraPreset. Each missing entity surfaces a suggestion card "
+            "for inline creation (spec §4.4). Training execution will be offered once all "
+            "required entities are selected."
+        )
     if analysis.required_research:
         return "Confirm the reference source and outfit list first, then the batch generation jobs can move from blocked to ready."
     if "官方" in analysis.objective and not analysis.franchise:
         return "Confirm the target franchise or IP first, then the reference-matching and batch generation steps can proceed with the correct costume set."
     return "Confirm the variant matrix and output spec, then the planned generation jobs can be executed."
+
+
+# ---------------------------------------------------------------------------
+# Training-flow builders (spec §7.1.1 / M4.b)
+# ---------------------------------------------------------------------------
+
+def _build_training_suggestion_cards(
+    prompt: str,
+    characters: list[str],
+) -> list[TrainingSuggestionCard]:
+    """Build suggestion cards for each missing §7.1.1 entity.
+
+    Cards follow spec §4.4: they describe a proposed create action with
+    pre-filled fields; the frontend renders a clickable button — the
+    consultant never auto-executes creation.
+    """
+    cards: list[TrainingSuggestionCard] = []
+    character_name = characters[0] if characters else ""
+
+    # (a) CharacterSheet
+    char_prefilled: dict[str, object] = {}
+    if character_name:
+        char_prefilled["name"] = character_name
+    if "觸發詞" in prompt or "trigger" in prompt.lower():
+        # Surface a reminder to fill trigger_words; leave value empty for the user.
+        char_prefilled["trigger_words"] = []
+    cards.append(
+        TrainingSuggestionCard(
+            entity_kind="character_sheet",
+            action="create",
+            prefilled=char_prefilled,
+            reason="A CharacterSheet anchors the visual identity (trigger words, visual anchors, forbidden features) required before LoRA training can begin.",
+        )
+    )
+
+    # (b) DatasetPack
+    dataset_prefilled: dict[str, object] = {}
+    if "danbooru" in prompt.lower():
+        dataset_prefilled["source"] = "danbooru"
+    elif "pixiv" in prompt.lower():
+        dataset_prefilled["source"] = "pixiv"
+    elif "手繪" in prompt or "manual" in prompt.lower():
+        dataset_prefilled["source"] = "manual"
+    cards.append(
+        TrainingSuggestionCard(
+            entity_kind="dataset_pack",
+            action="create",
+            prefilled=dataset_prefilled,
+            reason="A DatasetPack records the training image collection: source, cleaning status, license, and train/val split strategy.",
+        )
+    )
+
+    # (c) TrainingRecipe
+    recipe_prefilled: dict[str, object] = {}
+    if "sdxl" in prompt.lower() or "flux" in prompt.lower():
+        recipe_prefilled["base_model"] = "sd-xl-base-1.0" if "sdxl" in prompt.lower() else "flux-dev"
+    # Sensible defaults to reduce friction.
+    recipe_prefilled.setdefault("rank", 32)
+    recipe_prefilled.setdefault("epochs", 10)
+    recipe_prefilled.setdefault("optimizer", "AdamW8bit")
+    recipe_prefilled.setdefault("caption_strategy", "wd14")
+    cards.append(
+        TrainingSuggestionCard(
+            entity_kind="training_recipe",
+            action="create",
+            prefilled=recipe_prefilled,
+            reason="A TrainingRecipe defines the hyperparameter configuration (base model, LoRA rank, epochs, optimizer, caption strategy) for kohya_ss.",
+        )
+    )
+
+    # (d) LoraPreset
+    lora_prefilled: dict[str, object] = {"name": f"{character_name} Stack" if character_name else "Character Stack"}
+    cards.append(
+        TrainingSuggestionCard(
+            entity_kind="lora_preset",
+            action="create",
+            prefilled=lora_prefilled,
+            reason="A LoraPreset names the stack of LoRA layers (character / costume / style) and their blending weights for batch generation.",
+        )
+    )
+
+    # (e) ImageToVideoRecipe — optional, only surface if prompt signals video interest.
+    if any(kw in prompt for kw in ("影音", "動畫", "i2v", "animatediff", "svd", "video", "影片")):
+        i2v_prefilled: dict[str, object] = {
+            "workflow_kind": "animatediff",
+            "frames": 24,
+            "fps": 8,
+            "motion_strength": 0.85,
+        }
+        cards.append(
+            TrainingSuggestionCard(
+                entity_kind="i2v_recipe",
+                action="create",
+                prefilled=i2v_prefilled,
+                reason="An ImageToVideoRecipe extends accepted character images into animated clips via AnimateDiff / SVD (spec §7.1.1 step e).",
+            )
+        )
+
+    return cards
+
+
+def _build_training_execution_steps(
+    prompt: str,
+    characters: list[str],
+) -> list[ConsultantPlanStep]:
+    """Build the §7.1 training-sequence execution steps.
+
+    Sequence: prepare dataset → train LoRA (kohya_ss) → optional voice clone
+    (GPT-SoVITS) → bulk generate → optional image-to-video.
+    Training execution is a later phase (M4.c); steps are surfaced as planned
+    / suggestion-card driven, NOT auto-executed.
+    """
+    steps: list[ConsultantPlanStep] = [
+        ConsultantPlanStep(
+            title="(a) Confirm or create CharacterSheet",
+            detail=(
+                "Pick an existing CharacterSheet or create one via the suggestion card. "
+                "Supply the character name, visual anchors (e.g. hair colour, eye shape), "
+                "trigger words, and any forbidden features."
+            ),
+            worker=None,
+        ),
+        ConsultantPlanStep(
+            title="(b) Confirm or create DatasetPack",
+            detail=(
+                "Select an existing DatasetPack or create one. Record the image source, "
+                "cleaning status (raw / cleaned / tagged), license, and train/val split strategy."
+            ),
+            worker=None,
+        ),
+        ConsultantPlanStep(
+            title="(c) Confirm or create TrainingRecipe",
+            detail=(
+                "Select an existing TrainingRecipe or create one. Key hyperparameters: "
+                "base model (SDXL / Flux), LoRA rank (e.g. 32), epochs (e.g. 10), "
+                "optimizer (AdamW8bit), caption strategy (wd14 / blip / manual)."
+            ),
+            worker="kohya_ss",
+        ),
+        ConsultantPlanStep(
+            title="(d) Confirm or create LoraPreset",
+            detail=(
+                "Select an existing LoraPreset or build one by stacking character LoRA, "
+                "costume LoRA, and style LoRA layers with their respective weights."
+            ),
+            worker=None,
+        ),
+        ConsultantPlanStep(
+            title="Train LoRA via kohya_ss",
+            detail=(
+                "Once all entities are confirmed, the UI will offer a [Start Training] button "
+                "(spec §4.4 — consultant never auto-triggers training). "
+                "kohya_ss runs with the selected recipe; output .safetensors is saved to "
+                "projects/<id>/models/. Training execution is M4.c."
+            ),
+            worker="kohya_ss",
+        ),
+        ConsultantPlanStep(
+            title="Bulk generate with trained LoRA",
+            detail=(
+                "Apply the trained LoRA preset in ComfyUI to generate the variant matrix "
+                "(character × outfit × scene × action). "
+                "Review and accept outputs before promoting to the final asset library."
+            ),
+            worker="comfyui",
+        ),
+    ]
+
+    # Optional voice-clone step.
+    if any(kw in prompt for kw in ("聲音", "語音", "voice clone", "語音複製", "gpt-sovits", "GPT-SoVITS")):
+        steps.insert(4, ConsultantPlanStep(
+            title="Optional: voice clone via GPT-SoVITS",
+            detail=(
+                "If a character voice clone is required, provide 3–10 s reference audio for "
+                "zero-shot inference, or ≥1 h corpus for full fine-tune. "
+                "Output model is stored in projects/<id>/models/voices/."
+            ),
+            worker="gpt-sovits",
+        ))
+
+    # Optional i2v step.
+    if any(kw in prompt for kw in ("影音", "動畫", "i2v", "animatediff", "svd", "video", "影片")):
+        steps.append(ConsultantPlanStep(
+            title="Optional: image-to-video via ImageToVideoRecipe",
+            detail=(
+                "Apply the selected ImageToVideoRecipe to accepted character images using "
+                "ComfyUI AnimateDiff or SVD. The source image is supplied at apply-time; "
+                "the recipe is a reusable template."
+            ),
+            worker="comfyui",
+        ))
+
+    return steps
+
+
+def _build_training_guidance_path() -> list[str]:
+    """Ordered guidance steps for the training-flow dialog."""
+    return [
+        "Step (a): Confirm which character to train — pick or create a CharacterSheet.",
+        "Step (b): Confirm the dataset — pick or create a DatasetPack with source, cleaning status, and license.",
+        "Step (c): Confirm the training hyperparameters — pick or create a TrainingRecipe.",
+        "Step (d): Confirm the LoRA stack — pick or create a LoraPreset.",
+        "Once all four entities are confirmed, approve the plan to unlock the [Start Training] button.",
+        "(Optional) Set an ImageToVideoRecipe to animate accepted outputs after training.",
+    ]
