@@ -50,6 +50,13 @@ workers/*
 *.ckpt
 *.safetensors
 
+# Smoke test outputs (scripts/smoke/ writes here; never commit generated artifacts)
+smoke-*.png
+smoke-*.jpg
+smoke-*.wav
+smoke-*.mp3
+smoke-*.mp4
+
 # Editors and OS
 .vscode/
 .idea/

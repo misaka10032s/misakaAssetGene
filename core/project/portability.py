@@ -239,6 +239,10 @@ def import_project_zip(
         # if the running total exceeds max_uncompressed_bytes.
         _CHUNK_SIZE = 256 * 1024  # 256 KiB per read chunk
         skip_entries = {"export.manifest.json", "license-report.json"}
+        # Skip consultant cache entries that may appear in legacy zips created
+        # before spec §5.14 enforced exclusion (they are private AI working memory,
+        # not portable user assets — do NOT restore them on import).
+        _CONSULTANT_CACHE_PREFIX = ".cache/consultant/"
         target_dir.mkdir(parents=True, exist_ok=False)
 
         running_bytes = 0
@@ -247,6 +251,9 @@ def import_project_zip(
         try:
             for entry_name in name_list:
                 if entry_name in skip_entries:
+                    continue
+                # Skip consultant cache entries from legacy zips (spec §5.14).
+                if entry_name.startswith(_CONSULTANT_CACHE_PREFIX):
                     continue
                 if entry_name.endswith("/"):
                     _safe_extract_path(entry_name, target_dir).mkdir(

@@ -58,4 +58,10 @@ class ProjectExportService:
             return False
         if candidate.is_relative_to(export_root):
             return True
+        # Exclude consultant cache: plans are user-private AI working memory,
+        # not portable user assets (spec §5.14).  Legacy zips that contain
+        # .cache/consultant/ entries are handled gracefully on import (skipped).
+        consultant_cache = project_dir / ".cache" / "consultant"
+        if candidate.is_relative_to(consultant_cache):
+            return True
         return candidate.suffix.lower() in {".tmp", ".temp"}

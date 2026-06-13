@@ -625,3 +625,110 @@ def test_api_import_oversized_upload_rejected(api_client: TestClient, tmp_path: 
         assert response.status_code == 413, response.text
     finally:
         _main._UPLOAD_MAX_BYTES = original
+
+
+# ---------------------------------------------------------------------------
+# Export/import consultant cache exclusion (spec §5.14 regression)
+# ---------------------------------------------------------------------------
+
+def test_export_excludes_consultant_cache(tmp_path: Path) -> None:
+    """Export zip must NOT contain .cache/consultant/ entries (spec §5.14).
+
+    Consultant plans are private AI working memory, not portable user assets.
+    """
+    project_id = "export-cache-test"
+    project_dir = tmp_path / "projects" / project_id
+    project_dir.mkdir(parents=True)
+
+    # Create required project files
+    project_summary = {
+        "id": project_id,
+        "name": "Cache Exclusion Test",
+        "type": "VN",
+        "synopsis": "Verify consultant cache is excluded from export",
+    }
+    (project_dir / "project.json").write_text(
+        json.dumps(project_summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (project_dir / "style_guide.md").write_text("# Style\n", encoding="utf-8")
+    (project_dir / "conversation.json").write_text('{"entries":[]}\n', encoding="utf-8")
+    (project_dir / "assets").mkdir(exist_ok=True)
+    (project_dir / "assets" / "index.json").write_text('{"assets":[]}\n', encoding="utf-8")
+
+    # Plant consultant cache files that must NOT appear in the export zip
+    consultant_dir = project_dir / ".cache" / "consultant"
+    consultant_dir.mkdir(parents=True)
+    (consultant_dir / "index.json").write_text('{"plans":[]}', encoding="utf-8")
+    plans_dir = consultant_dir / "plans"
+    plans_dir.mkdir()
+    (plans_dir / "p1.md").write_text("# Secret plan\n", encoding="utf-8")
+
+    svc = ProjectExportService()
+    zip_path = svc.export_project(
+        project_dir=project_dir,
+        project_summary=project_summary,
+        jobs=[],
+        assets=[],
+        plans=[],
+        license_report={},
+        resolve_refs=False,
+    )
+
+    with ZipFile(zip_path, "r") as zf:
+        names = zf.namelist()
+
+    consultant_entries = [n for n in names if n.startswith(".cache/consultant/")]
+    assert not consultant_entries, (
+        f"Export zip must not contain .cache/consultant/ entries; found: {consultant_entries}"
+    )
+
+
+def test_import_legacy_zip_with_consultant_cache_skips_it(tmp_path: Path) -> None:
+    """Import of a legacy zip that contains .cache/consultant/ must NOT materialize those files.
+
+    This tests backward-compat: older exports created before the §5.14 fix may contain
+    consultant cache entries.  Import must silently skip them.
+    """
+    manifest = {
+        "project": {
+            "id": "legacy-proj",
+            "name": "Legacy Project",
+            "type": "RPG",
+            "synopsis": "Legacy zip with consultant cache",
+        },
+        "exported_at": "2026-01-01T00:00:00+00:00",
+        "resolve_refs": True,
+        "jobs": 0,
+        "assets": 0,
+        "plans": 0,
+        "warnings": [],
+    }
+    zip_path = tmp_path / "legacy.misaka.zip"
+    with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zf:
+        zf.writestr("export.manifest.json", json.dumps(manifest))
+        zf.writestr("project.json", json.dumps(manifest["project"]))
+        zf.writestr("style_guide.md", "# Style\n")
+        zf.writestr("conversation.json", '{"entries":[]}\n')
+        zf.writestr("assets/index.json", '{"assets":[]}\n')
+        # Legacy consultant cache entries
+        zf.writestr(".cache/consultant/index.json", '{"plans":["p1"]}')
+        zf.writestr(".cache/consultant/plans/p1.md", "# Consultant plan\n")
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+
+    result = import_project_zip(zip_path, projects_root)
+
+    assert result["project_id"] == "legacy-proj"
+
+    project_dir = projects_root / "legacy-proj"
+    consultant_index = project_dir / ".cache" / "consultant" / "index.json"
+    consultant_plan = project_dir / ".cache" / "consultant" / "plans" / "p1.md"
+
+    assert not consultant_index.exists(), (
+        "Import must NOT materialize .cache/consultant/index.json from legacy zip"
+    )
+    assert not consultant_plan.exists(), (
+        "Import must NOT materialize .cache/consultant/plans/p1.md from legacy zip"
+    )
