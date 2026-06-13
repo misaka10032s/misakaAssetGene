@@ -3,9 +3,11 @@ import type {
   ApiErrorResponse,
   ApiResponse,
   BatchExecuteData,
+  CharacterListResponse,
   CharacterSheet,
   CharacterSheetCreatePayload,
   CharacterSheetUpdatePayload,
+  CharacterSingleResponse,
   ClarifyPayload,
   ClarifyResult,
   ConsultantSession,
@@ -16,8 +18,12 @@ import type {
   CreateProjectPayload,
   DatasetPack,
   DatasetPackCreatePayload,
+  DatasetPackListResponse,
+  DatasetPackSingleResponse,
   DatasetPackUpdatePayload,
   HealthData,
+  I2vRecipeListResponse,
+  I2vRecipeSingleResponse,
   ImageToVideoRecipe,
   ImageToVideoRecipeCreatePayload,
   ImageToVideoRecipeUpdatePayload,
@@ -25,6 +31,8 @@ import type {
     LocalLlmStatus,
     LoraPreset,
     LoraPresetCreatePayload,
+    LoraPresetListResponse,
+    LoraPresetSingleResponse,
     LoraPresetUpdatePayload,
     ModelDownloadPayload,
     ModelDownloadResult,
@@ -35,6 +43,8 @@ import type {
     TrainingEntitiesSnapshot,
     TrainingRecipe,
     TrainingRecipeCreatePayload,
+    TrainingRecipeListResponse,
+    TrainingRecipeSingleResponse,
     TrainingRecipeUpdatePayload,
     TrainingWorkspaceData,
     ProjectVersionGraph,
@@ -351,12 +361,12 @@ export const apiClient = {
    * Lists all character sheets for a project.
    */
   listCharacters: (projectId: string) =>
-    request<{ items: CharacterSheet[] }>(`/api/v1/projects/${projectId}/characters`),
+    request<CharacterListResponse>(`/api/v1/projects/${projectId}/characters`),
   /**
    * Creates a character sheet inside a project.
    */
   createCharacter: (projectId: string, payload: CharacterSheetCreatePayload) =>
-    request<{ item: CharacterSheet }>(`/api/v1/projects/${projectId}/characters`, {
+    request<CharacterSingleResponse>(`/api/v1/projects/${projectId}/characters`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
@@ -364,12 +374,12 @@ export const apiClient = {
    * Fetches a single character sheet by id.
    */
   getCharacter: (projectId: string, id: string) =>
-    request<{ item: CharacterSheet }>(`/api/v1/projects/${projectId}/characters/${id}`),
+    request<CharacterSingleResponse>(`/api/v1/projects/${projectId}/characters/${id}`),
   /**
    * Partially updates a character sheet.
    */
   updateCharacter: (projectId: string, id: string, payload: CharacterSheetUpdatePayload) =>
-    request<{ item: CharacterSheet }>(`/api/v1/projects/${projectId}/characters/${id}`, {
+    request<CharacterSingleResponse>(`/api/v1/projects/${projectId}/characters/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
@@ -383,12 +393,12 @@ export const apiClient = {
    * Lists all dataset packs for a project.
    */
   listDatasetPacks: (projectId: string) =>
-    request<{ items: DatasetPack[] }>(`/api/v1/projects/${projectId}/dataset-packs`),
+    request<DatasetPackListResponse>(`/api/v1/projects/${projectId}/dataset-packs`),
   /**
    * Creates a dataset pack inside a project.
    */
   createDatasetPack: (projectId: string, payload: DatasetPackCreatePayload) =>
-    request<{ item: DatasetPack }>(`/api/v1/projects/${projectId}/dataset-packs`, {
+    request<DatasetPackSingleResponse>(`/api/v1/projects/${projectId}/dataset-packs`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
@@ -396,12 +406,12 @@ export const apiClient = {
    * Fetches a single dataset pack by id.
    */
   getDatasetPack: (projectId: string, id: string) =>
-    request<{ item: DatasetPack }>(`/api/v1/projects/${projectId}/dataset-packs/${id}`),
+    request<DatasetPackSingleResponse>(`/api/v1/projects/${projectId}/dataset-packs/${id}`),
   /**
    * Partially updates a dataset pack.
    */
   updateDatasetPack: (projectId: string, id: string, payload: DatasetPackUpdatePayload) =>
-    request<{ item: DatasetPack }>(`/api/v1/projects/${projectId}/dataset-packs/${id}`, {
+    request<DatasetPackSingleResponse>(`/api/v1/projects/${projectId}/dataset-packs/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
@@ -415,12 +425,12 @@ export const apiClient = {
    * Lists all training recipes for a project.
    */
   listTrainingRecipes: (projectId: string) =>
-    request<{ items: TrainingRecipe[] }>(`/api/v1/projects/${projectId}/training-recipes`),
+    request<TrainingRecipeListResponse>(`/api/v1/projects/${projectId}/training-recipes`),
   /**
    * Creates a training recipe inside a project.
    */
   createTrainingRecipe: (projectId: string, payload: TrainingRecipeCreatePayload) =>
-    request<{ item: TrainingRecipe }>(`/api/v1/projects/${projectId}/training-recipes`, {
+    request<TrainingRecipeSingleResponse>(`/api/v1/projects/${projectId}/training-recipes`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
@@ -428,12 +438,12 @@ export const apiClient = {
    * Fetches a single training recipe by id.
    */
   getTrainingRecipe: (projectId: string, id: string) =>
-    request<{ item: TrainingRecipe }>(`/api/v1/projects/${projectId}/training-recipes/${id}`),
+    request<TrainingRecipeSingleResponse>(`/api/v1/projects/${projectId}/training-recipes/${id}`),
   /**
    * Partially updates a training recipe.
    */
   updateTrainingRecipe: (projectId: string, id: string, payload: TrainingRecipeUpdatePayload) =>
-    request<{ item: TrainingRecipe }>(`/api/v1/projects/${projectId}/training-recipes/${id}`, {
+    request<TrainingRecipeSingleResponse>(`/api/v1/projects/${projectId}/training-recipes/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
@@ -447,12 +457,12 @@ export const apiClient = {
    * Lists all LoRA presets for a project.
    */
   listLoraPresets: (projectId: string) =>
-    request<{ items: LoraPreset[] }>(`/api/v1/projects/${projectId}/lora-presets`),
+    request<LoraPresetListResponse>(`/api/v1/projects/${projectId}/lora-presets`),
   /**
    * Creates a LoRA preset inside a project.
    */
   createLoraPreset: (projectId: string, payload: LoraPresetCreatePayload) =>
-    request<{ item: LoraPreset }>(`/api/v1/projects/${projectId}/lora-presets`, {
+    request<LoraPresetSingleResponse>(`/api/v1/projects/${projectId}/lora-presets`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
@@ -460,12 +470,12 @@ export const apiClient = {
    * Fetches a single LoRA preset by id.
    */
   getLoraPreset: (projectId: string, id: string) =>
-    request<{ item: LoraPreset }>(`/api/v1/projects/${projectId}/lora-presets/${id}`),
+    request<LoraPresetSingleResponse>(`/api/v1/projects/${projectId}/lora-presets/${id}`),
   /**
    * Partially updates a LoRA preset.
    */
   updateLoraPreset: (projectId: string, id: string, payload: LoraPresetUpdatePayload) =>
-    request<{ item: LoraPreset }>(`/api/v1/projects/${projectId}/lora-presets/${id}`, {
+    request<LoraPresetSingleResponse>(`/api/v1/projects/${projectId}/lora-presets/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
@@ -479,12 +489,12 @@ export const apiClient = {
    * Lists all image-to-video recipes for a project.
    */
   listI2vRecipes: (projectId: string) =>
-    request<{ items: ImageToVideoRecipe[] }>(`/api/v1/projects/${projectId}/i2v-recipes`),
+    request<I2vRecipeListResponse>(`/api/v1/projects/${projectId}/i2v-recipes`),
   /**
    * Creates an image-to-video recipe inside a project.
    */
   createI2vRecipe: (projectId: string, payload: ImageToVideoRecipeCreatePayload) =>
-    request<{ item: ImageToVideoRecipe }>(`/api/v1/projects/${projectId}/i2v-recipes`, {
+    request<I2vRecipeSingleResponse>(`/api/v1/projects/${projectId}/i2v-recipes`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
@@ -492,12 +502,12 @@ export const apiClient = {
    * Fetches a single image-to-video recipe by id.
    */
   getI2vRecipe: (projectId: string, id: string) =>
-    request<{ item: ImageToVideoRecipe }>(`/api/v1/projects/${projectId}/i2v-recipes/${id}`),
+    request<I2vRecipeSingleResponse>(`/api/v1/projects/${projectId}/i2v-recipes/${id}`),
   /**
    * Partially updates an image-to-video recipe.
    */
   updateI2vRecipe: (projectId: string, id: string, payload: ImageToVideoRecipeUpdatePayload) =>
-    request<{ item: ImageToVideoRecipe }>(`/api/v1/projects/${projectId}/i2v-recipes/${id}`, {
+    request<I2vRecipeSingleResponse>(`/api/v1/projects/${projectId}/i2v-recipes/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
@@ -513,18 +523,18 @@ export const apiClient = {
    */
   async trainingEntities(projectId: string): Promise<TrainingEntitiesSnapshot> {
     const [characters, datasetPacks, trainingRecipes, loraPresets, i2vRecipes] = await Promise.all([
-      request<{ items: CharacterSheet[] }>(`/api/v1/projects/${projectId}/characters`),
-      request<{ items: DatasetPack[] }>(`/api/v1/projects/${projectId}/dataset-packs`),
-      request<{ items: TrainingRecipe[] }>(`/api/v1/projects/${projectId}/training-recipes`),
-      request<{ items: LoraPreset[] }>(`/api/v1/projects/${projectId}/lora-presets`),
-      request<{ items: ImageToVideoRecipe[] }>(`/api/v1/projects/${projectId}/i2v-recipes`),
+      request<CharacterListResponse>(`/api/v1/projects/${projectId}/characters`),
+      request<DatasetPackListResponse>(`/api/v1/projects/${projectId}/dataset-packs`),
+      request<TrainingRecipeListResponse>(`/api/v1/projects/${projectId}/training-recipes`),
+      request<LoraPresetListResponse>(`/api/v1/projects/${projectId}/lora-presets`),
+      request<I2vRecipeListResponse>(`/api/v1/projects/${projectId}/i2v-recipes`),
     ]);
     return {
-      characters: characters.items,
-      dataset_packs: datasetPacks.items,
-      training_recipes: trainingRecipes.items,
-      lora_presets: loraPresets.items,
-      i2v_recipes: i2vRecipes.items,
+      characters: characters.characters,
+      dataset_packs: datasetPacks.dataset_packs,
+      training_recipes: trainingRecipes.training_recipes,
+      lora_presets: loraPresets.lora_presets,
+      i2v_recipes: i2vRecipes.i2v_recipes,
     };
   },
 

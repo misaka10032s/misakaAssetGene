@@ -45,6 +45,7 @@ export enum Modality {
   IMAGE = "image",
   VOICE = "voice",
   VIDEO = "video",
+  TRAINING = "training",
 }
 
 export enum ProjectType {

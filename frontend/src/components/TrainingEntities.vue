@@ -16,6 +16,7 @@
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 
+import { useWindowSize } from "@/composables/useWindowSize";
 import { useAppStore } from "@/stores/app";
 import type {
   CharacterSheet,
@@ -60,6 +61,7 @@ const props = defineProps<{
 
 const { t } = useI18n();
 const appStore = useAppStore();
+const { splitGridClass, isMobile } = useWindowSize();
 
 type TabKey = "characters" | "dataset_packs" | "training_recipes" | "lora_presets" | "i2v_recipes";
 
@@ -109,6 +111,14 @@ watch(
 /**
  * Returns the resolved existing entity id for a suggestion card.
  * Combines backend existing_id with client-side list matching.
+ *
+ * Known M4.c limitation — weak key matching:
+ *   Each entity kind is matched on a single lowercased string field (e.g. `name`,
+ *   `source`, `base_model`). This means:
+ *   - Duplicate names → false positive (reports "already exists" for the wrong entity).
+ *   - Rename after creation → false negative (fails to detect the entity, shows create button).
+ *   The backend `existing_id` field is preferred when present; client-side matching is a
+ *   best-effort fallback for cases where the backend returns null.
  */
 function resolveExistingId(card: TrainingSuggestionCard): string | null {
   if (card.existing_id) return card.existing_id;
@@ -549,7 +559,7 @@ function formatDateTime(value: string | null | undefined): string {
     <!-- Suggestion cards (spec §4.4 / §5.12.1): rendered only in training flows -->
     <section v-if="suggestionCards.length" class="app-panel grid gap-4">
       <h2 class="app-section-title">{{ $t("training.suggestionCardsTitle") }}</h2>
-      <ul class="grid gap-3 sm:grid-cols-2">
+      <ul class="grid gap-3" :class="splitGridClass">
         <li
           v-for="(card, cardIndex) in suggestionCards"
           :key="`card-${cardIndex}`"
@@ -759,8 +769,8 @@ function formatDateTime(value: string | null | undefined): string {
           </div>
 
           <div v-if="showTrainingRecipeForm" class="rounded-2xl border border-app-border bg-app-surfaceAlt p-4">
-            <div class="grid gap-3 sm:grid-cols-2">
-              <label class="grid gap-1 text-sm text-app-text sm:col-span-2">
+            <div class="grid gap-3" :class="splitGridClass">
+              <label class="grid gap-1 text-sm text-app-text col-span-2">
                 <span class="app-muted">{{ $t("training.fieldBaseModel") }}</span>
                 <input v-model="trainingRecipeForm.base_model" class="app-input" />
               </label>
@@ -780,7 +790,7 @@ function formatDateTime(value: string | null | undefined): string {
                 <span class="app-muted">{{ $t("training.fieldCaptionStrategy") }}</span>
                 <input v-model="trainingRecipeForm.caption_strategy" class="app-input" />
               </label>
-              <div class="flex justify-end gap-2 sm:col-span-2">
+              <div class="flex justify-end gap-2 col-span-2">
                 <button class="app-button-secondary" type="button" @click="cancelTrainingRecipeForm">{{ $t("training.cancelAction") }}</button>
                 <button class="app-button" type="button" :disabled="!trainingRecipeForm.base_model.trim()" @click="submitTrainingRecipeForm">{{ $t("training.saveAction") }}</button>
               </div>
@@ -835,7 +845,7 @@ function formatDateTime(value: string | null | undefined): string {
                   </li>
                 </ul>
                 <!-- Add layer inline form -->
-                <div class="grid gap-2 sm:grid-cols-[auto_1fr_auto_auto] sm:items-end">
+                <div class="grid gap-2" :class="isMobile ? 'grid-cols-1' : 'grid-cols-[auto_1fr_auto_auto] items-end'">
                   <label class="grid gap-1 text-sm text-app-text">
                     <span class="app-muted sr-only">kind</span>
                     <select v-model="loraLayerDraft.kind" class="app-input">
@@ -893,8 +903,8 @@ function formatDateTime(value: string | null | undefined): string {
           </div>
 
           <div v-if="showI2vRecipeForm" class="rounded-2xl border border-app-border bg-app-surfaceAlt p-4">
-            <div class="grid gap-3 sm:grid-cols-2">
-              <label class="grid gap-1 text-sm text-app-text sm:col-span-2">
+            <div class="grid gap-3" :class="splitGridClass">
+              <label class="grid gap-1 text-sm text-app-text col-span-2">
                 <span class="app-muted">{{ $t("training.fieldName") }}</span>
                 <input v-model="i2vRecipeForm.name" class="app-input" />
               </label>
@@ -918,11 +928,11 @@ function formatDateTime(value: string | null | undefined): string {
                 <span class="app-muted">{{ $t("training.fieldMotionStrength") }}</span>
                 <input v-model.number="i2vRecipeForm.motion_strength" type="number" step="0.1" min="0" class="app-input" />
               </label>
-              <label class="grid gap-1 text-sm text-app-text sm:col-span-2">
+              <label class="grid gap-1 text-sm text-app-text col-span-2">
                 <span class="app-muted">{{ $t("training.fieldNotes") }}</span>
                 <textarea v-model="i2vRecipeForm.notes" class="app-input min-h-16 resize-y" rows="2"></textarea>
               </label>
-              <div class="flex justify-end gap-2 sm:col-span-2">
+              <div class="flex justify-end gap-2 col-span-2">
                 <button class="app-button-secondary" type="button" @click="cancelI2vRecipeForm">{{ $t("training.cancelAction") }}</button>
                 <button class="app-button" type="button" :disabled="!i2vRecipeForm.name.trim()" @click="submitI2vRecipeForm">{{ $t("training.saveAction") }}</button>
               </div>

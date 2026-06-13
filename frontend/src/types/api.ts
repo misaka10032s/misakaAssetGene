@@ -588,6 +588,61 @@ export interface TrainingEntitiesSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// Typed response envelopes for training entity endpoints (M4.c review fix).
+// These match the EXACT keys the backend emits (verified against core/main.py).
+// ---------------------------------------------------------------------------
+
+/** List response for GET /characters — backend emits `{"characters": [...]}`. */
+export interface CharacterListResponse {
+  characters: CharacterSheet[];
+}
+
+/** Single-item response for POST/GET/PATCH /characters — backend emits `{"character": ...}`. */
+export interface CharacterSingleResponse {
+  character: CharacterSheet;
+}
+
+/** List response for GET /dataset-packs — backend emits `{"dataset_packs": [...]}`. */
+export interface DatasetPackListResponse {
+  dataset_packs: DatasetPack[];
+}
+
+/** Single-item response for POST/GET/PATCH /dataset-packs — backend emits `{"dataset_pack": ...}`. */
+export interface DatasetPackSingleResponse {
+  dataset_pack: DatasetPack;
+}
+
+/** List response for GET /training-recipes — backend emits `{"training_recipes": [...]}`. */
+export interface TrainingRecipeListResponse {
+  training_recipes: TrainingRecipe[];
+}
+
+/** Single-item response for POST/GET/PATCH /training-recipes — backend emits `{"training_recipe": ...}`. */
+export interface TrainingRecipeSingleResponse {
+  training_recipe: TrainingRecipe;
+}
+
+/** List response for GET /lora-presets — backend emits `{"lora_presets": [...]}`. */
+export interface LoraPresetListResponse {
+  lora_presets: LoraPreset[];
+}
+
+/** Single-item response for POST/GET/PATCH /lora-presets — backend emits `{"lora_preset": ...}`. */
+export interface LoraPresetSingleResponse {
+  lora_preset: LoraPreset;
+}
+
+/** List response for GET /i2v-recipes — backend emits `{"i2v_recipes": [...]}`. */
+export interface I2vRecipeListResponse {
+  i2v_recipes: ImageToVideoRecipe[];
+}
+
+/** Single-item response for POST/GET/PATCH /i2v-recipes — backend emits `{"i2v_recipe": ...}`. */
+export interface I2vRecipeSingleResponse {
+  i2v_recipe: ImageToVideoRecipe;
+}
+
+// ---------------------------------------------------------------------------
 // Suggestion card (spec §4.4 / §5.12.1 / M4.b)
 // ---------------------------------------------------------------------------
 

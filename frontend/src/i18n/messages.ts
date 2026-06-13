@@ -298,6 +298,7 @@ export const messages = {
       image: "圖像",
       voice: "語音",
       video: "影片",
+      training: "訓練",
     },
   },
   [AppLocale.EN]: {
@@ -597,6 +598,7 @@ export const messages = {
       image: "Image",
       voice: "Voice",
       video: "Video",
+      training: "Training",
     },
   },
   [AppLocale.JA]: {
@@ -896,6 +898,7 @@ export const messages = {
       image: "画像",
       voice: "音声",
       video: "動画",
+      training: "トレーニング",
     },
   },
 } as const;

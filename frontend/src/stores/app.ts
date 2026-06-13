@@ -647,7 +647,7 @@ export const useAppStore = defineStore("app", () => {
     const response = await apiClient.createCharacter(projectId, payload);
     await loadProjectTrainingEntities(projectId);
     lastMessageKey.value = MessageKey.SUCCESS_ADD0;
-    return response.item;
+    return response.character;
   }
 
   /**
@@ -657,7 +657,7 @@ export const useAppStore = defineStore("app", () => {
     const response = await apiClient.updateCharacter(projectId, id, payload);
     await loadProjectTrainingEntities(projectId);
     lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-    return response.item;
+    return response.character;
   }
 
   /**
@@ -676,7 +676,7 @@ export const useAppStore = defineStore("app", () => {
     const response = await apiClient.createDatasetPack(projectId, payload);
     await loadProjectTrainingEntities(projectId);
     lastMessageKey.value = MessageKey.SUCCESS_ADD0;
-    return response.item;
+    return response.dataset_pack;
   }
 
   /**
@@ -686,7 +686,7 @@ export const useAppStore = defineStore("app", () => {
     const response = await apiClient.updateDatasetPack(projectId, id, payload);
     await loadProjectTrainingEntities(projectId);
     lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-    return response.item;
+    return response.dataset_pack;
   }
 
   /**
@@ -705,7 +705,7 @@ export const useAppStore = defineStore("app", () => {
     const response = await apiClient.createTrainingRecipe(projectId, payload);
     await loadProjectTrainingEntities(projectId);
     lastMessageKey.value = MessageKey.SUCCESS_ADD0;
-    return response.item;
+    return response.training_recipe;
   }
 
   /**
@@ -715,7 +715,7 @@ export const useAppStore = defineStore("app", () => {
     const response = await apiClient.updateTrainingRecipe(projectId, id, payload);
     await loadProjectTrainingEntities(projectId);
     lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-    return response.item;
+    return response.training_recipe;
   }
 
   /**
@@ -734,7 +734,7 @@ export const useAppStore = defineStore("app", () => {
     const response = await apiClient.createLoraPreset(projectId, payload);
     await loadProjectTrainingEntities(projectId);
     lastMessageKey.value = MessageKey.SUCCESS_ADD0;
-    return response.item;
+    return response.lora_preset;
   }
 
   /**
@@ -744,7 +744,7 @@ export const useAppStore = defineStore("app", () => {
     const response = await apiClient.updateLoraPreset(projectId, id, payload);
     await loadProjectTrainingEntities(projectId);
     lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-    return response.item;
+    return response.lora_preset;
   }
 
   /**
@@ -763,7 +763,7 @@ export const useAppStore = defineStore("app", () => {
     const response = await apiClient.createI2vRecipe(projectId, payload);
     await loadProjectTrainingEntities(projectId);
     lastMessageKey.value = MessageKey.SUCCESS_ADD0;
-    return response.item;
+    return response.i2v_recipe;
   }
 
   /**
@@ -773,7 +773,7 @@ export const useAppStore = defineStore("app", () => {
     const response = await apiClient.updateI2vRecipe(projectId, id, payload);
     await loadProjectTrainingEntities(projectId);
     lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-    return response.item;
+    return response.i2v_recipe;
   }
 
   /**
