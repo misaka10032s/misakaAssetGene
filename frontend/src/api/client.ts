@@ -28,6 +28,7 @@ import type {
   ImageToVideoRecipe,
   ImageToVideoRecipeCreatePayload,
   ImageToVideoRecipeUpdatePayload,
+  RefinePayload,
     IntegrationSnapshot,
     LocalLlmStatus,
     LoraPreset,
@@ -295,6 +296,21 @@ export const apiClient = {
     });
   },
   /**
+   * Creates a refine job from an existing image asset (spec §5.11 / §6.2).
+   * The backend applies the §6.2 strategy decision tree; providing
+   * strategy="inpaint" and mask_asset_id forces the inpaint path.
+   * Returns refreshed ProjectWorkspaceData.
+   */
+  refineAsset: (projectId: string, assetId: string, payload: RefinePayload) =>
+    request<ProjectWorkspaceData>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/refine`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  /**
    * Sends a consultant request scoped to a project and persists the result.
    */
   clarifyProject: (projectId: string, payload: ClarifyPayload) =>
@@ -546,6 +562,15 @@ export const apiClient = {
 
   exportProjectDownloadUrl: (projectId: string, resolveRefs = true) =>
     `${appEnv.apiBaseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/export/download?resolve_refs=${resolveRefs ? "true" : "false"}`,
+
+  /**
+   * Returns the URL for serving an asset file from the project directory.
+   * Requires the backend to expose GET /api/v1/projects/{id}/assets/{assetId}/file
+   * (not yet implemented — this URL will 404 until that endpoint is added).
+   * The inpaint editor uses this to load the source image into the canvas.
+   */
+  assetFileUrl: (projectId: string, assetId: string) =>
+    `${appEnv.apiBaseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/file`,
 
   // ---------------------------------------------------------------------------
   // §5.6.2 / §5.6.3 / §5.6.6 / M5.3 — Cross-project reference endpoints

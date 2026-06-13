@@ -6,6 +6,7 @@ import { useI18n } from "vue-i18n";
 import { apiClient } from "@/api/client";
 import { useAppStore } from "@/stores/app";
 import ExportConfirmDialog from "@/components/ExportConfirmDialog.vue";
+import InpaintMaskEditor from "@/components/InpaintMaskEditor.vue";
 import LicenseReportView from "@/components/LicenseReportView.vue";
 import TrainingEntities from "@/components/TrainingEntities.vue";
 import type { AssetRecord, ConsultantAnalysis, ConversationEntry, GenerationJob } from "@/types/api";
@@ -401,6 +402,101 @@ async function createTrainingJob(): Promise<void> {
   trainingForm.title = "";
   trainingForm.dataset_path = "";
   trainingForm.worker = "";
+}
+
+// ---------------------------------------------------------------------------
+// M5.9 — Inpaint mask editor wiring (spec §5.11)
+// ---------------------------------------------------------------------------
+
+/** The asset currently open in the mask editor, or null when closed. */
+const inpaintTargetAsset = ref<AssetRecord | null>(null);
+
+/** Whether an inpaint submit is in progress (mask upload + refine job creation). */
+const inpaintSubmitting = ref<boolean>(false);
+
+/** Error message for the inpaint flow (shown near the editor). */
+const inpaintError = ref<string | null>(null);
+
+/**
+ * Returns true for image assets that can be the source of an inpaint job.
+ * Excludes mask assets themselves to avoid circular references.
+ */
+function canInpaint(asset: AssetRecord): boolean {
+  return asset.modality === Modality.IMAGE && asset.asset_type !== "mask";
+}
+
+/**
+ * Opens the inpaint mask editor for a given image asset.
+ * @param asset - The source image asset to inpaint.
+ */
+function openInpaintEditor(asset: AssetRecord): void {
+  inpaintTargetAsset.value = asset;
+  inpaintError.value = null;
+}
+
+/** Closes the inpaint mask editor without submitting. */
+function closeInpaintEditor(): void {
+  inpaintTargetAsset.value = null;
+  inpaintError.value = null;
+}
+
+/**
+ * Handles the submit event from InpaintMaskEditor.
+ * Flow:
+ *   1. Upload maskBlob as a new asset (modality=image, asset_type=mask).
+ *   2. Call refineAsset with strategy=inpaint, mask_asset_id = uploaded asset id.
+ *   3. Close the editor and refresh workspace.
+ *
+ * @param payload - { maskBlob: PNG blob, prompt: user edit description }
+ */
+async function onInpaintSubmit(payload: { maskBlob: Blob; prompt: string }): Promise<void> {
+  if (!projectId.value || !inpaintTargetAsset.value) {
+    return;
+  }
+  inpaintSubmitting.value = true;
+  inpaintError.value = null;
+  const sourceAsset = inpaintTargetAsset.value;
+  const maskFileName = `mask_${sourceAsset.id}_${Date.now()}.png`;
+  try {
+    // Step 1: upload the painted mask PNG as an asset.
+    const maskFile = new File([payload.maskBlob], maskFileName, { type: "image/png" });
+    await appStore.importProjectAsset(projectId.value, {
+      file: maskFile,
+      modality: Modality.IMAGE,
+      asset_type: "mask",
+      title: `Mask for ${sourceAsset.title}`,
+      description: `Inpaint mask painted by user for asset ${sourceAsset.id}`,
+    });
+
+    // Step 2: find the uploaded mask asset by title/filename.
+    const uploadedMask = [...projectAssets.value]
+      .slice()
+      .reverse()
+      .find(
+        (asset) =>
+          asset.asset_type === "mask" &&
+          (asset.title === `Mask for ${sourceAsset.title}` || asset.path.endsWith(maskFileName)),
+      );
+
+    if (!uploadedMask) {
+      inpaintError.value = t("inpaint.maskUploadError");
+      return;
+    }
+
+    // Step 3: create the inpaint refine job.
+    await appStore.refineAsset(projectId.value, sourceAsset.id, {
+      instruction: payload.prompt || `Inpaint edit on ${sourceAsset.title}`,
+      title: `${sourceAsset.title} (inpaint)`,
+      strategy: "inpaint",
+      mask_asset_id: uploadedMask.id,
+    });
+
+    closeInpaintEditor();
+  } catch {
+    inpaintError.value = t("inpaint.maskUploadError");
+  } finally {
+    inpaintSubmitting.value = false;
+  }
 }
 </script>
 
@@ -898,11 +994,41 @@ async function createTrainingJob(): Promise<void> {
                 </div>
                 <p class="mt-2 break-words text-xs leading-6 text-app-muted">{{ asset.path }}</p>
                 <p v-if="asset.description" class="mt-2 text-sm leading-7 text-app-text">{{ asset.description }}</p>
+                <!-- M5.9: Inpaint button for image assets -->
+                <div v-if="canInpaint(asset)" class="mt-3 flex justify-end">
+                  <button
+                    type="button"
+                    class="app-button-secondary text-sm"
+                    @click="openInpaintEditor(asset)"
+                  >
+                    {{ $t("inpaint.openEditorAction") }}
+                  </button>
+                </div>
               </li>
             </ul>
           </section>
         </aside>
       </section>
+
+      <!-- M5.9: Inpaint mask editor modal -->
+      <InpaintMaskEditor
+        v-if="inpaintTargetAsset"
+        :asset-id="inpaintTargetAsset.id"
+        :image-url="apiClient.assetFileUrl(projectId, inpaintTargetAsset.id)"
+        :submitting="inpaintSubmitting"
+        @submit="onInpaintSubmit"
+        @cancel="closeInpaintEditor"
+      />
+
+      <!-- Inpaint error banner (shown outside the editor after dismiss) -->
+      <div
+        v-if="inpaintError && !inpaintTargetAsset"
+        class="fixed bottom-4 right-4 z-50 rounded-xl border border-app-warning/40 bg-app-surface px-4 py-3 text-sm text-app-warning shadow-lg"
+      >
+        {{ inpaintError }}
+        <button class="ml-3 underline" type="button" @click="inpaintError = null">{{ $t("app.close") }}</button>
+      </div>
+
     </template>
   </section>
 </template>

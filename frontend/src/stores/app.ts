@@ -40,6 +40,7 @@ import type {
   TrainingRecipe,
   TrainingRecipeCreatePayload,
   TrainingRecipeUpdatePayload,
+  RefinePayload,
   VersionDiffResponse,
   VersionTreeResponse,
   WorkerSmokeResult,
@@ -373,6 +374,24 @@ export const useAppStore = defineStore("app", () => {
   ): Promise<void> {
     try {
       const response = await apiClient.importProjectAsset(projectId, payload);
+      applyWorkspaceSnapshot(projectId, response);
+      lastMessageKey.value = MessageKey.SUCCESS_ADD0;
+      errorMessageKey.value = null;
+    } catch (error) {
+      if (error instanceof apiClient.ApiClientError) {
+        errorMessageKey.value = error.messageKey;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Creates a refine job for an asset, wiring the §6.2 strategy decision tree
+   * and the inpaint mask upload flow (spec §5.11 / M5.9).
+   */
+  async function refineAsset(projectId: string, assetId: string, payload: RefinePayload): Promise<void> {
+    try {
+      const response = await apiClient.refineAsset(projectId, assetId, payload);
       applyWorkspaceSnapshot(projectId, response);
       lastMessageKey.value = MessageKey.SUCCESS_ADD0;
       errorMessageKey.value = null;
@@ -885,6 +904,7 @@ export const useAppStore = defineStore("app", () => {
     executeReadyProjectJobs,
     getStudioDraft,
     importProjectAsset,
+    refineAsset,
     installWorker,
     loadIntegrationSnapshot,
     loadLocalLlmStatus,

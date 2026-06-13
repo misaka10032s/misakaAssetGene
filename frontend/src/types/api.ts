@@ -340,6 +340,20 @@ export interface AssetImportPayload {
   description?: string;
 }
 
+/**
+ * Payload for POST /api/v1/projects/{project_id}/assets/{asset_id}/refine.
+ * Mirrors the Python RefineRequest schema (spec §5.11 / §6.2).
+ * strategy is optional; when omitted the backend's decision tree selects it.
+ * mask_asset_id references a previously uploaded asset with asset_type="mask".
+ */
+export interface RefinePayload {
+  instruction: string;
+  title?: string | null;
+  strategy?: string | null;
+  mask_asset_id?: string | null;
+  params?: Record<string, unknown>;
+}
+
 export interface WorkerSmokeResult {
   worker_name: string;
   ok: boolean;
