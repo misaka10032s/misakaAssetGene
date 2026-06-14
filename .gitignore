@@ -1,7 +1,3 @@
-# Claude local overrides
-CLAUDE.local.md
-.claude/settings.local.json
-
 # Secrets
 .env
 .env.*
@@ -65,11 +61,24 @@ smoke-*.mp4
 .DS_Store
 Thumbs.db
 
+# === Claude Code / graphify ===
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/worktrees/
+
+# Generated knowledge graph
+graphify-out/
+
 # Agent / browser-test artifacts — never tracked
 final_runs/
 screenshots/
 **/screenshots/
 *.screenshot.png
+.playwright-mcp/
 .impeccable/
 impeccable-out/
+.remember/
+
+# Catch-all for *.local.* / *.local config/env overrides
 *.local.*
+*.local
