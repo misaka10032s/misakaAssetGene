@@ -645,10 +645,16 @@ def get_project_asset_file(project_id: str, asset_id: str) -> FileResponse:
     media_type = guessed or "application/octet-stream"
 
     # Return as inline so browsers render images directly (not force-download).
+    # Use FileResponse(filename=..., content_disposition_type="inline") rather than a
+    # hand-built header string: Starlette encodes response headers as latin-1, so a CJK
+    # filename in a raw f-string header raises UnicodeEncodeError → 500.  Passing
+    # `filename` lets Starlette apply RFC 5987 percent-encoding automatically
+    # (filename*=UTF-8''<quoted>) whenever the name contains non-ASCII characters.
     return FileResponse(
         path=file_path,
         media_type=media_type,
-        headers={"Content-Disposition": f'inline; filename="{file_path.name}"'},
+        filename=file_path.name,
+        content_disposition_type="inline",
     )
 
 

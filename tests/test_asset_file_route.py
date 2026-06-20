@@ -234,3 +234,40 @@ def test_asset_path_absolute_outside_root_returns_404(
         f"Absolute-path escape was NOT blocked — route returned {resp.status_code}; "
         f"body: {resp.text}"
     )
+
+
+# ---------------------------------------------------------------------------
+# REGRESSION: CJK filename must not cause 500
+# ---------------------------------------------------------------------------
+
+def test_cjk_filename_returns_200_not_500(client: TestClient) -> None:
+    """Regression: GET .../file must return 200 (not 500) when the stored filename
+    contains CJK characters.  Root cause: the old hand-built header
+        {"Content-Disposition": f'inline; filename="{file_path.name}"'}
+    passes a CJK string to Starlette which encodes headers as latin-1 →
+    UnicodeEncodeError → HTTP 500.
+    Fix: use FileResponse(filename=..., content_disposition_type="inline") so
+    Starlette applies RFC 5987 percent-encoding automatically.
+    """
+    project_id = _create_project(client)
+    cjk_filename = "動漫女僕魔女系列_001.png"
+    content = b"\x89PNG\r\n\x1a\nFAKECJKPNG"
+    resp = client.post(
+        f"/api/v1/projects/{project_id}/assets/import",
+        files={"file": (cjk_filename, io.BytesIO(content), "image/png")},
+        data={"modality": "image", "asset_type": "image", "title": "CJK Test"},
+    )
+    assert resp.status_code == 200, resp.text
+    asset_id = resp.json()["data"]["assets"][-1]["id"]
+
+    resp = client.get(f"/api/v1/projects/{project_id}/assets/{asset_id}/file")
+    assert resp.status_code == 200, (
+        f"CJK filename caused non-200 response: {resp.status_code}; body: {resp.text[:300]}"
+    )
+    assert resp.content == content, "Response bytes differ from what was imported"
+    disp = resp.headers.get("content-disposition", "")
+    assert disp.startswith("inline"), f"Expected inline disposition, got: {disp!r}"
+    # RFC 5987: CJK names must appear as filename*=utf-8''<percent-encoded>
+    assert "filename*=" in disp.lower(), (
+        f"CJK filename must be RFC 5987 encoded (filename*=UTF-8''...) in Content-Disposition; got: {disp!r}"
+    )
