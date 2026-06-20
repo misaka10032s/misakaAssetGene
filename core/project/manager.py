@@ -12,6 +12,29 @@ from core.project.style_guide import build_initial_style_guide
 PROJECT_TYPES = [project_type.value for project_type in ProjectTypeSuggestion]
 logger = logging.getLogger("misaka.project")
 
+# Whitelist for a resolvable project_id. ``_build_project_id`` only ever emits
+# lower-case alphanumerics, hyphens and underscores, so any well-formed id must
+# match this pattern. Anything else (path separators, ``..``, drive letters,
+# NUL bytes, …) is rejected BEFORE it is joined onto ``projects_root`` so a
+# crafted id cannot traverse out of the projects directory (security).
+PROJECT_ID_PATTERN = re.compile(r"^[a-z0-9_-]+$")
+
+
+def validate_project_id(project_id: str) -> str:
+    """Return ``project_id`` unchanged if it is a safe, well-formed id.
+
+    Raises :class:`ProjectValidationError` for anything that does not match the
+    ``^[a-z0-9_-]+$`` whitelist. This is the single defensive funnel shared by
+    the route-layer dependency and ``ProjectManager.get_project`` so that no
+    code path can resolve a traversal payload (``../``, separators, absolute
+    paths) against the filesystem.
+    """
+    if not isinstance(project_id, str) or not PROJECT_ID_PATTERN.fullmatch(project_id):
+        raise ProjectValidationError(
+            f"Invalid project_id: must match {PROJECT_ID_PATTERN.pattern!r}."
+        )
+    return project_id
+
 
 class ProjectValidationError(ValueError):
     """Raised when a project request does not satisfy schema rules."""
@@ -91,6 +114,10 @@ class ProjectManager:
         return summary
 
     def get_project(self, project_id: str) -> tuple[ProjectSummary, Path]:
+        # Defence in depth: reject any non-whitelisted id before it is joined
+        # onto projects_root. The route-layer dependency catches path params,
+        # but body-sourced ids (select_project, clarify, sessions) funnel here.
+        validate_project_id(project_id)
         direct_path = self.projects_root / project_id / "project.json"
         if direct_path.exists():
             data = json.loads(direct_path.read_text(encoding="utf-8"))
