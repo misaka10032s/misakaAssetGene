@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
 from core.models.schemas import Modality, TrainingJob, TrainingJobCreateRequest, TrainingJobStatus, TrainingWorkspaceData
 from core.project.manager import ProjectManager
 from core.training.executor import TrainingExecutor
+
+# Training statuses that end the stream — once reached, no further progress
+# events will follow so the SSE generator emits a final frame and stops.
+_TERMINAL_STATUSES = frozenset({TrainingJobStatus.COMPLETED, TrainingJobStatus.FAILED})
 
 
 class TrainingService:
@@ -82,6 +88,61 @@ class TrainingService:
     def set_executor(self, executor: TrainingExecutor) -> None:
         """Wire the executor after construction (used in main.py startup)."""
         self._executor = executor
+
+    # ------------------------------------------------------------------
+    # Progress streaming (spec §7.3 — "進度條 ... 從 worker 串流")
+    # ------------------------------------------------------------------
+
+    def stream_job_progress(
+        self,
+        project_id: str,
+        job_id: str,
+        *,
+        poll_interval_sec: float = 1.0,
+        max_duration_sec: float = 24 * 60 * 60.0,
+        sleep: "callable[[float], None]" = time.sleep,
+        clock: "callable[[], float]" = time.monotonic,
+    ) -> Iterator[TrainingJob]:
+        """Yield a ``TrainingJob`` snapshot whenever its status/progress changes.
+
+        The executor (running on its own worker thread) persists incremental
+        status to the per-project ``jobs.json`` via the ``on_progress``
+        callback (executor.py). This generator re-reads that store on a short
+        interval and yields a fresh snapshot only when something observable
+        changed (status, progress percentage, or progress label) — so the SSE
+        layer pushes the client an event per real change rather than on every
+        tick. It always yields once immediately (the current state), and stops
+        after the job reaches a terminal status (COMPLETED / FAILED) or the
+        job disappears / the ``max_duration_sec`` deadline is hit.
+
+        Injectable ``sleep`` / ``clock`` keep this unit-testable without real
+        timing or a live GPU training run.
+
+        Raises ``ProjectNotFoundError`` (propagated from ``poll_job``) for an
+        unknown project. If the job_id does not exist, yields nothing and
+        returns immediately.
+        """
+        deadline = clock() + max_duration_sec
+        last_signature: tuple | None = None
+        first = True
+
+        while True:
+            job = self.poll_job(project_id, job_id)
+            if job is None:
+                # Unknown job (or removed mid-stream): nothing more to send.
+                return
+
+            signature = (job.status, job.progress, job.progress_label)
+            if first or signature != last_signature:
+                yield job
+                last_signature = signature
+                first = False
+
+            if job.status in _TERMINAL_STATUSES:
+                return
+            if clock() >= deadline:
+                return
+            sleep(poll_interval_sec)
 
     # ------------------------------------------------------------------
     # Storage helpers

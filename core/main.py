@@ -3,6 +3,7 @@ import logging
 import mimetypes
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 # Maximum allowed upload size for project zip imports (spec §5.5 streaming guard).
@@ -11,11 +12,12 @@ _UPLOAD_MAX_BYTES: int = 2 * 1024 ** 3  # 2 GiB
 _UPLOAD_CHUNK_SIZE: int = 256 * 1024     # 256 KiB per read chunk
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from fastapi.exceptions import RequestValidationError
 
 from core.config import get_settings
@@ -72,6 +74,7 @@ from core.models.schemas import (
     SynopsisOptimizeRequest,
     TrainingJobCreateRequest,
     TrainingJobPollData,
+    TrainingJobStatus,
     TrainingRecipe,
     TrainingRecipeCreateRequest,
     TrainingRecipeUpdateRequest,
@@ -98,6 +101,7 @@ from core.project.manager import (
     ProjectManager,
     ProjectNotFoundError,
     ProjectValidationError,
+    validate_project_id,
 )
 from core.reporting.license import LicenseReportService
 from core.scheduler.vram import ModelScheduler, SchedulerBudget
@@ -127,7 +131,31 @@ logging.basicConfig(
 install_redaction_filter()
 logger = logging.getLogger("misaka.core")
 
-app = FastAPI(title="MisakaAssetGene Core Service", version="0.1.0")
+def enforce_valid_project_id(request: Request) -> None:
+    """Route-layer guard: reject malformed ``project_id`` path params uniformly.
+
+    Registered as an app-level dependency so every route carrying a
+    ``{project_id}`` path parameter is validated against the
+    ``^[a-z0-9_-]+$`` whitelist BEFORE its handler runs — closing all
+    get_project-derived path traversal in one place (security). Routes without
+    a ``project_id`` path param are unaffected (the param is simply absent).
+    """
+    project_id = request.path_params.get("project_id")
+    if project_id is None:
+        return
+    try:
+        validate_project_id(project_id)
+    except ProjectValidationError as error:
+        # 404 (not 422) so a probe cannot distinguish "malformed" from
+        # "absent" — consistent with the not-found contract for these routes.
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+app = FastAPI(
+    title="MisakaAssetGene Core Service",
+    version="0.1.0",
+    dependencies=[Depends(enforce_valid_project_id)],
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=settings.misaka_cors_origin_regex,
@@ -826,6 +854,47 @@ def poll_training_job(project_id: str, job_id: str) -> ApiResponse:
     if job is None:
         raise HTTPException(status_code=404, detail=f"Training job not found: {job_id}")
     return success_response(MessageKey.SUCCESS_FETCH0, TrainingJobPollData(job=job).model_dump(mode="json"))
+
+
+@app.get("/api/v1/projects/{project_id}/training/{job_id}/stream")
+def stream_training_job(project_id: str, job_id: str) -> StreamingResponse:
+    """Server-Sent Events stream of a training job's progress (spec §7.3).
+
+    Replaces client-side GET polling: the executor persists incremental status
+    to the per-project job store and this endpoint pushes one ``data:`` frame
+    per observable change (status / progress / label). The stream closes once
+    the job reaches a terminal status (completed / failed).
+
+    Each frame is ``event: progress`` with a JSON body matching the poll
+    endpoint's ``TrainingJobPollData`` shape, so the frontend can reuse the
+    same parsing. A terminal frame is tagged ``event: done``.
+
+    REAL-RUN NOTE: the push path is contract/unit-tested with a fake job store
+    (see tests/test_training_stream.py). End-to-end verification against a live
+    kohya_ss / GPT-SoVITS GPU training run is DEFERRED to the user.
+    """
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/training/%s/stream", project_id, job_id)
+    # Validate project up-front so an unknown project fails with 404 before the
+    # streaming body opens (a 404 mid-stream cannot be expressed in SSE).
+    try:
+        project_manager.get_project(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    if training_service.poll_job(project_id, job_id) is None:
+        raise HTTPException(status_code=404, detail=f"Training job not found: {job_id}")
+
+    def event_source() -> "Iterator[str]":
+        for job in training_service.stream_job_progress(project_id, job_id):
+            envelope = TrainingJobPollData(job=job).model_dump(mode="json")
+            event_name = "done" if job.status in {TrainingJobStatus.COMPLETED, TrainingJobStatus.FAILED} else "progress"
+            yield f"event: {event_name}\ndata: {json.dumps(envelope, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/v1/projects/{project_id}/training/{job_id}/cancel", response_model=ApiResponse)

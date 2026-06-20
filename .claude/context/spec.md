@@ -1087,6 +1087,7 @@ project workspace 的 conversation history 不可一次完整渲染所有訊息�
   - 進度：由 `CommandRunner.on_progress` callback 解析 subprocess stdout 行；訓練期間 `TrainingJob.progress` + `progress_label` 可 poll
   - 中斷：`cancel_job()` 呼叫 `runner.cancel()` → 發送 terminate signal；job status 過渡到 FAILED
   - API：`GET /api/v1/projects/{id}/training/{job_id}`（poll），`POST /api/v1/projects/{id}/training/{job_id}/cancel`
+  - **進度串流（deferred tail，已實作 SSE 推送）**：`GET /api/v1/projects/{id}/training/{job_id}/stream` — Server-Sent Events。executor 已逐步將 status 寫入 per-project job store；此端點 server 端輪詢 job store，僅在「狀態 / progress / progress_label 改變」時推一個 `event: progress`（body 同 poll 端點的 `TrainingJobPollData`），到達終態（completed / failed）推 `event: done` 後關閉。串流邏輯抽在 `TrainingService.stream_job_progress()`（可注入 sleep/clock，contract/unit 測試於 `tests/test_training_stream.py`）；前端 `EventSource` 訂閱取代原 GET 輪詢。**REAL-RUN DEFERRED**：對真實 kohya_ss / GPT-SoVITS GPU 訓練的端到端串流驗證待使用者（本環境無 GPU）。
   - `CommandRunner` protocol（可注入），`SubprocessRunner`（預設），`FakeRunner`（測試）
 - **REAL-RUN DEFERRED（wired but not live-verified）**：命令向量在測試中透過 FakeRunner 驗證，但尚未對著真實 kohya_ss 安裝或 GPU 執行過。使用者需要：(1) 安裝 kohya_ss clone、(2) 確認 `workers/manifest.json` 的 `kohya-ss.directory` 路徑、(3) 跑真實 training job。GPT-SoVITS s1_train.py/s2_train.py 實際 CLI 使用 `--config YAML`，目前使用 `--train_files` 等 placeholder flags（DEFERRED）
 - **TODO（spec §7.3 resume / 中間 checkpoint 試聽）**：resume 從 checkpoint 尚未實作。`TrainingJob.resume_checkpoint_path` 欄位預留；未來 phase 解析 kohya_ss `--save_every_n_epochs` 輸出設定此欄，next submit 可帶 `--resume_from_checkpoint`。GPT-SoVITS 同理。
