@@ -560,6 +560,15 @@ export const apiClient = {
     };
   },
 
+  /**
+   * Returns the Server-Sent Events URL for a training job's live progress
+   * (spec §7.3). The frontend opens an EventSource on this URL to receive
+   * `event: progress` / `event: done` frames instead of GET-polling
+   * GET /api/v1/projects/{id}/training/{job_id}.
+   */
+  trainingJobStreamUrl: (projectId: string, jobId: string) =>
+    `${appEnv.apiBaseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/training/${encodeURIComponent(jobId)}/stream`,
+
   exportProjectDownloadUrl: (projectId: string, resolveRefs = true) =>
     `${appEnv.apiBaseUrl}/api/v1/projects/${encodeURIComponent(projectId)}/export/download?resolve_refs=${resolveRefs ? "true" : "false"}`,
 
