@@ -26,6 +26,7 @@ the application :class:`~core.config.Settings` env values when wired in the API.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
@@ -109,6 +110,16 @@ class ModelScheduler:
     The lock is NOT enforced at the scheduler's own ``evict()`` / ``demote()``
     level — those are internal state-accounting helpers. Only ``acquire()``
     (the external "I want VRAM" call) is refused while training holds the lock.
+
+    Thread safety:
+    All mutable state (``_models``, ``_transitions``, ``_training_lock_holder``,
+    and each model's ``.state`` / ``.last_used_at``) is guarded by an internal
+    re-entrant lock. The scheduler is reached concurrently from FastAPI's
+    threadpool request handlers and the training executor's worker thread, so
+    public mutators (``register`` / ``acquire`` / ``demote`` / ``evict`` /
+    ``tick`` / ``begin_training`` / ``end_training``) and reads (``get`` /
+    ``state_of`` / ``transitions`` / ``vram_used_mb`` / ``ram_used_mb`` /
+    ``is_training_locked``) all take the lock, making each call atomic.
     """
 
     def __init__(
@@ -122,6 +133,13 @@ class ModelScheduler:
         self._transitions: list[TransitionEvent] = []
         # Hard training lock state (spec §7.3 exclusive mode).
         self._training_lock_holder: str | None = None
+        # Guards all mutable scheduler state (_models, _transitions,
+        # _training_lock_holder, and per-model .state/.last_used_at). The
+        # scheduler is touched concurrently by FastAPI threadpool request
+        # handlers and the training executor worker thread, so every state
+        # change AND every read must hold this lock. RLock (re-entrant) so that
+        # acquire() -> _free_vram_for() -> demote() -> _record() nests safely.
+        self._lock = threading.RLock()
 
     @property
     def budget(self) -> SchedulerBudget:
@@ -129,7 +147,8 @@ class ModelScheduler:
 
     @property
     def transitions(self) -> list[TransitionEvent]:
-        return list(self._transitions)
+        with self._lock:
+            return list(self._transitions)
 
     # -- training lock (spec §7.3 "exclusive mode") ---------------------------
 
@@ -147,15 +166,18 @@ class ModelScheduler:
         """
         if not holder:
             raise ValueError("Training lock holder must be a non-empty string.")
-        self._training_lock_holder = holder
+        with self._lock:
+            self._training_lock_holder = holder
 
     def end_training(self) -> None:
         """Release the exclusive training lock.  ``acquire()`` works normally again."""
-        self._training_lock_holder = None
+        with self._lock:
+            self._training_lock_holder = None
 
     def is_training_locked(self) -> bool:
         """Return True while ``begin_training()`` has been called and not yet released."""
-        return self._training_lock_holder is not None
+        with self._lock:
+            return self._training_lock_holder is not None
 
     def register(self, model: ManagedModel) -> ManagedModel:
         if model.vram_mb > self._budget.vram_budget_mb:
@@ -163,14 +185,17 @@ class ModelScheduler:
                 f"Model '{model.name}' needs {model.vram_mb}MB VRAM but the budget is "
                 f"{self._budget.vram_budget_mb}MB."
             )
-        self._models[model.name] = model
+        with self._lock:
+            self._models[model.name] = model
         return model
 
     def get(self, name: str) -> ManagedModel:
-        return self._models[name]
+        with self._lock:
+            return self._models[name]
 
     def state_of(self, name: str) -> RuntimeState:
-        return self._models[name].state
+        with self._lock:
+            return self._models[name].state
 
     # -- accounting -----------------------------------------------------------
 
@@ -181,10 +206,12 @@ class ModelScheduler:
         return sum(m.ram_mb for m in self._models.values() if m.state == RuntimeState.WARM)
 
     def vram_used_mb(self) -> int:
-        return self._vram_used()
+        with self._lock:
+            return self._vram_used()
 
     def ram_used_mb(self) -> int:
-        return self._ram_used()
+        with self._lock:
+            return self._ram_used()
 
     # -- transitions ----------------------------------------------------------
 
@@ -213,22 +240,23 @@ class ModelScheduler:
         (see ``begin_training()``), so that generation workers are refused
         VRAM access while a training job is in progress (spec §7.3).
         """
-        if self._training_lock_holder is not None:
-            raise SchedulerError(
-                f"Training in progress (held by '{self._training_lock_holder}') — "
-                f"cannot acquire '{name}'; generation is queued until training ends."
-            )
-        model = self._models[name]
-        previous = model.state
-        self._free_vram_for(model)
-        if previous == RuntimeState.WARM:
-            self._record(model, RuntimeState.ACTIVE, "warm_restore")
-        elif previous == RuntimeState.COLD:
-            self._record(model, RuntimeState.ACTIVE, "cold_restore")
-        else:
-            self._record(model, RuntimeState.ACTIVE, "acquire")
-        model.last_used_at = self._clock()
-        return model.state
+        with self._lock:
+            if self._training_lock_holder is not None:
+                raise SchedulerError(
+                    f"Training in progress (held by '{self._training_lock_holder}') — "
+                    f"cannot acquire '{name}'; generation is queued until training ends."
+                )
+            model = self._models[name]
+            previous = model.state
+            self._free_vram_for(model)
+            if previous == RuntimeState.WARM:
+                self._record(model, RuntimeState.ACTIVE, "warm_restore")
+            elif previous == RuntimeState.COLD:
+                self._record(model, RuntimeState.ACTIVE, "cold_restore")
+            else:
+                self._record(model, RuntimeState.ACTIVE, "acquire")
+            model.last_used_at = self._clock()
+            return model.state
 
     def _free_vram_for(self, incoming: ManagedModel) -> None:
         """Demote other Active models until ``incoming`` fits the VRAM budget."""
@@ -258,26 +286,28 @@ class ModelScheduler:
         (RAM budget < 16GB) or when admitting the RAM copy would exceed the
         RAM budget.
         """
-        model = self._models[name]
-        if model.state != RuntimeState.ACTIVE:
+        with self._lock:
+            model = self._models[name]
+            if model.state != RuntimeState.ACTIVE:
+                return model.state
+            if not self._budget.warm_tier_enabled:
+                self._record(model, RuntimeState.COLD, f"{reason}:warm_disabled")
+                return model.state
+            if self._ram_used() + model.ram_mb > self._budget.ram_budget_mb:
+                self._record(model, RuntimeState.COLD, f"{reason}:ram_pressure")
+                return model.state
+            self._record(model, RuntimeState.WARM, reason)
             return model.state
-        if not self._budget.warm_tier_enabled:
-            self._record(model, RuntimeState.COLD, f"{reason}:warm_disabled")
-            return model.state
-        if self._ram_used() + model.ram_mb > self._budget.ram_budget_mb:
-            self._record(model, RuntimeState.COLD, f"{reason}:ram_pressure")
-            return model.state
-        self._record(model, RuntimeState.WARM, reason)
-        return model.state
 
     def evict(self, name: str, reason: str = "ram_pressure") -> RuntimeState:
         """Move a model to Cold. Warm -> Cold, or Active -> Cold (skip Warm)."""
-        model = self._models[name]
-        if model.state == RuntimeState.WARM:
-            self._record(model, RuntimeState.COLD, reason)
-        elif model.state == RuntimeState.ACTIVE:
-            self._record(model, RuntimeState.COLD, f"{reason}:direct")
-        return model.state
+        with self._lock:
+            model = self._models[name]
+            if model.state == RuntimeState.WARM:
+                self._record(model, RuntimeState.COLD, reason)
+            elif model.state == RuntimeState.ACTIVE:
+                self._record(model, RuntimeState.COLD, f"{reason}:direct")
+            return model.state
 
     def tick(self, now: float | None = None) -> list[TransitionEvent]:
         """Advance the clock and apply idle-based demotions/evictions.
@@ -286,12 +316,13 @@ class ModelScheduler:
         ``WARM`` models idle past ``cold_offload_sec`` evict to Cold.
         Returns only the transitions triggered by this tick.
         """
-        current = now if now is not None else self._clock()
-        before = len(self._transitions)
-        for model in list(self._models.values()):
-            idle = current - model.last_used_at
-            if model.state == RuntimeState.ACTIVE and idle >= model.idle_offload_sec:
-                self.demote(model.name, reason="idle")
-            elif model.state == RuntimeState.WARM and idle >= model.cold_offload_sec:
-                self.evict(model.name, reason="idle_cold")
-        return self._transitions[before:]
+        with self._lock:
+            current = now if now is not None else self._clock()
+            before = len(self._transitions)
+            for model in list(self._models.values()):
+                idle = current - model.last_used_at
+                if model.state == RuntimeState.ACTIVE and idle >= model.idle_offload_sec:
+                    self.demote(model.name, reason="idle")
+                elif model.state == RuntimeState.WARM and idle >= model.cold_offload_sec:
+                    self.evict(model.name, reason="idle_cold")
+            return self._transitions[before:]

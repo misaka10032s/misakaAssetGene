@@ -151,3 +151,95 @@ def test_cold_restore_recorded_when_no_warm_copy():
 def test_negative_budget_rejected():
     with pytest.raises(ValueError):
         SchedulerBudget(vram_budget_mb=-1, ram_budget_mb=16000)
+
+
+# ---------------------------------------------------------------------------
+# Thread safety (RLock) — concurrent access from threadpool + worker thread
+# ---------------------------------------------------------------------------
+
+def test_concurrent_acquire_demote_tick_is_consistent():
+    """Hammer the scheduler from many threads; the RLock must keep the
+    transition log internally consistent and never raise from a state race.
+
+    Without the lock, ``_transitions.append`` from one thread interleaving with
+    ``tick``'s ``self._transitions[before:]`` slice (and the read of
+    ``len(self._transitions)``) can drop events or read torn state.
+    """
+    import threading
+
+    sched, _ = _scheduler(vram_mb=100000, ram_mb=100000)
+    # Each model fits comfortably so acquire never has to evict — we are
+    # exercising the lock around state + transition bookkeeping, not eviction.
+    names = [f"m{i}" for i in range(8)]
+    for n in names:
+        sched.register(ManagedModel(name=n, vram_mb=1000, ram_mb=1000))
+
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(len(names) * 3)
+
+    def worker(name: str, op: str) -> None:
+        try:
+            barrier.wait()
+            for _ in range(200):
+                if op == "acquire":
+                    sched.acquire(name)
+                elif op == "demote":
+                    sched.demote(name)
+                else:
+                    sched.tick(now=999999.0)
+        except BaseException as exc:  # noqa: BLE001 - surface any race-induced error
+            errors.append(exc)
+
+    threads = []
+    for name in names:
+        for op in ("acquire", "demote", "tick"):
+            threads.append(threading.Thread(target=worker, args=(name, op)))
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Concurrent access raised: {errors[:3]}"
+    # Every recorded transition must reference a registered model and be a real
+    # state change (from != to) — proves no torn/partial event was appended.
+    for ev in sched.transitions:
+        assert ev.name in names
+        assert ev.from_state != ev.to_state
+
+
+def test_begin_end_training_under_concurrency():
+    """begin/end training toggling concurrently with acquire never corrupts the
+    lock-holder flag: acquire either succeeds or raises SchedulerError cleanly."""
+    import threading
+
+    sched, _ = _scheduler()
+    sched.register(ManagedModel(name="qwen", vram_mb=7000, ram_mb=7000))
+    errors: list[BaseException] = []
+
+    def toggler() -> None:
+        try:
+            for _ in range(500):
+                sched.begin_training("job-x")
+                sched.end_training()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    def acquirer() -> None:
+        try:
+            for _ in range(500):
+                try:
+                    sched.acquire("qwen")
+                except SchedulerError:
+                    pass  # expected when the lock is held
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=toggler), threading.Thread(target=acquirer)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Concurrent training-lock toggling raised: {errors[:3]}"
+    # After all toggling, the lock must be released (last op in toggler is end).
+    assert sched.is_training_locked() is False
