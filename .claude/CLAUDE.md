@@ -1,13 +1,21 @@
-> **Cluster conventions are centralized.** Before doing anything, `Read
-> D:/backup/CSIA/@PM/.claude/context/cluster-conventions.md` and follow it fully — it governs git
-> authority, language, browser testing, i18n, the port scheme, backend architecture, and `.claude/`
-> taxonomy. Everything below is THIS repo's specifics only.
+# misakaAssetGene — Claude collaboration guide
 
-# MisakaAssetGene Claude 協作總則
+Desktop-first multimodal asset workbench. Consultant-style dialogue integrates image generation,
+character lines, voice, songs, and video — plus downstream LoRA/GPT-SoVITS training pipelines.
+Stack: Tauri + Vue 3/Vite/UnoCSS (frontend) · Python/FastAPI (core API) · Ollama (local LLM).
 
-本檔是專案層級的 Claude 指南。任何新需求、規格更新、開發規劃與實作討論，都先以 `.claude/context/spec.md` 為單一事實來源，再參考 `.plan/` 與 `.claude/` 內的模組化規則。
+> Cluster conventions (git authority, language, i18n, ports, layout) are BINDING and live at
+> D:/backup/CSIA/@PM/.claude/context/cluster-conventions.md — Read it before any work here.
 
-## Context index — read the entries relevant to your task before working
+## Delegation & verification
+
+- Orchestration, model tiering, and dispatch rules: D:/backup/CSIA/@PM/.claude/context/model-dispatch-doctrine.md
+- Decision rubrics (escalate / done / ask / change course): D:/backup/CSIA/@PM/.claude/context/judgment-rubrics.md
+- Whoever produced work never certifies it — verification runs in a fresh-context agent.
+- Every done/correct/dead/broken claim carries evidence: file:line, test output, or read-back.
+- Target missing or contradicting the task → STOP and ask; never scaffold around it.
+
+## Context index
 
 - `context/spec.md` — **SINGLE SOURCE OF TRUTH (spec-first). MUST read before ANY change; update spec here FIRST, then code.**
 
@@ -40,8 +48,6 @@
 
 - **Frontend** `http://127.0.0.1:8400`、**Core API** `http://127.0.0.1:8401`、**Ollama** `http://127.0.0.1:11434`
 
-**測試與正式環境的 port 必須相同（test == prod ports）。**
-
 > Note: MisakaAssetGene is a desktop Tauri app (not a browser-delivered web service). The canonical
 > browser-testing rules (in `cluster-conventions.md`) apply when verifying the embedded WebView or
 > the Vite dev-server URL during development.
@@ -57,11 +63,7 @@
    - 驗證時需說明是 dev 驗證、build 驗證、還是 API/行為驗證
 3. **開發期訊息只服務於驗證，不可污染正式使用者體驗。**
 4. **若新增診斷輸出，必須同時寫明啟動方式、預期訊息、以及停用條件。**
-5. **env 採集中管理、命名分流。**
-   - root `.env` / `.env.example` 為單一來源
-   - backend 讀 `MISAKA_*` 與 provider secrets
-   - frontend 只讀 `VITE_MISAKA_*`
-   - 不允許前後端各自維護互相漂移的 env 檔語意
+5. **env 命名分流：** backend 讀 `MISAKA_*` 與 provider secrets；frontend 只讀 `VITE_MISAKA_*`。
 
 ## 回報格式（每次開發進度都必須包含）
 
