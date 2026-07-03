@@ -19,32 +19,32 @@ Stack: Tauri + Vue 3/Vite/UnoCSS (frontend) · Python/FastAPI (core API) · Olla
 
 - `context/spec.md` — **SINGLE SOURCE OF TRUTH (spec-first). MUST read before ANY change; update spec here FIRST, then code.**
 
-## 核心原則
+## Core principles
 
-1. **Spec-first：** 有新需求時，先用 `.claude/context/spec.md` 與 `architect` 角色討論可行性、架構影響、風險與落地方式，確認後才更新 `.claude/context/spec.md`（spec 現位於 `.claude/context/spec.md`）。
-2. **Plan-aware：** `.plan/DEVELOPMENT_PLAN.md` 定義開發角色與流程；`.plan/RESEARCH_LOG.md` 記錄研究結論與規格修正。完成的事項要在研究日誌中標註為 **「已完成」**。
-3. **Repo boundary：** 第三方 repo 一律視為外部依賴，使用獨立 clone 或下載產物，不可被本專案 git 追蹤，不使用 submodule / subtree。
-4. **Multimodal by default：** 功能設計不得只假設單一素材輸出；必須能處理圖像、文字台詞、角色語音、歌曲、影片、靜態動圖等複合交付。
-5. **Open-source friendly：** 任何流程、規格與文件都應考慮外部貢獻者可讀性、可執行性與授權清晰度。
-6. **Truthful delivery:** 不得把骨架、stub、PoC 說成完整里程碑完成；回報時要明確區分「已完成」、「部分完成」、「未完成」。
+1. **Spec-first:** When a new requirement arrives, discuss feasibility, architectural impact, risks, and implementation approach with the `architect` role using `.claude/context/spec.md`, then update `.claude/context/spec.md` only after confirmation (spec lives at `.claude/context/spec.md`).
+2. **Plan-aware:** `.plan/DEVELOPMENT_PLAN.md` defines development roles and workflows; `.plan/RESEARCH_LOG.md` records research conclusions and spec amendments. Completed items must be marked as **Done** in the research log.
+3. **Repo boundary:** Always treat third-party repos as external dependencies — use an independent clone or download artifacts; they must not be tracked by this project's git; no submodule / subtree.
+4. **Multimodal by default:** Feature designs must not assume a single asset output type; must be able to handle composite deliverables including images, character lines, character voices, songs, videos, and animated stills.
+5. **Open-source friendly:** Any workflow, spec, and documentation should consider readability, executability, and license clarity for external contributors.
+6. **Truthful delivery:** Never describe a skeleton, stub, or PoC as a completed milestone; when reporting, clearly distinguish "Done", "Partially done", and "Not done".
 
-## 工作入口
+## Work entry points
 
-- 規格討論：使用 `.claude/commands/spec-discuss.md`
-- 規格同步：使用 `.claude/commands/update-spec.md`
-- 規劃檢查：使用 `.claude/commands/review-plan.md`
+- Spec discussion: use `.claude/commands/spec-discuss.md`
+- Spec sync: use `.claude/commands/update-spec.md`
+- Plan review: use `.claude/commands/review-plan.md`
 
-## 規則模組
+## Rule modules
 
-- `.claude/rules/spec-workflow.md`：需求到規格的標準流程
-- `.claude/rules/multimodal-assets.md`：複合素材與輸出設計約束
-- `.claude/rules/repo-hygiene.md`：repo 邊界、gitignore 與外部依賴規則
-- `.claude/rules/community-workflow.md`：開源貢獻與 review 流程
-- `.claude/rules/frontend-standards.md`：前端 i18n、型別、RWD、樣式與註解規範
+- `.claude/rules/spec-workflow.md`: standard workflow from requirement to spec
+- `.claude/rules/multimodal-assets.md`: composite asset and output design constraints
+- `.claude/rules/repo-hygiene.md`: repo boundary, gitignore, and external dependency rules
+- `.claude/rules/community-workflow.md`: open-source contribution and review workflow
+- `.claude/rules/frontend-standards.md`: frontend i18n, types, RWD, styles, and comment standards
 
 ## Ports
 
-本機服務均綁定 `127.0.0.1`，port 由 `.env` 集中定義：
+All local services bind to `127.0.0.1`; ports are defined centrally in `.env`:
 
 - **Frontend** `http://127.0.0.1:8400`、**Core API** `http://127.0.0.1:8401`、**Ollama** `http://127.0.0.1:11434`
 
@@ -52,42 +52,42 @@ Stack: Tauri + Vue 3/Vite/UnoCSS (frontend) · Python/FastAPI (core API) · Olla
 > browser-testing rules (in `cluster-conventions.md`) apply when verifying the embedded WebView or
 > the Vite dev-server URL during development.
 
-## 開發模式與檢測規範
+## Dev mode and diagnostic standards
 
-1. **開發期診斷輸出必須受 mode / env 控制。**
-   - Python backend 使用 `MISAKA_ENV=dev`
-   - Frontend / Vite 使用 `VITE_MISAKA_ENV=dev` 與 `--mode development`
-   - production build 不得預設輸出開發期 debug 訊息
-2. **build 與 dev 要隔離。**
-   - dev server、typecheck、build、doctor、manager 都必須有明確命令入口
-   - 驗證時需說明是 dev 驗證、build 驗證、還是 API/行為驗證
-3. **開發期訊息只服務於驗證，不可污染正式使用者體驗。**
-4. **若新增診斷輸出，必須同時寫明啟動方式、預期訊息、以及停用條件。**
-5. **env 命名分流：** backend 讀 `MISAKA_*` 與 provider secrets；frontend 只讀 `VITE_MISAKA_*`。
+1. **Diagnostic output during development must be controlled by mode / env.**
+   - Python backend uses `MISAKA_ENV=dev`
+   - Frontend / Vite uses `VITE_MISAKA_ENV=dev` and `--mode development`
+   - Production builds must not output development debug messages by default
+2. **Build and dev must be isolated.**
+   - dev server, typecheck, build, doctor, and manager must each have a clearly defined command entry point
+   - When verifying, state whether it is a dev verification, build verification, or API/behavior verification
+3. **Development messages serve only verification purposes and must not pollute the end-user experience.**
+4. **When adding diagnostic output, simultaneously document the launch method, expected output, and disable condition.**
+5. **Env naming segregation:** backend reads `MISAKA_*` and provider secrets; frontend reads only `VITE_MISAKA_*`.
 
-## 回報格式（每次開發進度都必須包含）
+## Report format (must be included with every development progress report)
 
-1. **現在進度到哪裡**：對應 `.claude/context/spec.md` / milestone / 條目
-2. **你該如何驗證**：命令、頁面、API、預期輸出
-3. **目前判定**：已完成 / 部分完成 / 未完成
-4. **下一步做什麼**：下一個最合理的開發或驗收動作
+1. **Current progress:** corresponding `.claude/context/spec.md` / milestone / item
+2. **How to verify:** command, page, API, expected output
+3. **Current assessment:** Done / Partially done / Not done
+4. **Next step:** the next most reasonable development or acceptance action
 
-若是里程碑驗收，還要額外列出：
-- 哪些條目通過
-- 哪些條目仍缺
-- 哪些只是 scaffold / stub
+For milestone acceptance, additionally list:
+- Which items passed
+- Which items are still missing
+- Which are only scaffold / stub
 
-## 角色分工
+## Role assignments
 
-| 角色 | 主要職責 |
+| Role | Primary responsibilities |
 | --- | --- |
-| `architect` | 需求可行性、系統分層、規格把關 |
-| `backend` | FastAPI 核心、檔案系統、專案管理、metadata |
-| `ai-ml` | RAG、prompt engineering、LLM 路由、生成/訓練工作流 |
-| `frontend` | Tauri/Vue UI、版本樹、資產瀏覽與互動 |
-| `ui-ux` | 對話體驗、視覺層次、引導與易用性 |
-| `devops` | setup、打包、跨平台安裝、工具與 worker 管理 |
-| `qa-sdet` | smoke / integration / E2E 測試策略 |
-| `security` | 權限邊界、命令安全、敏感資訊脫敏 |
+| `architect` | Requirement feasibility, system layering, spec gatekeeping |
+| `backend` | FastAPI core, file system, project management, metadata |
+| `ai-ml` | RAG, prompt engineering, LLM routing, generation/training workflows |
+| `frontend` | Tauri/Vue UI, version tree, asset browsing and interaction |
+| `ui-ux` | Dialogue experience, visual hierarchy, onboarding and usability |
+| `devops` | Setup, packaging, cross-platform installation, tool and worker management |
+| `qa-sdet` | Smoke / integration / E2E test strategy |
+| `security` | Permission boundaries, command safety, sensitive data sanitization |
 
-詳細 persona 見 `.claude/agents/`。
+See `.claude/agents/` for detailed personas.
