@@ -46,7 +46,7 @@ Stack: Tauri + Vue 3/Vite/UnoCSS (frontend) · Python/FastAPI (core API) · Olla
 
 All local services bind to `127.0.0.1`; ports are defined centrally in `.env`:
 
-- **Frontend** `http://127.0.0.1:8400`、**Core API** `http://127.0.0.1:8401`、**Ollama** `http://127.0.0.1:11434`
+- **Frontend** `http://127.0.0.1:8400`, **Core API** `http://127.0.0.1:8401`, **Ollama** `http://127.0.0.1:11434`
 
 > Note: MisakaAssetGene is a desktop Tauri app (not a browser-delivered web service). The canonical
 > browser-testing rules (in `cluster-conventions.md`) apply when verifying the embedded WebView or
