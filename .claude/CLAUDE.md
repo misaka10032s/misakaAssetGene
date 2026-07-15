@@ -17,11 +17,11 @@ Stack: Tauri + Vue 3/Vite/UnoCSS (frontend) · Python/FastAPI (core API) · Olla
 
 ## Context index
 
-- `context/spec.md` — **SINGLE SOURCE OF TRUTH (spec-first). MUST read before ANY change; update spec here FIRST, then code.**
+- `docs/superpowers/specs/spec.md` — **SINGLE SOURCE OF TRUTH (spec-first). MUST read before ANY change; update spec here FIRST, then code.**
 
 ## Core principles
 
-1. **Spec-first:** When a new requirement arrives, discuss feasibility, architectural impact, risks, and implementation approach with the `architect` role using `.claude/context/spec.md`, then update `.claude/context/spec.md` only after confirmation (spec lives at `.claude/context/spec.md`).
+1. **Spec-first:** When a new requirement arrives, discuss feasibility, architectural impact, risks, and implementation approach with the `architect` role using `docs/superpowers/specs/spec.md`, then update `docs/superpowers/specs/spec.md` only after confirmation (spec lives at `docs/superpowers/specs/spec.md`).
 2. **Plan-aware:** `.plan/DEVELOPMENT_PLAN.md` defines development roles and workflows; `.plan/RESEARCH_LOG.md` records research conclusions and spec amendments. Completed items must be marked as **Done** in the research log.
 3. **Repo boundary:** Always treat third-party repos as external dependencies — use an independent clone or download artifacts; they must not be tracked by this project's git; no submodule / subtree.
 4. **Multimodal by default:** Feature designs must not assume a single asset output type; must be able to handle composite deliverables including images, character lines, character voices, songs, videos, and animated stills.
@@ -67,7 +67,7 @@ All local services bind to `127.0.0.1`; ports are defined centrally in `.env`:
 
 ## Report format (must be included with every development progress report)
 
-1. **Current progress:** corresponding `.claude/context/spec.md` / milestone / item
+1. **Current progress:** corresponding `docs/superpowers/specs/spec.md` / milestone / item
 2. **How to verify:** command, page, API, expected output
 3. **Current assessment:** Done / Partially done / Not done
 4. **Next step:** the next most reasonable development or acceptance action
