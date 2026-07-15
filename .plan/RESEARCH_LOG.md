@@ -50,7 +50,7 @@
 ## 4. 2026-04-23 — Claude 工作流與開源治理補充
 
 - 已建立 `CLAUDE.md` 與 `.claude/` 結構，角色分工對齊 `.plan/DEVELOPMENT_PLAN.md`。
-- 已明確化流程：新需求先以 `.claude/context/spec.md` + 架構師角色討論可行性與實作細節，再回寫 `.claude/context/spec.md`。
+- 已明確化流程：新需求先以 `docs/superpowers/specs/spec.md` + 架構師角色討論可行性與實作細節，再回寫 `docs/superpowers/specs/spec.md`。
 - 已補充多模態複合素材需求，納入圖像、文字台詞、角色語音、歌曲、影片與靜態動圖的組合交付。
 - 已補上 repo 邊界規則：第三方 repo 維持獨立 clone，不納入本專案 git 追蹤。
 - 已新增 `.gitignore`、`CONTRIBUTING.md`、`LICENSE`。
@@ -61,7 +61,7 @@
 
 ## 5. 2026-06-12 — PM 決策記錄
 
-以下為專案負責人 2026-06-12 正式決策事項，已同步更新至 `.claude/context/spec.md` v0.9 與 `.plan/DEVELOPMENT_PLAN.md`。
+以下為專案負責人 2026-06-12 正式決策事項，已同步更新至 `docs/superpowers/specs/spec.md` v0.9 與 `.plan/DEVELOPMENT_PLAN.md`。
 
 ### 5.1 顧問 session 狀態 → SQLite 持久化
 **問題**：顧問 checklist loop（§4.1）的狀態在 app 重啟後是否保留？  

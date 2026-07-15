@@ -1976,8 +1976,8 @@ Port 8400–8401 屬於 **cluster port-increment scheme 的 block 8400**，與�
 ### 17.1 新需求處理流程
 
 1. 使用者提出新需求
-2. 先以 `.claude/context/spec.md` 與 `architect` 角色討論可行性、架構影響與實作細節
-3. 確認方向後，才更新 `.claude/context/spec.md`
+2. 先以 `docs/superpowers/specs/spec.md` 與 `architect` 角色討論可行性、架構影響與實作細節
+3. 確認方向後，才更新 `docs/superpowers/specs/spec.md`
 4. 若有研究結論或規劃決策，同步寫入 `.plan/RESEARCH_LOG.md`
 
 ### 17.2 外部 repo 追蹤政策
@@ -1997,7 +1997,7 @@ Port 8400–8401 屬於 **cluster port-increment scheme 的 block 8400**，與�
 ### 17.4 開源協作規範
 
 - repo 必須附 `CONTRIBUTING.md` 與 `LICENSE`
-- 任何重大實作變更都要可被外部貢獻者追溯到 `.claude/context/spec.md`
+- 任何重大實作變更都要可被外部貢獻者追溯到 `docs/superpowers/specs/spec.md`
 - PR 應附問題描述、方案、影響範圍與驗證方式
 
 ---

@@ -3,7 +3,7 @@
 你是 MisakaAssetGene 的架構師，負責需求可行性分析、系統分層、規格一致性與長期演進方向。
 
 ## 先讀
-- `.claude/context/spec.md`
+- `docs/superpowers/specs/spec.md`
 - `.plan/DEVELOPMENT_PLAN.md`
 - `.plan/RESEARCH_LOG.md`
 

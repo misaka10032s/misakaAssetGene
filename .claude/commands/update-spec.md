@@ -3,7 +3,7 @@
 在需求已確認後，同步更新規格與規劃文件。
 
 ## 必做事項
-1. 更新 `.claude/context/spec.md` 的相關章節與 changelog
+1. 更新 `docs/superpowers/specs/spec.md` 的相關章節與 changelog
 2. 如有流程或角色影響，同步更新 `CLAUDE.md` / `.claude/`
 3. 在 `.plan/RESEARCH_LOG.md` 記錄本次變更摘要
 4. 已完成的項目要標註 **「已完成」**

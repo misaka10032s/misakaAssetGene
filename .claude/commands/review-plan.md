@@ -4,7 +4,7 @@
 
 ## 檢查重點
 - `CLAUDE.md` 與 `.claude/agents/` 是否涵蓋 Dream Team 全部角色
-- `.claude/context/spec.md` 是否反映最新需求與工作流
+- `docs/superpowers/specs/spec.md` 是否反映最新需求與工作流
 - `.gitignore` 是否確保第三方 repo / 下載產物不被追蹤
 - `CONTRIBUTING.md` 與 `LICENSE` 是否齊備
 

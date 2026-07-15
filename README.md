@@ -2,7 +2,7 @@
 
 桌面優先的多模態素材工作台，用顧問式對話整合圖像、台詞文字、角色語音、歌曲、影片與後續訓練流程。
 
-> 規格唯一事實來源：[`.claude/context/spec.md`](.claude/context/spec.md)（spec-first）。
+> 規格唯一事實來源：[`docs/superpowers/specs/spec.md`](docs/superpowers/specs/spec.md)（spec-first）。
 
 ---
 
@@ -99,7 +99,7 @@ env 採集中管理、命名分流：root `.env` / `.env.example` 為單一來�
 
 MisakaAssetGene is a desktop-first multimodal asset workspace that orchestrates images, dialogue text, voice, songs, video, and downstream training through a consultant-style workflow.
 
-Single source of truth: [`.claude/context/spec.md`](.claude/context/spec.md) (spec-first).
+Single source of truth: [`docs/superpowers/specs/spec.md`](docs/superpowers/specs/spec.md) (spec-first).
 
 ### Start
 
@@ -120,7 +120,7 @@ npm run start:dev
 
 MisakaAssetGene は、画像・台詞テキスト・音声・楽曲・動画・学習フローをコンサルタント型ワークフローで統合する、デスクトップ優先のマルチモーダル素材ワークスペースです。
 
-単一の真実のソース：[`.claude/context/spec.md`](.claude/context/spec.md)（spec-first）。
+単一の真実のソース：[`docs/superpowers/specs/spec.md`](docs/superpowers/specs/spec.md)（spec-first）。
 
 ### 起動
 
