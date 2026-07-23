@@ -1,0 +1,91 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Node / Tauri
+node_modules/
+frontend/node_modules/
+.pnpm-store/
+src-tauri/target/
+target/
+*.tsbuildinfo
+
+# User data and caches
+projects/
+.cache/
+logs/
+tmp/
+temp/
+
+# Managed external dependencies
+tools/*
+!tools/.gitignore
+!tools/manifest.json
+workers/*
+!workers/.gitignore
+!workers/manifest.json
+
+# Models and generated artifacts
+.model/*
+!.model/.gitignore
+*.ckpt
+*.safetensors
+
+# Smoke test outputs (scripts/smoke/ writes here; never commit generated artifacts)
+smoke-*.png
+smoke-*.jpg
+smoke-*.wav
+smoke-*.mp3
+smoke-*.mp4
+
+# Editors and OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# === Claude Code / graphify ===
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/worktrees/
+
+# Generated knowledge graph
+graphify-out/
+
+# Agent / browser-test artifacts — never tracked
+final_runs/
+screenshots/
+**/screenshots/
+*.screenshot.png
+.playwright-mcp/
+.impeccable/
+impeccable-out/
+.remember/
+
+# Catch-all for *.local.* / *.local config/env overrides
+*.local.*
+*.local
+
+# Propagation backups
+*.bak-*
+
+# === graphify-only additions ===
+# Generated blueprint viewer output — tracked in git, but must NEVER be graphified (5MB generated artifact).
+docs/blueprint/*.html

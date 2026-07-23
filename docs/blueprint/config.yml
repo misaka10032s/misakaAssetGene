@@ -1,0 +1,22 @@
+# Blueprint viewer config (SPEC §5.2 UX 底線：頁首/<title> 顯示專案名稱)。
+title: misakaAssetGene
+systems_order:
+  - adapter
+  - rag
+  - router
+  - offline
+  - consult
+  - comfy
+  - vram
+  - train
+  - versiontree
+  - license
+  - crossproj
+  - portability
+  - style
+  - composite
+  - integration
+  - editor
+  - setup
+  - security
+  - frontend
