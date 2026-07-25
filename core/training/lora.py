@@ -61,6 +61,8 @@ def build_lora_command(
     project_models_dir: Path,
     kohya_ss_dir: Path,
     python_bin: str = "python",
+    resume_checkpoint_path: Path | None = None,
+    save_every_n_epochs: int = 1,
 ) -> LoraCommandSpec:
     """Build the kohya_ss accelerate-launch invocation for LoRA training.
 
@@ -82,6 +84,18 @@ def build_lora_command(
     python_bin
         Path to the Python interpreter inside the kohya_ss venv.  Defaults
         to ``"python"`` for testability.
+    resume_checkpoint_path
+        When provided, ``--resume <path>`` is appended to the argv so kohya_ss
+        restores optimizer / scheduler / step state from the saved-state
+        directory.  The value must be an absolute path to a ``*-state`` or
+        ``*-stateNNNNNN`` directory produced by a previous run that used
+        ``--save_state``.  Leave as ``None`` for a fresh (non-resume) submit.
+        Source: kohya-ss/sd-scripts issue #789, bmaltais/kohya_ss issue #2384.
+    save_every_n_epochs
+        Cadence for ``--save_every_n_epochs``.  Must be >= 1.  Defaults to 1
+        (save a state dir after every epoch) so that at least one resume point
+        exists if training fails.  ``--save_state`` is always paired with this
+        argument — omitting the cadence would produce no checkpoint dirs.
 
     Returns
     -------
@@ -134,10 +148,23 @@ def build_lora_command(
         "--mixed_precision=fp16",
         "--save_precision=fp16",
         "--save_model_as=safetensors",
+        # Checkpoint saving for resume support (spec §7.3).
+        # --save_state saves an Accelerate training-state dir at the same cadence
+        # as model saves.  --save_every_n_epochs sets that cadence (must be paired).
+        # Sources: kohya-ss/sd-scripts #789, bmaltais/kohya_ss #2384 / #772.
+        "--save_state",
+        f"--save_every_n_epochs={save_every_n_epochs}",
         # Logging
         "--logging_dir=logs",
         "--log_prefix=misaka_lora",
     ]
+
+    # Resume from a previously saved state directory (spec §7.3).
+    # --resume <DIR> restores optimizer/scheduler/step state.  Value is the path
+    # to the saved-state directory (NOT a model file).  Only appended when a
+    # checkpoint path is explicitly supplied — never on a fresh submit.
+    if resume_checkpoint_path is not None:
+        args += ["--resume", str(resume_checkpoint_path)]
 
     return LoraCommandSpec(args=args, cwd=kohya_ss_dir, output_path=output_path)
 

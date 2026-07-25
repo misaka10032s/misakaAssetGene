@@ -253,6 +253,8 @@ kohya_ss executor / 訓練觸發邏輯延後至 M4.c，不在本 sub-phase 內�
 
 Resume from checkpoint **尚未實作**。`TrainingJob.resume_checkpoint_path` 欄位已預留（schema 層面完成）；實際邏輯（解析 checkpoint dir → `--resume_from_checkpoint` CLI flag）留待後續 phase。Spec 參照：§7.3「可中斷、可續訓、可試聽中間 checkpoint」。
 
+**已完成（2026-07-25 更新）**：見 §17 — kohya_ss LoRA resume 邏輯已實作並移植進 main，詳見 `docs/blueprint/entries/BP-TRAIN-5.md`。
+
 ### 10.9 驗證
 
 `uv run --extra dev pytest tests/ -q` → **257 passed, 3 warnings**（含 43 個新測試在 `tests/test_executor.py`）。
@@ -730,3 +732,32 @@ conservative principle) documented inline under the decomposition bullet.
 (baseline was 423 passed, 1 skipped; +5 new dedup tests).
 
 **狀態：已完成**
+
+---
+
+## 17. 2026-07-25 — §7.3 resume-from-checkpoint 移植進 main（closes §10.8 TODO）
+
+`feat/training-resume-streaming`（未合併分支）原本有三個 commit：29b2b42（resume 實作）、1b291aa（review 修正）、0ab2812（SSE 串流端點）。main 已透過 a0ec366 自行落地更完整的 SSE 串流端點（見 `BP-TRAIN-4`），所以本次**只**移植 29b2b42 + 1b291aa（`git cherry-pick 29b2b42 1b291aa`），刻意排除 0ab2812 以避免重複路由。
+
+### 17.1 移植內容
+
+- `core/training/lora.py` `build_lora_command()` — 固定帶 `--save_state` + `--save_every_n_epochs=<N>`；`resume_checkpoint_path` 非 None 時追加 `--resume <dir>`。
+- `core/training/executor.py` `_discover_resume_checkpoint()` / `_extract_output_dir_and_name()` — job 失敗時掃描 output dir 找最新狀態資料夾，寫回 `job.resume_checkpoint_path`（數值排序，非字典序，修正於 1b291aa）。
+- `core/models/schemas.py` — `resume_checkpoint_path` 欄位註解更新。
+- `tests/test_training_resume.py`（新檔，20 個契約測試，FakeRunner + tmp_path，無 GPU）。
+- `docs/superpowers/specs/spec.md` §7.3 — 折入 resume 已完成的說明，保留 main 既有的 SSE 段落（a0ec366）不變。
+
+### 17.2 Cherry-pick 衝突處理
+
+Cherry-pick 對 code 檔案（lora.py / executor.py / schemas.py / 新測試檔）全部乾淨套用（無衝突）。spec.md 因分支上位於 `.claude/context/spec.md`、main 已搬到 `docs/superpowers/specs/spec.md`（commit d2c0f53），git 的 3-way merge 靠上下文比對自動解出，**沒有產生衝突標記**——套用結果人工核對過，確認保留了 a0ec366 新增的 SSE 段落敘述，只是把舊的「resume 待做 TODO」換成「resume 已完成」的敘述。
+
+### 17.3 驗證
+
+`py -3.11 -m pytest -q`（worktree，main 的 `.venv`）→ **500 passed, 1 skipped**（含新增的 20 個 resume 契約測試單獨跑：`20 passed`）。
+
+### 17.4 Blueprint / research-log write-back
+
+- `docs/blueprint/entries/BP-TRAIN-5.md`：狀態 待做 → 已完成，補 `done_date: 2026-07-25`、`exec_links`、`tests` 結構化紀錄、`origin` 註明移植 provenance。
+- 本節（§17）+ §10.8 附註，記錄 TODO 已結案。
+
+**狀態：已完成**（real-run 對真實 kohya_ss + GPU 仍待使用者，同 `BP-TRAIN-4`/`BP-TRAIN-6` 慣例）

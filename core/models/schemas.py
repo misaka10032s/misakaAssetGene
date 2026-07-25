@@ -741,10 +741,10 @@ class TrainingJob(BaseModel):
     progress_label: str | None = None   # human-readable progress description
     exit_code: int | None = None        # subprocess exit code on completion/failure
     stderr_tail: str | None = None      # last ~20 lines of stderr on failure
-    # TODO(spec §7.3 resume): mid-checkpoint resume is not yet implemented.
-    #   When the executor is interrupted, resume_checkpoint_path can be set
-    #   to the last saved checkpoint directory so a future run can pass
-    #   --resume_from_checkpoint to kohya_ss / GPT-SoVITS.
+    # spec §7.3 resume: set by the executor on failure when a kohya_ss state
+    # directory is found in the output_dir.  Pass to build_lora_command(
+    # resume_checkpoint_path=...) on the next submit to append --resume <dir>.
+    # GPT-SoVITS resume is still deferred / out-of-scope.
     resume_checkpoint_path: str | None = None
     created_at: datetime
     updated_at: datetime
