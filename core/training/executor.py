@@ -56,16 +56,20 @@ FakeRunner.  It has NOT been run against a real kohya_ss or GPT-SoVITS
 installation.  The user will perform real runs later.  See spec §7.3 and
 RESEARCH_LOG §10.
 
-TODO (spec §7.3 resume / mid-checkpoint trial)
-----------------------------------------------
-Resume from checkpoint is NOT yet implemented.  When a job is cancelled or
-fails, executor sets job.status = FAILED with a note and preserves
-resume_checkpoint_path = None.  A future phase will:
-  1. Parse kohya_ss --save_every_n_epochs output to find the last checkpoint dir.
-  2. Set job.resume_checkpoint_path before transitioning to FAILED.
-  3. The next submit_job call for the same entity can read resume_checkpoint_path
-     and pass --resume_from_checkpoint to kohya_ss / GPT-SoVITS.
+Resume from checkpoint (spec §7.3) — IMPLEMENTED
+-------------------------------------------------
+  1. build_lora_command() always emits --save_state + --save_every_n_epochs so
+     kohya_ss saves Accelerate state dirs at the configured cadence.
+  2. On job failure, _extract_output_dir_and_name() reads --output_dir /
+     --output_name from the argv, then _discover_resume_checkpoint() scans that
+     directory for the latest ``<output_name>-state`` or
+     ``<output_name>-stateNNNNNN`` directory and sets job.resume_checkpoint_path.
+  3. To resubmit, the caller passes the stored resume_checkpoint_path to
+     build_lora_command(resume_checkpoint_path=...) which appends
+     ``--resume <dir>`` to the new argv.
+  Sources: kohya-ss/sd-scripts #789, bmaltais/kohya_ss #2384 / #772.
   Spec ref: §7.3 "可中斷、可續訓、可試聽中間 checkpoint"
+  GPT-SoVITS voice_clone.py resume is OUT OF SCOPE (deferred).
 """
 
 from __future__ import annotations
@@ -462,12 +466,31 @@ class TrainingExecutor:
                         note="Training finished successfully.",
                     )
                 else:
+                    # Attempt to discover a resume checkpoint from the output directory
+                    # so the caller can resubmit with --resume <dir> (spec §7.3).
+                    # Extract --output_dir and --output_name from the command args.
+                    resume_path: str | None = None
+                    out_dir, out_name = _extract_output_dir_and_name(args)
+                    if out_dir is not None and out_name is not None:
+                        found = _discover_resume_checkpoint(out_dir, output_name=out_name)
+                        if found is not None:
+                            resume_path = str(found)
+                            logger.info(
+                                "Job %s: resume checkpoint discovered at %s",
+                                job_id, resume_path,
+                            )
+                        else:
+                            logger.info(
+                                "Job %s: no resume checkpoint found in %s (output_name=%r)",
+                                job_id, out_dir, out_name,
+                            )
                     jobs = _update_job(
                         jobs, job_id,
                         status=TrainingJobStatus.FAILED,
                         exit_code=result.exit_code,
                         stderr_tail=result.stderr_tail or None,
                         note=f"Training failed (exit {result.exit_code}).",
+                        resume_checkpoint_path=resume_path,
                     )
                 self._write_jobs(project_id, jobs)
         finally:
@@ -619,6 +642,89 @@ class TrainingExecutor:
         with self._lock:
             self._pending_commands[job_id] = (args, cwd)
         self.enqueue(project_id, job_id)
+
+
+# ---------------------------------------------------------------------------
+# Resume checkpoint discovery (spec §7.3)
+# ---------------------------------------------------------------------------
+
+def _discover_resume_checkpoint(output_dir: Path, *, output_name: str) -> Path | None:
+    """Scan output_dir for the latest kohya_ss saved-state directory.
+
+    kohya_ss --save_state produces directories named:
+      ``<output_name>-stateNNNNNN``  — periodic checkpoint (N = step count, zero-padded)
+      ``<output_name>-state``        — final / last state written at the end of a run
+
+    Selection rule (mirrors the authoritative sources cited in the task spec):
+      1. Prefer the exact ``<output_name>-state`` directory if it exists and IS a dir.
+      2. Otherwise pick the highest ``<output_name>-stateNNNNNN`` directory by numeric
+         suffix (lexicographic order is correct for zero-padded suffixes).
+      3. If neither exists (or output_dir doesn't exist), return None — do NOT fabricate
+         a path.  Surface that resume isn't possible by returning None.
+
+    Parameters
+    ----------
+    output_dir
+        Absolute path to the training output directory (--output_dir in the argv).
+    output_name
+        The --output_name value used in that training run.
+
+    Returns
+    -------
+    Path | None
+        Absolute path to the selected state directory, or None.
+    """
+    if not output_dir.is_dir():
+        return None
+
+    final_name = f"{output_name}-state"
+    final_dir = output_dir / final_name
+    if final_dir.is_dir():
+        return final_dir.resolve()
+
+    # Collect numbered state dirs: <output_name>-stateNNNNNN
+    prefix = f"{output_name}-state"
+    candidates: list[Path] = []
+    for entry in output_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        # Must start with prefix and have at least one additional character.
+        if not name.startswith(prefix):
+            continue
+        suffix = name[len(prefix):]
+        # Numbered dirs have a non-empty, all-digit suffix.
+        if suffix and suffix.isdigit():
+            candidates.append(entry)
+
+    if not candidates:
+        return None
+
+    # Pick the highest by numeric suffix value.  The suffix is already validated
+    # as all-digits above, so int() is safe and stays correct even if kohya ever
+    # emits variable-width (non-zero-padded) suffixes (state9 vs state10).
+    best = max(candidates, key=lambda p: int(p.name[len(prefix):]))
+    return best.resolve()
+
+
+def _extract_output_dir_and_name(args: list[str]) -> tuple[Path | None, str | None]:
+    """Extract --output_dir and --output_name values from an argv list.
+
+    Returns (output_dir, output_name), either of which may be None if the
+    corresponding flag is absent from args.
+    """
+    output_dir: Path | None = None
+    output_name: str | None = None
+    for i, arg in enumerate(args):
+        if arg.startswith("--output_dir="):
+            output_dir = Path(arg.split("=", 1)[1])
+        elif arg == "--output_dir" and i + 1 < len(args):
+            output_dir = Path(args[i + 1])
+        elif arg.startswith("--output_name="):
+            output_name = arg.split("=", 1)[1]
+        elif arg == "--output_name" and i + 1 < len(args):
+            output_name = args[i + 1]
+    return output_dir, output_name
 
 
 # ---------------------------------------------------------------------------

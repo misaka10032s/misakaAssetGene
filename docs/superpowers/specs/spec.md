@@ -1090,8 +1090,9 @@ project workspace 的 conversation history 不可一次完整渲染所有訊息�
   - **進度串流（deferred tail，已實作 SSE 推送）**：`GET /api/v1/projects/{id}/training/{job_id}/stream` — Server-Sent Events。executor 已逐步將 status 寫入 per-project job store；此端點 server 端輪詢 job store，僅在「狀態 / progress / progress_label 改變」時推一個 `event: progress`（body 同 poll 端點的 `TrainingJobPollData`），到達終態（completed / failed）推 `event: done` 後關閉。串流邏輯抽在 `TrainingService.stream_job_progress()`（可注入 sleep/clock，contract/unit 測試於 `tests/test_training_stream.py`）；前端 `EventSource` 訂閱取代原 GET 輪詢。**REAL-RUN DEFERRED**：對真實 kohya_ss / GPT-SoVITS GPU 訓練的端到端串流驗證待使用者（本環境無 GPU）。
   - `CommandRunner` protocol（可注入），`SubprocessRunner`（預設），`FakeRunner`（測試）
 - **REAL-RUN DEFERRED（wired but not live-verified）**：命令向量在測試中透過 FakeRunner 驗證，但尚未對著真實 kohya_ss 安裝或 GPU 執行過。使用者需要：(1) 安裝 kohya_ss clone、(2) 確認 `workers/manifest.json` 的 `kohya-ss.directory` 路徑、(3) 跑真實 training job。GPT-SoVITS s1_train.py/s2_train.py 實際 CLI 使用 `--config YAML`，目前使用 `--train_files` 等 placeholder flags（DEFERRED）
-- **TODO（spec §7.3 resume / 中間 checkpoint 試聽）**：resume 從 checkpoint 尚未實作。`TrainingJob.resume_checkpoint_path` 欄位預留；未來 phase 解析 kohya_ss `--save_every_n_epochs` 輸出設定此欄，next submit 可帶 `--resume_from_checkpoint`。GPT-SoVITS 同理。
-- 可中斷、可續訓（interrupt 已完成；resume 是 TODO）、可試聽中間 checkpoint（follow-up）
+- **resume from checkpoint（spec §7.3）— kohya_ss LoRA 已實作**：初次提交 argv 固定帶 `--save_state` + `--save_every_n_epochs=<N>`（kohya 以此 cadence 產生 Accelerate 訓練狀態資料夾）。job FAIL 時 executor 掃描該 job 的 `--output_dir`，挑出最新狀態資料夾（優先最終 `<output_name>-state`，否則數值最大的 `<output_name>-stateNNNNNN`），寫入 `TrainingJob.resume_checkpoint_path`；找不到則保持 None（不捏造路徑）。next submit 若帶非 None 路徑，argv 追加 `--resume <state-dir>`（值是狀態「資料夾」路徑，非模型檔；對齊 kohya-ss/sd-scripts #789、bmaltais/kohya_ss #2384、discussion #772）。合約以 FakeRunner contract 測試驗證（`tests/test_training_resume.py`）；**real-run（真實 kohya_ss + GPU）仍待使用者執行**。GPT-SoVITS resume 仍為 DEFERRED（隨其 `--config YAML` 一併待實機階段）。
+- 中間 checkpoint 試聽：follow-up。
+- 可中斷、可續訓（interrupt 已完成；kohya LoRA resume **已完成**，GPT-SoVITS resume DEFERRED）、可試聽中間 checkpoint（follow-up）
 - 訓練觸發 VRAM Scheduler 進 exclusive 模式，其他生成排隊（**已實作雙向硬鎖**）
 
 ---
