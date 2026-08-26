@@ -15,6 +15,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=8.3,<9.0",
+  "pytest-cov>=7.1,<8.0",
+  "ruff>=0.16,<1.0",
+  "mypy>=2.3,<3.0",
+  # Quality-gate rollout (G4/G5) — pinned to exact versions per cluster rebuild-pinning rule
+  # (see D:/backup/CSIA/@PM/.claude/CLAUDE.md memory "Rebuild needs pinned deps").
+  "import-linter==2.13",
+  "diff-cover==10.5.1",
 ]
 
 [tool.pytest.ini_options]
@@ -26,3 +33,73 @@ packages = ["core"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# G1 (ruff) — repo-wide select; see docs/superpowers thresholds in .claude/CLAUDE.md
+# `## Code quality gates` for the measured pre-existing baseline this gate does NOT fix.
+# `extend-exclude` is EXPLICIT (never relying on ruff's built-in default-exclude list alone —
+# a scratch/tmp dir accidentally scanned by a gate must never be able to block a commit; see
+# `## Code quality gates` in .claude/CLAUDE.md for the mapleStoryAPI vitest incident this
+# mirrors on the JS side).
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = [
+  ".venv", "venv", "__pycache__",
+  "tools", "workers", ".model", "projects",
+  "node_modules", "frontend", "dist", "src-tauri",
+  "tmp", "temp", ".cache",
+  ".pytest_cache", ".ruff_cache", ".mypy_cache",
+  ".claude/worktree",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+# E501: line-length is not enforced (matches this repo's own style, no wrap convention set).
+# RUF001/2/3: this repo's zh-TW comments/strings legitimately contain fullwidth punctuation
+# (？：，（）etc) — same exemption as learningMachine's api/pyproject.toml for the same reason.
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+# G2 (mypy) — strict mode, invoked as `mypy core` (an explicit target dir, not `.`) so it can
+# never scan .venv/tools/workers/tmp scratch space by construction; `exclude` below is
+# defense-in-depth in case the invocation ever widens to `.`. Pre-existing errors recorded in
+# quality-gates/python/mypy-baseline.json, not fixed by this gate.
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+exclude = '(^|/)(\.venv|venv|__pycache__|tools|workers|\.model|projects|node_modules|frontend|dist|src-tauri|tmp|temp|\.cache|\.pytest_cache|\.ruff_cache|\.mypy_cache|\.claude/worktree)(/|$)'
+
+# G4 (import-linter) — acyclic_siblings contract: no import cycle among any core/ sibling
+# subpackage at any depth. Chosen over a hand-authored "layers" contract because core/ is a
+# set of ~13 peer subsystems (consultant, editor, generation, integration, llm, memory,
+# models, network, project, reporting, scheduler, training + main.py/config.py) with no
+# single strict dependency order across them — forcing an artificial layer ordering here
+# would either be wrong on day one or require deep architecture archaeology outside this
+# task's scope. acyclic_siblings checks the same "no cycle" invariant the JS-family recipe
+# gets from madge's raw cycle detector, without assuming an ordering that does not exist.
+# quality-gates/check_import_cycles.py diffs the violation list against a version-controlled
+# baseline (import-cycle-baseline.json) rather than a bare pass/fail.
+[tool.importlinter]
+root_package = "core"
+
+[[tool.importlinter.contracts]]
+name = "core sibling packages are acyclic"
+type = "acyclic_siblings"
+ancestors = ["core"]
+
+# G5 (coverage) — `source = ["core"]` makes coverage.py walk the `core` package tree for
+# unexecuted files at report time, not just report on modules the test run happened to import.
+# Verified empirically (2026-08-27, reviewer-flagged vacuity fix): without this, a brand-new
+# core/**/*.py file that nothing imports is entirely ABSENT from coverage.xml (not 0% — just
+# missing), and diff-cover then reports "No lines with coverage information in this diff" and
+# exits 0/PASS for genuinely untested new code. `source` alone is not sufficient — coverage.py's
+# unexecuted-file walk is a `pkgutil`-style package walk and silently skips any directory that
+# is an implicit PEP 420 namespace package (no `__init__.py`); `core/reporting/` was exactly
+# such a directory (the only one under `core/` missing it, now added) and is why the reviewer's
+# repro happened to land there. `diff_coverage.py` ALSO carries its own independent check for
+# a changed source file with zero coverage.xml entries (belt-and-suspenders — see that file's
+# own docstring) so this gate is not solely dependent on every future `core/` subdirectory
+# staying a regular package.
+[tool.coverage.run]
+source = ["core"]

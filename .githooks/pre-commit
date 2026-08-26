@@ -1,0 +1,44 @@
+#!/bin/sh
+# L0 quality gate — runs ONLY the L0 of whichever stack(s) the commit actually touches
+# (frontend/ -> JS/TS gate:l0, core/|tests/|scripts/|pyproject.toml -> Python quality-gates/python
+# l0), derived from the staged file list. Adapted from misaka_site2.0's/mapleStoryAPI's single-
+# stack .githooks/pre-commit (verified recipe), extended to a hybrid repo.
+#
+# Enable once per clone/machine:
+#   git config core.hooksPath .githooks
+# (core.hooksPath is local, per-clone config — it does NOT travel with the repo, so a fresh
+# clone or a new machine has this hook silently absent until the command above is run again.)
+set -e
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+status=0
+
+if git diff --cached --name-only --diff-filter=ACMR -- 'frontend/*' | grep -q .; then
+  echo "[pre-commit] frontend/ changes staged - running JS/TS gate:l0 (G1 lint-diff, G2 typecheck baseline, G3 tests+assertions, G4 import cycles)..."
+  npm run gate:l0
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "[pre-commit] JS/TS gate:l0 FAILED - commit blocked. Fix the above and retry, or --no-verify to bypass (discouraged, logged as a rule violation)."
+    exit "$status"
+  fi
+  echo "[pre-commit] JS/TS gate:l0 PASSED."
+else
+  echo "[pre-commit] no frontend/ changes staged - skipping JS/TS gate:l0."
+fi
+
+if git diff --cached --name-only --diff-filter=ACMR -- 'core/*' 'tests/*' 'scripts/*' 'pyproject.toml' | grep -q .; then
+  echo "[pre-commit] core/tests/scripts/pyproject.toml changes staged - running Python quality-gates l0 (G1 ruff, G2 mypy, G3 pytest+assertions, G4 import-linter)..."
+  .venv/Scripts/python.exe quality-gates/python/run.py l0
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "[pre-commit] Python gate l0 FAILED - commit blocked. Fix the above and retry, or --no-verify to bypass (discouraged, logged as a rule violation)."
+    exit "$status"
+  fi
+  echo "[pre-commit] Python gate l0 PASSED."
+else
+  echo "[pre-commit] no core/tests/scripts/pyproject.toml changes staged - skipping Python gate l0."
+fi
+
+exit 0

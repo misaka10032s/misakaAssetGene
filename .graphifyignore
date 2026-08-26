@@ -33,6 +33,13 @@ src-tauri/target/
 target/
 *.tsbuildinfo
 
+# Quality-gate generated artifacts (vitest coverage, Stryker mutation reports/temp, Python
+# coverage XML) — mirrored from .gitignore per the graphify replace-not-inherit rule above.
+/coverage/
+/reports/
+.stryker-tmp/
+/coverage.xml
+
 # User data and caches
 projects/
 .cache/

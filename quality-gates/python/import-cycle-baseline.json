@@ -1,0 +1,4 @@
+[
+  "core.integration.workers -> core.generation.adapters.comfyui",
+  "core.network.service -> core.models.schemas"
+]
