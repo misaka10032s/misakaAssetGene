@@ -10,22 +10,37 @@ after a fresh-reviewer-found vacuity.
 Must run AFTER `pytest --cov=core --cov-report=xml` (see quality-gates/python/run.py's g5
 command) - reads coverage.xml, does not generate it.
 
---- The vacuity this file now guards against (fresh-reviewer finding, 2026-08-27) ---
+--- The vacuity this file now guards against (fresh-reviewer finding, 2026-08-27; root cause
+    CORRECTED after independent re-verification the same day) ---
 
 coverage.xml only lists a `<class filename="...">` entry for a source file if coverage.py's
-tracer actually saw it get imported/executed DURING the test run, UNLESS `[tool.coverage.run]
-source = ["core"]` is set in pyproject.toml (now is) — that setting makes coverage.py also
-walk the `core` package tree at report time and add unexecuted files as explicit 0%-covered
-entries. That walk is itself a `pkgutil`-style PACKAGE walk, so it silently skips any directory
-that is an implicit PEP 420 namespace package (no `__init__.py`) — `core/reporting/` was
-exactly such a directory (now fixed) and is why the reviewer's repro landed there specifically.
+tracer actually saw it get imported/executed DURING the test run, UNLESS coverage.py is also
+given the scope of the package to walk at report time (add unexecuted files as explicit
+0%-covered entries) — via EITHER `[tool.coverage.run] source = ["core"]` in pyproject.toml
+(now set) OR a `--cov=core` CLI flag (this repo's `run.py` g5 command already passes one).
+Re-verified directly (2026-08-27): with the pyproject.toml `source` line disabled but the CLI
+flag and `__init__.py` both intact, an unimported/untested file still showed up in
+coverage.xml at 0% and this gate still failed correctly — so on THIS repo the `source` line is
+redundant with the CLI flag already in use, not a second necessary ingredient.
 
-Either way — missing `source` config, a future namespace-package directory, or any other
+What neither scope declaration can do on its own is enter a directory with no `__init__.py` —
+that walk is itself a `pkgutil`-style PACKAGE walk, so it silently skips any directory that is
+an implicit PEP 420 namespace package — `core/reporting/` was exactly such a directory (now
+fixed) and is why the reviewer's repro landed there specifically, independent of which scope
+declaration was or wasn't present. Re-verified directly the other way too: with `source`
+restored but `__init__.py` removed again, a fresh staged unimported file was invisible to
+coverage.xml and only this file's own belt-and-braces check below caught it (native diff-cover
+alone did not, exit 0/PASS from diff-cover; exit 1/FAIL only once this file's guard ran).
+
+Either way — missing scope config, a future namespace-package directory, or any other
 reason a file never reaches coverage.py's radar — the OLD behavior for a completely-absent
 file was: diff-cover finds zero `<class>` rows to compare its diff lines against, prints "No
 lines with coverage information in this diff", and exits 0 (PASS). A brand-new, real,
 uncovered .py file therefore sailed through untested. This is fail-OPEN: "I have no data" was
-silently treated as "nothing to worry about".
+silently treated as "nothing to worry about". Do not assume a `source=`/`--cov` scope
+declaration, alone or combined, makes this vacuity impossible — a missing `__init__.py` breaks
+BOTH, which is exactly why the guard below cross-checks the diff directly against
+coverage.xml's actual contents instead of trusting any upstream discovery mechanism.
 
 `_find_unmeasured_changed_files` closes this independently of whatever coverage.py's own
 file-discovery manages: it cross-references the diff's changed lines directly against

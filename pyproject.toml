@@ -90,16 +90,26 @@ ancestors = ["core"]
 
 # G5 (coverage) — `source = ["core"]` makes coverage.py walk the `core` package tree for
 # unexecuted files at report time, not just report on modules the test run happened to import.
-# Verified empirically (2026-08-27, reviewer-flagged vacuity fix): without this, a brand-new
-# core/**/*.py file that nothing imports is entirely ABSENT from coverage.xml (not 0% — just
-# missing), and diff-cover then reports "No lines with coverage information in this diff" and
-# exits 0/PASS for genuinely untested new code. `source` alone is not sufficient — coverage.py's
-# unexecuted-file walk is a `pkgutil`-style package walk and silently skips any directory that
-# is an implicit PEP 420 namespace package (no `__init__.py`); `core/reporting/` was exactly
-# such a directory (the only one under `core/` missing it, now added) and is why the reviewer's
-# repro happened to land there. `diff_coverage.py` ALSO carries its own independent check for
-# a changed source file with zero coverage.xml entries (belt-and-suspenders — see that file's
-# own docstring) so this gate is not solely dependent on every future `core/` subdirectory
-# staying a regular package.
+# CORRECTED 2026-08-27 (fresh-reviewer finding + independent re-verification): the actual root
+# cause of the original vacuity was the missing `core/reporting/__init__.py`, NOT a missing
+# scope/source declaration. This repo already has two redundant sources of scope config —
+# this `source = ["core"]` line AND the `--cov=core` CLI flag `run.py`'s g5 command passes to
+# pytest-cov — either ONE ALONE is sufficient to make coverage.py discover an unimported file
+# at all (re-verified directly: with this `source` line disabled but `--cov=core` and
+# `__init__.py` both intact, a fresh unimported/untested `core/**/*.py` file still appeared in
+# coverage.xml at 0% and G5 still failed correctly, exit 1). What neither scope declaration can
+# do is enter a directory with no `__init__.py` — coverage.py's unexecuted-file walk is a
+# `pkgutil`-style package walk and silently skips any implicit PEP 420 namespace package;
+# `core/reporting/` was exactly such a directory (the only one under `core/` missing it, now
+# added) and is why the reviewer's repro landed there regardless of `source`/`--cov`. So: keep
+# this line as belt-and-braces (harmless, and protects any FUTURE invocation of this gate that
+# does not happen to pass `--cov=core` on the CLI) but do not rely on it, or on the CLI flag, or
+# on `__init__.py` alone, to catch the next namespace-package regression — that is what the
+# structural guard below is for. `diff_coverage.py` ALSO carries its own independent
+# discovery-vs-diff cross-check (`_find_unmeasured_changed_files`/`_measured_files_in_coverage_xml`
+# — belt-and-suspenders, see that file's own docstring): any changed `core/**/*.py` file with
+# zero entries in coverage.xml is a hard FAIL naming the file, regardless of whether `source`,
+# `--cov`, or `__init__.py` did their job — that check is what actually makes a future
+# namespace-package directory unable to reproduce this vacuity, not either scope declaration.
 [tool.coverage.run]
 source = ["core"]
