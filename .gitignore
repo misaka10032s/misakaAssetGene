@@ -26,6 +26,13 @@ src-tauri/target/
 target/
 *.tsbuildinfo
 
+# Quality-gate generated artifacts (vitest coverage, Stryker mutation reports/temp, Python
+# coverage XML) — inputs to the gates, never committed outputs.
+/coverage/
+/reports/
+.stryker-tmp/
+/coverage.xml
+
 # User data and caches
 projects/
 .cache/
