@@ -23,6 +23,29 @@ stdout into "0 violations" and printing PASS even though ruff never actually ran
 2026-08-27 by pointing ruff at a nonexistent `--config` file. `lib/tool_run.run_and_check`
 below now raises instead of silently returning an empty list whenever the returncode isn't in
 {0, 1}.
+
+Re-verified 2026-08-27 (cross-repo mypy fail-open investigation — see
+D:/backup/CSIA/@PM/state/runs/CROSS-REPO-mypy-failopen.md): ruff, unlike mypy, does NOT have a
+mypy-style silent-fallback-to-defaults hole on THIS repo. Both a syntactically broken
+`[tool.ruff` (missing `]`) and a single unrecognized key under an otherwise-valid `[tool.ruff]`
+table (`not_a_real_ruff_option`) made ruff exit 2 with EMPTY stdout — caught by the
+`ok_returncodes=(0, 1)` guard above, not a fail-open. (A sibling repo, ns-media-hub, hit exactly
+this exit-2/empty-stdout shape and it silently became "0 violations" there — the guard here is
+what prevents the same outcome, so no Part-A-style pre-flight config validation was added for
+ruff on this repo.) A moved-away `pyproject.toml` was NOT independently testable in this
+repo's worktree layout — worktrees live nested inside the repo
+(`.claude/worktree/<name>/`), so removing the LOCAL copy makes ruff's own upward directory
+search fall through to the MAIN tree's `pyproject.toml` one level up, which is a worktree-
+layout artifact, not evidence about ruff's real "config truly absent" behavior.
+
+--- Vanished-baseline fail-safe (added 2026-08-27, cross-repo mypy fail-open investigation) ---
+
+Applied here for consistency even though this repo's own G1 was not found vulnerable to the
+mypy-style hole above: a baselined violation disappearing is either a genuine improvement or a
+sign this gate silently stopped running as configured (this exact symptom is what a masked
+ruff crash looks like in ns-media-hub's sibling case). `main()` below now FAILs on any
+`resolved` violation instead of printing it as an informational note, naming exactly which
+ones vanished and pointing at `--update-baseline` for a deliberate cleanup.
 """
 from __future__ import annotations
 
@@ -75,18 +98,29 @@ def main() -> int:
 
     if resolved:
         print(
-            f"[G1] note: {len(resolved)} baseline violation(s) no longer exist - "
-            "consider re-running with --update-baseline to shrink the baseline:"
+            f"[G1] FAIL - {len(resolved)} previously-baselined ruff violation(s) no longer exist:",
+            file=sys.stderr,
         )
         for v in resolved:
-            print(f"  - {v}")
+            print(f"  - {v}", file=sys.stderr)
+        print(
+            "\nA vanished baseline violation means either a genuine improvement, or that this "
+            "gate silently stopped running as configured (a crashed ruff subprocess masked as "
+            "'0 violations', a config that stopped applying, etc). This gate does not pass "
+            "silently on that ambiguity. If the improvement is real, re-run with "
+            "--update-baseline to shrink the baseline; otherwise investigate why these "
+            "violations vanished before trusting the tree.",
+            file=sys.stderr,
+        )
 
     if new:
         print(f"[G1] FAIL - {len(new)} NEW ruff violation(s) not present in the baseline:", file=sys.stderr)
         for v in new:
             print(f"  - {v}", file=sys.stderr)
+
+    if new or resolved:
         print(
-            f"\nBaseline: {BASELINE_PATH.name} ({len(baseline)} pre-existing violation(s), unaffected).",
+            f"\nBaseline: {BASELINE_PATH.name} ({len(baseline)} pre-existing violation(s)).",
             file=sys.stderr,
         )
         return 1
