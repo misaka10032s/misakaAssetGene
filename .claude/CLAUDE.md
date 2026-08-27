@@ -190,6 +190,51 @@ npm run gate:g4:update-baseline
   not just Stryker's exit code); `diff-coverage.mjs`/G5 JS (no subprocess of its own — chained
   via `&&` after `vitest run --coverage`, so a vitest crash already short-circuits before this
   script runs).
+- **G2 (Python/mypy) fail-OPEN on a broken/missing config — fixed 2026-08-27, cross-repo
+  investigation** (`D:/backup/CSIA/@PM/state/runs/CROSS-REPO-mypy-failopen.md`). The
+  subprocess-crash guard above does NOT catch this: unlike ruff (which exits 2 on a broken
+  `pyproject.toml` and is caught by `ok_returncodes`), mypy **silently falls back to its own
+  defaults** on a broken/missing config — losing `strict`/`disallow_untyped_defs` — and still
+  exits 0 or 1 (a normal "ran" code), just with fewer findings. Reproduced on this repo
+  2026-08-27: a syntactically broken `[tool.mypy` (missing `]`) and a `pyproject.toml` moved
+  away entirely both dropped the raw finding count from 123 to 41, silently vanishing 21 of the
+  50 baselined identities, while `[G2]` still printed PASS (the vanished findings were only an
+  informational "note", never a failure). Ruff was tested the same way (broken `[tool.ruff`,
+  and a separate unrecognized-key case) and both correctly exit 2 with empty stdout, already
+  caught by the existing crash guard — the hole is mypy-specific on this repo. Fixed with two
+  parts in `check_mypy_baseline.py`:
+  1. **Pre-flight config validation** (`_validate_mypy_config`) — before trusting any mypy
+     output, confirms `pyproject.toml` exists, parses via the stdlib `tomllib`, and its
+     `[tool.mypy]` table carries `strict` + `disallow_untyped_defs`; any failure raises
+     `MypyConfigError` naming the exact parse error, not a generic "crashed" message. mypy is
+     now invoked with an explicit `--config-file pyproject.toml` (bare relative name, not an
+     absolute path) so mypy's own config-diagnostic lines on **stderr** are prefixed with that
+     exact bare string (verified: `pyproject.toml: [mypy]: Unrecognized option: ...`,
+     `pyproject.toml: Expected ']' at the end of a table declaration ...`) — an absolute
+     `--config-file` would make mypy echo the full path instead, breaking a simple
+     prefix/substring check. After the subprocess returns, stderr is scanned (non-anchored
+     `re.search`, defense in depth) for that prefix; a match raises `MypyConfigError` even when
+     mypy's own exit code was a normal 0/1 — this is what catches an unrecognized single option
+     under an otherwise-valid `[tool.mypy]` table (mypy applies the REST of a syntactically
+     valid table and only warns — finding count unchanged in that specific case, but the
+     warning itself is still the loud, named signal now).
+  2. **A vanished baseline finding is now a FAILURE, not a note** — durable half of the fix,
+     because it catches ANY future mechanism that silently disables the strict profile, not
+     just a broken TOML file. `check_ruff_baseline.py` got the identical treatment for
+     consistency (ns-media-hub's sibling investigation found a real ruff-side vacuity there via
+     the same masked-crash shape — exit 2, empty stdout, coerced to `"[]"` — this repo's own
+     ruff is not vulnerable to that specific mechanism, verified above, but the vanished-finding
+     guard is applied regardless).
+  **Legitimately shrinking a baseline now requires an explicit, deliberate step**: fix the
+  code, run the gate (it FAILs, naming exactly which baselined finding(s) vanished), confirm
+  the improvement is real, then re-run with `--update-baseline` to re-snapshot. A baseline
+  shrinking silently (gate still prints PASS) is no longer possible by design — that silence is
+  exactly what the original defect looked like. Proven end-to-end on this repo: fixing one real
+  mypy finding (`core/training/service.py` — added `[object, ...]` type args to a bare `tuple`
+  annotation) made `[G2]` FAIL naming it; `--update-baseline` then dropped it from 50 to 49 and
+  the gate went green. Same round-trip proven for ruff (one unused import removed, 180 → 179).
+  A genuinely NEW finding (a planted `x: int = "not a number"` canary) still FAILs exactly as
+  before, on both gates.
 - **Non-blocking DX note, fixed cheaply** — a bare `node quality-gates/frontend/<script>.mjs`
   run from inside `frontend/` used to crash with a cryptic internal stack trace (no
   `frontend/package.json` exists, so paths computed relative to the wrong root). Every JS/TS
