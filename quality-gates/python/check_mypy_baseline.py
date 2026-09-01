@@ -81,6 +81,33 @@ Part B — treat a vanished baseline finding as a FAILURE, not an informational 
   all of them would bury the signal), and tells the developer to re-run with
   `--update-baseline` if the improvement is real. This is the durable half of the fix: it
   catches ANY future mechanism that makes findings vanish, not just a broken/missing TOML file.
+
+--- Guard-ordering fail-open, closed 2026-08-27 (sibling-repo reviewer finding, reproduced here) ---
+
+`main()`'s `new`/`resolved` diff was already both computed and both printed before the single
+`return 1` at the bottom (confirmed by inspection AND by reproduction: fixing one real baselined
+finding while simultaneously planting one genuinely new one made the non-update run FAIL naming
+BOTH — this repo was never vulnerable to the "resolved short-circuits before new is ever
+evaluated" shape reported in the sibling repo). The REAL hole, reproduced here 2026-08-27, is one
+level down: `--update-baseline` re-snapshotted `current` (`baseline_lib.write`) UNCONDITIONALLY,
+with no diff printed at all — so a developer who saw both blocks in a plain run and, following the
+`resolved` block's own advice ("re-run with --update-baseline to shrink the baseline"), ran it
+while an unrelated NEW finding was also present, had that new finding silently baked into the
+baseline as permanent accepted debt with zero visibility (measured: baseline count stayed
+unchanged at 50 — one entry removed, a different, unrelated one added — nothing in the command's
+own output named what just got accepted).
+
+Fixed by extracting the whole reporting/decision shape into ONE shared function,
+`baseline_lib.report_and_decide()`, used identically by this gate, G1 (`check_ruff_baseline.py`)
+and G4 (`check_import_cycles.py`) — see that function's docstring in `lib/baseline.py` for the
+exact behavior, including why an earlier "write anyway, just print a warning" version of this fix
+was rejected. `main()` here is now a thin wrapper: run mypy, compute `current`/`new`/`resolved`,
+hand them to the shared function. `--update-baseline` REFUSES to write (exit 1, baseline file
+byte-for-byte unchanged) whenever both new and resolved findings are present in the same run —
+new-only (deliberately accepting a finding as debt) and resolved-only (a pure shrink) both still
+proceed normally. Proven end-to-end (reproduction/proof transcript recorded in the dispatch
+report): with both a real baselined-finding fix and a planted new finding present at once,
+`--update-baseline` now exits 1 naming both sets and does NOT touch `mypy-baseline.json` at all.
 """
 from __future__ import annotations
 
@@ -92,6 +119,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib import baseline as baseline_lib
+from lib.baseline import BaselineCorruptError
 from lib.git_diff import ensure_utf8_stdio
 from lib.tool_run import ToolCrashedError, run_and_check
 
@@ -193,46 +221,22 @@ def main() -> int:
         print(f"[G2] FAIL - mypy crashed instead of running cleanly:\n{e}", file=sys.stderr)
         return 1
     current = sorted({_identity(i) for i in items})
-
-    if update_mode:
-        baseline_lib.write(BASELINE_PATH, current)
-        print(f"[G2] baseline updated - {len(current)} error(s) recorded at {BASELINE_PATH.name}.")
-        return 0
-
-    baseline = baseline_lib.load(BASELINE_PATH)
-    new, resolved = baseline_lib.diff(current, baseline)
-
-    if resolved:
-        print(
-            f"[G2] FAIL - {len(resolved)} previously-baselined mypy error(s) no longer exist:",
-            file=sys.stderr,
-        )
-        for v in resolved:
-            print(f"  - {v}", file=sys.stderr)
-        print(
-            "\nA vanished baseline finding means either a genuine improvement, or that the "
-            "strict type-check profile silently stopped applying (broken/missing config, a "
-            "crashed subprocess masked as '0 findings', etc). This gate does not pass "
-            "silently on that ambiguity. If the improvement is real, re-run with "
-            "--update-baseline to shrink the baseline; otherwise investigate why these "
-            "errors vanished before trusting the tree.",
-            file=sys.stderr,
-        )
-
-    if new:
-        print(f"[G2] FAIL - {len(new)} NEW mypy error(s) not present in the baseline:", file=sys.stderr)
-        for v in new:
-            print(f"  - {v}", file=sys.stderr)
-
-    if new or resolved:
-        print(
-            f"\nBaseline: {BASELINE_PATH.name} ({len(baseline)} pre-existing error(s)).",
-            file=sys.stderr,
-        )
+    try:
+        baseline = baseline_lib.load(BASELINE_PATH)
+    except BaselineCorruptError as e:
+        print(f"[G2] FAIL - baseline file problem, refusing to trust this run:\n{e}", file=sys.stderr)
         return 1
-
-    print(f"[G2] PASS - {len(current)} total error(s), 0 new vs baseline ({len(baseline)} pre-existing).")
-    return 0
+    new, resolved = baseline_lib.diff(current, baseline)
+    return baseline_lib.report_and_decide(
+        gate="G2",
+        noun="mypy error(s)",
+        baseline_path=BASELINE_PATH,
+        baseline=baseline,
+        current=current,
+        new=new,
+        resolved=resolved,
+        update_mode=update_mode,
+    )
 
 
 if __name__ == "__main__":

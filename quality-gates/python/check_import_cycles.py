@@ -62,14 +62,38 @@ manifesting as "never flagged" instead of "diff-cover says nothing to check". `_
 below independently verifies every `.py` file that actually exists under `core/` on disk has a
 corresponding entry in grimp's module list; any gap fails the gate loud rather than silently
 leaving a blind spot in the cycle graph.
+
+--- Guard-ordering consistency pass, 2026-08-27 (sibling G1/G2 fix applied here too) ---
+
+This gate's `main()` previously treated a vanished baseline edge as a non-blocking "note" (never
+FAILed, never affected the exit code) — unlike G1 (`check_ruff_baseline.py`) and G2
+(`check_mypy_baseline.py`), which both FAIL on a vanished finding (2026-08-27 cross-repo
+mypy-fail-open fix) because a vanished finding can be either a genuine improvement OR a sign
+detection silently stopped covering something it used to cover. The same risk applies here: a
+misconfigured `acyclic_siblings` contract (e.g. `ancestors`/`skip_descendants` edited to exclude
+a subsystem) would make a real cycle-breaking edge vanish from `current` with no other signal —
+the existing `_find_undiscovered_files` fail-safe catches ONLY the "file invisible to grimp"
+species of masking, not a narrowed contract.
+
+Standardized onto the SAME shared decision as G1/G2: this gate's own inline baseline-diff logic
+(`new = [...]`, `resolved = [...]`) is now handed to `baseline_lib.report_and_decide()` (see that
+function's docstring in `lib/baseline.py`, including why an earlier "write anyway, just print a
+warning" version was rejected) instead of the old hand-rolled note-vs-FAIL branching — `main()`
+here now only owns the G4-specific fail-safe (`undiscovered`, checked and returned FIRST,
+unchanged) and building `new`/`resolved` from `_find_cycle_breakers()`'s output; the
+report/decide/`--update-baseline` shape itself is byte-identical to G1/G2's, so all three gates
+can never drift apart on it again. `--update-baseline` REFUSES to write (exit 1, baseline file
+byte-for-byte unchanged) whenever both new and resolved edges are present in the same run —
+new-only and resolved-only both still proceed normally.
 """
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lib import baseline as baseline_lib
+from lib.baseline import BaselineCorruptError
 from lib.git_diff import ensure_utf8_stdio
 
 ensure_utf8_stdio()
@@ -156,12 +180,6 @@ def _find_cycle_breakers() -> tuple[list[str], list[str]]:
     return sorted(edges), undiscovered
 
 
-def _load_baseline() -> list[str]:
-    if not BASELINE_PATH.exists():
-        return []
-    return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
-
-
 def main() -> int:
     update_mode = "--update-baseline" in sys.argv[1:]
     current, undiscovered = _find_cycle_breakers()
@@ -184,29 +202,22 @@ def main() -> int:
         )
         return 1
 
-    if update_mode:
-        BASELINE_PATH.write_text(json.dumps(current, indent=2) + "\n", encoding="utf-8")
-        print(f"[G4] baseline updated - {len(current)} cycle-breaking edge(s) recorded at {BASELINE_PATH.name}.")
-        return 0
-
-    baseline = _load_baseline()
-    new = [v for v in current if v not in baseline]
-    resolved = [v for v in baseline if v not in current]
-
-    if resolved:
-        print(f"[G4] note: {len(resolved)} baseline edge(s) no longer exist - consider re-running with --update-baseline to shrink the baseline:")
-        for v in resolved:
-            print(f"  - {v}")
-
-    if new:
-        print(f"[G4] FAIL - {len(new)} NEW import cycle edge(s) not present in the baseline:", file=sys.stderr)
-        for v in new:
-            print(f"  - {v}", file=sys.stderr)
-        print(f"\nBaseline: {BASELINE_PATH.name} ({len(baseline)} pre-existing edge(s), unaffected).", file=sys.stderr)
+    try:
+        baseline = baseline_lib.load(BASELINE_PATH)
+    except BaselineCorruptError as e:
+        print(f"[G4] FAIL - baseline file problem, refusing to trust this run:\n{e}", file=sys.stderr)
         return 1
-
-    print(f"[G4] PASS - {len(current)} total cycle-breaking edge(s), 0 new vs baseline ({len(baseline)} pre-existing).")
-    return 0
+    new, resolved = baseline_lib.diff(current, baseline)
+    return baseline_lib.report_and_decide(
+        gate="G4",
+        noun="cycle-breaking edge(s)",
+        baseline_path=BASELINE_PATH,
+        baseline=baseline,
+        current=current,
+        new=new,
+        resolved=resolved,
+        update_mode=update_mode,
+    )
 
 
 if __name__ == "__main__":
