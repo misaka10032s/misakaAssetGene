@@ -235,6 +235,38 @@ npm run gate:g4:update-baseline
   the gate went green. Same round-trip proven for ruff (one unused import removed, 180 → 179).
   A genuinely NEW finding (a planted `x: int = "not a number"` canary) still FAILs exactly as
   before, on both gates.
+- **`--update-baseline` REFUSES on a mixed new+resolved run — fixed 2026-08-27, sibling-repo
+  reviewer finding.** A DIFFERENT fail-open from the one above: the reporting/exit-code path in
+  G1/G2/G4's `main()` was never vulnerable to a sibling repo's exact defect (evaluating a
+  vanished-baseline branch and returning before ever checking for NEW findings) — a plain run on
+  this repo already reports both `new` and `resolved` before exiting 1 (verified by inspection
+  and by reproduction). The REAL hole was one level down: `--update-baseline` re-snapshotted
+  `current` **unconditionally**, with no diff shown at all. Reproduced here 2026-08-27: fixing
+  one real baselined finding (e.g. `core/generation/adapters/ace_step.py`'s bare `dict` return
+  type) while simultaneously planting one genuinely new, unrelated finding made a plain run FAIL
+  naming both — but then running `--update-baseline`, exactly as the FAIL message's own advice
+  suggested, silently absorbed the new finding into the baseline too (baseline count unchanged:
+  −1 resolved, +1 new — no output named what had just been accepted). Fixed by extracting one
+  shared decision, `quality-gates/python/lib/baseline.py`'s `report_and_decide()`, used
+  identically by G1 (`check_ruff_baseline.py`), G2 (`check_mypy_baseline.py`) and G4
+  (`check_import_cycles.py`) so the three gates cannot drift apart on this again:
+  `--update-baseline` now **REFUSES to write** (exit 1, every new AND resolved finding printed
+  by name, the baseline file left byte-for-byte unchanged — hash-verified) whenever both sets are
+  non-empty in the same run. A new-only run (deliberately accepting a finding as debt) and a
+  resolved-only run (a pure shrink) both still proceed normally, now naming every finding they
+  accept or remove instead of writing silently. An earlier version of this fix let
+  `--update-baseline` write anyway while merely printing a warning — rejected, because an
+  announcement that still exits 0 does not stop a scripted or muscle-memory
+  `--update-baseline && git commit` chain from absorbing the new finding regardless. Proven for
+  all three gates: (a) new-only → FAIL naming it, `--update-baseline` proceeds and names what it
+  accepts; (b) resolved-only → FAIL naming it with the `--update-baseline` remedy instruction,
+  `--update-baseline` proceeds and names what it removes; (c) both at once → FAIL naming BOTH,
+  and `--update-baseline` REFUSES (exit 1, baseline file hash unchanged — confirmed via
+  `git hash-object`); (d) neither → PASS. Also fixed alongside: a corrupt (non-JSON, or
+  JSON-but-not-an-array) baseline file used to raise an uncaught `json.JSONDecodeError`
+  traceback — it already failed loud (non-zero exit), so never a fail-open, but
+  `baseline_lib.BaselineCorruptError` now gives every gate a clean, named `[G_] FAIL` message
+  instead of a raw traceback.
 - **Non-blocking DX note, fixed cheaply** — a bare `node quality-gates/frontend/<script>.mjs`
   run from inside `frontend/` used to crash with a cryptic internal stack trace (no
   `frontend/package.json` exists, so paths computed relative to the wrong root). Every JS/TS
