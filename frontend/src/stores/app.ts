@@ -1,171 +1,89 @@
-import { computed, ref, watch } from "vue";
-import { defineStore } from "pinia";
+import { defineStore, storeToRefs } from "pinia";
 
 import { apiClient } from "@/api/client";
 import { appEnv } from "@/config/env";
-import type {
-  AssetRecord,
-  BatchExecuteData,
-  ClarifyPayload,
-  ClarifyResult,
-  ConsultantPlanRecord,
-  ConsultantSession,
-  ConsultantSessionAdvancePayload,
-  ConsultantSessionStartPayload,
-  ConversationEntry,
-  CreateProjectPayload,
-  GenerationJob,
-  IntegrationSnapshot,
-  LocalLlmStatus,
-  ModelDownloadResult,
-  ProjectLicenseReport,
-  ProjectSummary,
-  ProjectVersionGraph,
-  SkippedJobInfo,
-  SynopsisOptimizeResult,
-  TrainingEntitiesSnapshot,
-  TrainingJob,
-  RefinePayload,
-  VersionDiffResponse,
-  VersionTreeResponse,
-  WorkerSmokeResult,
-} from "@/types/api";
-import { MessageKey, NetworkMode, NetworkState, NetworkStatus, NetworkTone } from "@/types/enums";
-import type { EntityCrudContext } from "@/stores/entities/createEntityCrud";
-import { createCharacterActions } from "@/stores/entities/character";
-import { createDatasetPackActions } from "@/stores/entities/datasetPack";
-import { createTrainingRecipeActions } from "@/stores/entities/trainingRecipe";
-import { createLoraPresetActions } from "@/stores/entities/loraPreset";
-import { createI2vRecipeActions } from "@/stores/entities/i2vRecipe";
+import { NetworkStatus } from "@/types/enums";
+
+import { useAppCoreStore } from "@/stores/app/core";
+import { useDraftsStore } from "@/stores/app/drafts";
+import { useConversationsStore } from "@/stores/app/conversations";
+import { useWorkspaceStore } from "@/stores/app/workspace";
+import { useLicenseStore } from "@/stores/app/license";
+import { useVersionsStore } from "@/stores/app/versions";
+import { useTrainingJobsStore } from "@/stores/app/trainingJobs";
+import { useConsultantStore } from "@/stores/app/consultant";
+import { useIntegrationStore } from "@/stores/app/integration";
+import { useLocalLlmStore } from "@/stores/app/localLlm";
+import { useTrainingEntitiesStore } from "@/stores/app/trainingEntities";
 
 const isDevDiagnostics = appEnv.diagnosticsEnabled;
-const PROJECT_DRAFT_STORAGE_KEY = "misaka.projectDraft";
-const STUDIO_DRAFT_STORAGE_KEY = "misaka.studioDrafts";
-const CONVERSATION_PAGE_SIZE = 30;
-const INTEGRATION_REFRESH_INTERVAL_MS = 3_000;
-const LOCAL_LLM_REFRESH_INTERVAL_MS = 3_000;
 
-function readStoredJson<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") {
-    return fallback;
-  }
-  const rawValue = window.localStorage.getItem(key);
-  if (!rawValue) {
-    return fallback;
-  }
-  try {
-    return JSON.parse(rawValue) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeStoredJson(key: string, value: unknown): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  window.localStorage.setItem(key, JSON.stringify(value));
-}
-
+/**
+ * `useAppStore` — a thin facade over the eleven domain stores under
+ * `stores/app/*` (see each module's own doc comment for its scope and
+ * dependencies). Kept so none of the 10+ existing call sites across
+ * `pages/`/`components/` need to change: every state ref and action this
+ * store used to own directly is still reachable at the same property name
+ * on `useAppStore()`.
+ *
+ * State properties are re-exposed via `storeToRefs()` (not plain property
+ * access) so they stay LIVE bindings to the underlying domain store — a
+ * plain `domainStore.someState` read here would capture only a one-time
+ * snapshot of the value, silently breaking reactivity for every template
+ * that reads it through this facade.
+ *
+ * The only logic that lives HERE rather than in a single domain store is
+ * cross-store orchestration that would otherwise force a domain store to
+ * import something that imports it back (a cycle): `bootstrap` fans out
+ * across core/integration/localLlm/conversations/workspace, and
+ * `selectProject` composes `core`'s narrow select with a conversation +
+ * workspace reload. Every domain store still only ever depends "downward"
+ * (toward `core`/`drafts`), so this facade sitting on top introduces no
+ * cycle either — see the G4 gate.
+ */
 export const useAppStore = defineStore("app", () => {
-  const projects = ref<ProjectSummary[]>([]);
-  const currentProjectId = ref<string | null>(null);
-  const projectTypes = ref<string[]>([]);
-  const networkStatus = ref<NetworkStatus>(NetworkStatus.BOOTSTRAPPING);
-  const consultantResponse = ref<ClarifyResult | null>(null);
-  const consultantSessions = ref<Record<string, ConsultantSession>>({});
-  const synopsisSuggestion = ref<SynopsisOptimizeResult | null>(null);
-  const integration = ref<IntegrationSnapshot>({
-    tools: [],
-    workers: [],
-    providers: [],
-    registry_categories: [],
-    model_search_paths: [],
-    network: {
-      mode: NetworkMode.AUTO,
-      state: NetworkState.OFFLINE,
-      reachable: false,
-      local_available: false,
-      summary: "",
-      recent_transitions: [],
-    },
-  });
-  const localLlmStatus = ref<LocalLlmStatus | null>(null);
-  const lastDownloadedModel = ref<ModelDownloadResult | null>(null);
-  const projectSchema = ref<string>("");
-  const lastMessageKey = ref<MessageKey | null>(null);
-  const errorMessageKey = ref<MessageKey | null>(null);
-  const projectDraft = ref<CreateProjectPayload>(
-    readStoredJson<CreateProjectPayload>(PROJECT_DRAFT_STORAGE_KEY, {
-      name: "",
-      type: "RPG",
-      synopsis: "",
-    }),
-  );
-  const studioDrafts = ref<Record<string, ClarifyPayload>>(
-    readStoredJson<Record<string, ClarifyPayload>>(STUDIO_DRAFT_STORAGE_KEY, {}),
-  );
-  const projectConversations = ref<Record<string, ConversationEntry[]>>({});
-  const projectConversationTotals = ref<Record<string, number>>({});
-  const projectConversationOffsets = ref<Record<string, number>>({});
-  const projectPlans = ref<Record<string, ConsultantPlanRecord[]>>({});
-  const projectJobs = ref<Record<string, GenerationJob[]>>({});
-  const projectAssets = ref<Record<string, AssetRecord[]>>({});
-  const projectLicenseReports = ref<Record<string, ProjectLicenseReport>>({});
-  const projectVersionGraphs = ref<Record<string, ProjectVersionGraph>>({});
-  /** Per-project version-tree DAG data (spec §8.2 / M5.6). Key = project_id. */
-  const projectVersionTrees = ref<Record<string, VersionTreeResponse>>({});
-  const projectTrainingJobs = ref<Record<string, TrainingJob[]>>({});
-  const assetDrawerOpen = ref<boolean>(false);
-  const workerSmokeResults = ref<Record<string, WorkerSmokeResult>>({});
-  /** Per-project training entity snapshots (spec §7.1.1 / M4.c). */
-  const projectTrainingEntities = ref<Record<string, TrainingEntitiesSnapshot>>({});
-  /** Last batch-execute summary — exposed so the UI can show honest skip counts (spec §5.14). */
-  const lastBatchResult = ref<{ executedCount: number; skipped: SkippedJobInfo[] } | null>(null);
-  let integrationRequest: Promise<IntegrationSnapshot> | null = null;
-  let integrationLoadedAt = 0;
-  let localLlmRequest: Promise<LocalLlmStatus> | null = null;
-  let localLlmLoadedAt = 0;
+  const coreStore = useAppCoreStore();
+  const draftsStore = useDraftsStore();
+  const conversationsStore = useConversationsStore();
+  const workspaceStore = useWorkspaceStore();
+  const licenseStore = useLicenseStore();
+  const versionsStore = useVersionsStore();
+  const trainingJobsStore = useTrainingJobsStore();
+  const consultantStore = useConsultantStore();
+  const integrationStore = useIntegrationStore();
+  const localLlmStore = useLocalLlmStore();
+  const trainingEntitiesStore = useTrainingEntitiesStore();
 
-  watch(
-    projectDraft,
-    (value) => {
-      writeStoredJson(PROJECT_DRAFT_STORAGE_KEY, value);
-    },
-    { deep: true },
-  );
-  watch(
-    studioDrafts,
-    (value) => {
-      writeStoredJson(STUDIO_DRAFT_STORAGE_KEY, value);
-    },
-    { deep: true },
-  );
+  const {
+    projects,
+    currentProjectId,
+    projectTypes,
+    networkStatus,
+    projectSchema,
+    lastMessageKey,
+    errorMessageKey,
+    currentProject,
+    currentProjectName,
+    networkTone,
+  } = storeToRefs(coreStore);
+  const { projectDraft, studioDrafts } = storeToRefs(draftsStore);
+  const { projectConversations, projectConversationTotals, projectConversationOffsets } =
+    storeToRefs(conversationsStore);
+  const { projectPlans, projectJobs, projectAssets, assetDrawerOpen, lastBatchResult } = storeToRefs(workspaceStore);
+  const { projectLicenseReports } = storeToRefs(licenseStore);
+  const { projectVersionGraphs, projectVersionTrees } = storeToRefs(versionsStore);
+  const { projectTrainingJobs } = storeToRefs(trainingJobsStore);
+  const { consultantResponse, consultantSessions, synopsisSuggestion } = storeToRefs(consultantStore);
+  const { integration, workerSmokeResults, networkState, networkStateTone } = storeToRefs(integrationStore);
+  const { localLlmStatus, lastDownloadedModel } = storeToRefs(localLlmStore);
+  const { projectTrainingEntities } = storeToRefs(trainingEntitiesStore);
 
-  const currentProject = computed<ProjectSummary | null>(
-    () => projects.value.find((project) => project.id === currentProjectId.value) ?? null,
-  );
-  const currentProjectName = computed<string | null>(() => currentProject.value?.name ?? null);
-  const networkTone = computed<NetworkTone>(() => {
-    if (networkStatus.value === NetworkStatus.CORE_ONLINE) {
-      return NetworkTone.SUCCESS;
-    }
-    if (networkStatus.value === NetworkStatus.CORE_OFFLINE) {
-      return NetworkTone.WARNING;
-    }
-    return NetworkTone.NEUTRAL;
-  });
-  // Effective offline three-state (spec §11.5), distinct from core API health.
-  const networkState = computed<NetworkState>(() => integration.value.network.state);
-  const networkStateTone = computed<NetworkTone>(() => {
-    if (networkState.value === NetworkState.ONLINE) {
-      return NetworkTone.SUCCESS;
-    }
-    if (networkState.value === NetworkState.DEGRADED) {
-      return NetworkTone.WARNING;
-    }
-    return NetworkTone.NEUTRAL;
-  });
+  async function loadProjectDetail(projectId: string): Promise<void> {
+    await Promise.all([
+      conversationsStore.loadProjectConversation(projectId, true),
+      workspaceStore.loadProjectWorkspace(projectId),
+    ]);
+  }
 
   async function bootstrap(): Promise<void> {
     try {
@@ -177,33 +95,34 @@ export const useAppStore = defineStore("app", () => {
         apiClient.projectTypes(),
         apiClient.listProjects(),
         apiClient.projectSchema(),
-        fetchIntegrationSnapshot(),
-        fetchLocalLlmStatus(),
+        integrationStore.fetchIntegrationSnapshot(),
+        localLlmStore.fetchLocalLlmStatus(),
       ]);
 
-      networkStatus.value = health.status === "Core online" ? NetworkStatus.CORE_ONLINE : NetworkStatus.CORE_OFFLINE;
-      projectTypes.value = projectTypeData.project_types;
-      projects.value = projectsData.projects;
-      currentProjectId.value = projectsData.current_project_id;
-      projectSchema.value = JSON.stringify(schemaData.schema, null, 2);
-      integration.value = integrationData;
-      localLlmStatus.value = localLlmData;
-      errorMessageKey.value = null;
+      coreStore.networkStatus =
+        health.status === "Core online" ? NetworkStatus.CORE_ONLINE : NetworkStatus.CORE_OFFLINE;
+      coreStore.projectTypes = projectTypeData.project_types;
+      coreStore.projects = projectsData.projects;
+      coreStore.currentProjectId = projectsData.current_project_id;
+      coreStore.projectSchema = JSON.stringify(schemaData.schema, null, 2);
+      integrationStore.integration = integrationData;
+      localLlmStore.localLlmStatus = localLlmData;
+      coreStore.errorMessageKey = null;
 
-      if (currentProjectId.value) {
-        await Promise.all([loadProjectConversation(currentProjectId.value, true), loadProjectWorkspace(currentProjectId.value)]);
+      if (coreStore.currentProjectId) {
+        await loadProjectDetail(coreStore.currentProjectId);
       }
 
       if (isDevDiagnostics) {
         console.info("[misaka.app] bootstrap complete", {
-          networkStatus: networkStatus.value,
-          projectCount: projects.value.length,
+          networkStatus: coreStore.networkStatus,
+          projectCount: coreStore.projects.length,
         });
       }
     } catch (error) {
-      networkStatus.value = NetworkStatus.CORE_OFFLINE;
+      coreStore.networkStatus = NetworkStatus.CORE_OFFLINE;
       if (error instanceof apiClient.ApiClientError) {
-        errorMessageKey.value = error.messageKey;
+        coreStore.errorMessageKey = error.messageKey;
       }
       if (isDevDiagnostics) {
         console.warn("[misaka.app] bootstrap failed", error);
@@ -211,596 +130,8 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
-  async function loadProjects(): Promise<void> {
-    const response = await apiClient.listProjects();
-    projects.value = response.projects;
-    currentProjectId.value = response.current_project_id;
-    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-    errorMessageKey.value = null;
-    if (isDevDiagnostics) {
-      console.info("[misaka.app] projects loaded", { count: projects.value.length });
-    }
-  }
-
-  async function createProject(payload: CreateProjectPayload): Promise<ProjectSummary> {
-    try {
-      const response = await apiClient.createProject(payload);
-      projectDraft.value = {
-        name: "",
-        type: payload.type,
-        synopsis: "",
-      };
-      synopsisSuggestion.value = null;
-      lastMessageKey.value = MessageKey.SUCCESS_ADD0;
-      await loadProjects();
-      return response.project;
-    } catch (error) {
-      if (error instanceof apiClient.ApiClientError) {
-        errorMessageKey.value = error.messageKey;
-      }
-      throw error;
-    }
-  }
-
   async function selectProject(projectId: string): Promise<void> {
-    await apiClient.selectProject({ project_id: projectId });
-    currentProjectId.value = projectId;
-    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-    errorMessageKey.value = null;
-    await Promise.all([loadProjects(), loadProjectConversation(projectId, true), loadProjectWorkspace(projectId)]);
-  }
-
-  async function loadProject(projectId: string): Promise<ProjectSummary> {
-    const response = await apiClient.getProject(projectId);
-    const existingIndex = projects.value.findIndex((project) => project.id === response.project.id);
-    if (existingIndex >= 0) {
-      projects.value[existingIndex] = response.project;
-    } else {
-      projects.value = [...projects.value, response.project];
-    }
-    return response.project;
-  }
-
-  async function loadProjectConversation(projectId: string, reset = false): Promise<void> {
-    const currentOffset = reset ? 0 : projectConversationOffsets.value[projectId] ?? 0;
-    const response = await apiClient.projectConversationPage(projectId, currentOffset, CONVERSATION_PAGE_SIZE);
-    const existingEntries = reset ? [] : projectConversations.value[projectId] ?? [];
-    const mergedEntries = [...response.entries, ...existingEntries];
-    const dedupedEntries = mergedEntries.filter(
-      (entry, index, collection) => collection.findIndex((candidate) => candidate.id === entry.id) === index,
-    );
-    projectConversations.value = {
-      ...projectConversations.value,
-      [projectId]: dedupedEntries,
-    };
-    projectConversationTotals.value = {
-      ...projectConversationTotals.value,
-      [projectId]: response.total,
-    };
-    projectConversationOffsets.value = {
-      ...projectConversationOffsets.value,
-      [projectId]: currentOffset + response.entries.length,
-    };
-    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-    errorMessageKey.value = null;
-  }
-
-  async function loadProjectWorkspace(projectId: string): Promise<void> {
-    const response = await apiClient.projectWorkspace(projectId);
-    applyWorkspaceSnapshot(projectId, response);
-    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-    errorMessageKey.value = null;
-  }
-
-  function applyWorkspaceSnapshot(
-    projectId: string,
-    response: { jobs: GenerationJob[]; assets: AssetRecord[]; plans: ConsultantPlanRecord[] },
-  ): void {
-    projectJobs.value = {
-      ...projectJobs.value,
-      [projectId]: response.jobs,
-    };
-    projectAssets.value = {
-      ...projectAssets.value,
-      [projectId]: response.assets,
-    };
-    projectPlans.value = {
-      ...projectPlans.value,
-      [projectId]: response.plans,
-    };
-  }
-
-  async function executeProjectJob(projectId: string, jobId: string): Promise<void> {
-    try {
-      const response = await apiClient.executeProjectJob(projectId, jobId);
-      applyWorkspaceSnapshot(projectId, response);
-      lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-      errorMessageKey.value = null;
-    } catch (error) {
-      if (error instanceof apiClient.ApiClientError) {
-        errorMessageKey.value = error.messageKey;
-      }
-      throw error;
-    }
-  }
-
-  async function executeReadyProjectJobs(projectId: string, jobIds: string[] = []): Promise<BatchExecuteData> {
-    try {
-      const result = await apiClient.executeReadyProjectJobs(projectId, jobIds);
-      // The new envelope wraps workspace inside result.workspace (spec §5.14).
-      applyWorkspaceSnapshot(projectId, result.workspace);
-      lastBatchResult.value = { executedCount: result.executed_count, skipped: result.skipped };
-      lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-      errorMessageKey.value = null;
-      return result;
-    } catch (error) {
-      if (error instanceof apiClient.ApiClientError) {
-        errorMessageKey.value = error.messageKey;
-      }
-      throw error;
-    }
-  }
-
-  async function updateProjectJob(
-    projectId: string,
-    jobId: string,
-    payload: { worker: string | null; recipe: string | null; source_asset_id: string | null; mask_asset_id: string | null },
-  ): Promise<void> {
-    try {
-      const response = await apiClient.updateProjectJob(projectId, jobId, payload);
-      applyWorkspaceSnapshot(projectId, response);
-      lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-      errorMessageKey.value = null;
-    } catch (error) {
-      if (error instanceof apiClient.ApiClientError) {
-        errorMessageKey.value = error.messageKey;
-      }
-      throw error;
-    }
-  }
-
-  async function importProjectAsset(
-    projectId: string,
-    payload: { file: File; modality: string; asset_type: string; title: string; description?: string },
-  ): Promise<void> {
-    try {
-      const response = await apiClient.importProjectAsset(projectId, payload);
-      applyWorkspaceSnapshot(projectId, response);
-      lastMessageKey.value = MessageKey.SUCCESS_ADD0;
-      errorMessageKey.value = null;
-    } catch (error) {
-      if (error instanceof apiClient.ApiClientError) {
-        errorMessageKey.value = error.messageKey;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Creates a refine job for an asset, wiring the §6.2 strategy decision tree
-   * and the inpaint mask upload flow (spec §5.11 / M5.9).
-   */
-  async function refineAsset(projectId: string, assetId: string, payload: RefinePayload): Promise<void> {
-    try {
-      const response = await apiClient.refineAsset(projectId, assetId, payload);
-      applyWorkspaceSnapshot(projectId, response);
-      lastMessageKey.value = MessageKey.SUCCESS_ADD0;
-      errorMessageKey.value = null;
-    } catch (error) {
-      if (error instanceof apiClient.ApiClientError) {
-        errorMessageKey.value = error.messageKey;
-      }
-      throw error;
-    }
-  }
-
-  async function loadProjectLicenseReport(projectId: string): Promise<ProjectLicenseReport> {
-    const response = await apiClient.projectLicenseReport(projectId);
-    projectLicenseReports.value = {
-      ...projectLicenseReports.value,
-      [projectId]: response,
-    };
-    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-    errorMessageKey.value = null;
-    return response;
-  }
-
-  async function loadProjectVersionGraph(projectId: string): Promise<ProjectVersionGraph> {
-    const response = await apiClient.projectVersionGraph(projectId);
-    projectVersionGraphs.value = {
-      ...projectVersionGraphs.value,
-      [projectId]: response,
-    };
-    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-    errorMessageKey.value = null;
-    return response;
-  }
-
-  /** Loads the version-tree DAG (spec §8.2 / M5.6). Stores result in projectVersionTrees. */
-  async function loadProjectVersionTree(projectId: string): Promise<VersionTreeResponse> {
-    const response = await apiClient.projectVersionTree(projectId);
-    projectVersionTrees.value = {
-      ...projectVersionTrees.value,
-      [projectId]: response,
-    };
-    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-    errorMessageKey.value = null;
-    return response;
-  }
-
-  /** Fetches the structured diff between two asset versions (spec §8.2 / M5.6). */
-  async function loadProjectVersionDiff(
-    projectId: string,
-    fromId: string,
-    toId: string,
-  ): Promise<VersionDiffResponse> {
-    const response = await apiClient.projectVersionDiff(projectId, fromId, toId);
-    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-    errorMessageKey.value = null;
-    return response;
-  }
-
-  async function loadProjectTrainingWorkspace(projectId: string): Promise<TrainingJob[]> {
-    const response = await apiClient.projectTrainingWorkspace(projectId);
-    projectTrainingJobs.value = {
-      ...projectTrainingJobs.value,
-      [projectId]: response.jobs,
-    };
-    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-    errorMessageKey.value = null;
-    return response.jobs;
-  }
-
-  /**
-   * Merges a single (freshly streamed) training job into the project's job
-   * list, replacing the matching entry by id or appending if new.
-   */
-  function mergeTrainingJob(projectId: string, job: TrainingJob): void {
-    const existing = projectTrainingJobs.value[projectId] ?? [];
-    const index = existing.findIndex((candidate) => candidate.id === job.id);
-    const next = index >= 0 ? existing.map((c, i) => (i === index ? job : c)) : [...existing, job];
-    projectTrainingJobs.value = {
-      ...projectTrainingJobs.value,
-      [projectId]: next,
-    };
-  }
-
-  /**
-   * Subscribes to a training job's live progress via Server-Sent Events
-   * (spec §7.3 deferred tail), replacing GET polling. Each `progress` / `done`
-   * frame merges the updated job into projectTrainingJobs so the UI reacts
-   * reactively. Returns an unsubscribe function that closes the EventSource;
-   * `onDone` (if provided) fires once when the stream reaches a terminal frame.
-   *
-   * REAL-RUN: end-to-end progress against a live GPU training run is DEFERRED
-   * to the user — the push path is contract-tested on the backend.
-   */
-  function subscribeTrainingJob(
-    projectId: string,
-    jobId: string,
-    onDone?: (job: TrainingJob) => void,
-  ): () => void {
-    if (typeof window === "undefined" || typeof EventSource === "undefined") {
-      // SSE unavailable (SSR / non-browser): no-op unsubscribe.
-      return () => undefined;
-    }
-    const source = new EventSource(apiClient.trainingJobStreamUrl(projectId, jobId));
-
-    const handleFrame = (event: MessageEvent<string>, terminal: boolean): void => {
-      try {
-        const payload = JSON.parse(event.data) as { job: TrainingJob };
-        mergeTrainingJob(projectId, payload.job);
-        if (terminal) {
-          source.close();
-          onDone?.(payload.job);
-        }
-      } catch (error) {
-        if (isDevDiagnostics) {
-          console.warn("[misaka.app] training stream frame parse failed", error);
-        }
-      }
-    };
-
-    source.addEventListener("progress", (event) => handleFrame(event as MessageEvent<string>, false));
-    source.addEventListener("done", (event) => handleFrame(event as MessageEvent<string>, true));
-    source.onerror = () => {
-      // The browser auto-reconnects on transient errors; once the server has
-      // closed after a terminal frame the connection ends. Close defensively
-      // so we don't leak a reconnecting socket after completion.
-      if (source.readyState === EventSource.CLOSED) {
-        source.close();
-      }
-    };
-
-    return () => source.close();
-  }
-
-  async function createProjectTrainingJob(
-    projectId: string,
-    payload: { title: string; modality: string; dataset_path: string; worker?: string | null },
-  ): Promise<TrainingJob[]> {
-    const response = await apiClient.createProjectTrainingJob(projectId, payload);
-    projectTrainingJobs.value = {
-      ...projectTrainingJobs.value,
-      [projectId]: response.jobs,
-    };
-    lastMessageKey.value = MessageKey.SUCCESS_ADD0;
-    errorMessageKey.value = null;
-    return response.jobs;
-  }
-
-  async function requestProjectClarification(projectId: string, payload: ClarifyPayload): Promise<void> {
-    try {
-      consultantResponse.value = await apiClient.clarifyProject(projectId, payload);
-      studioDrafts.value = {
-        ...studioDrafts.value,
-        [projectId]: {
-          prompt: "",
-        },
-      };
-      await Promise.all([loadProjectConversation(projectId, true), loadProjectWorkspace(projectId)]);
-      lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-      errorMessageKey.value = null;
-      if (isDevDiagnostics) {
-        console.info("[misaka.app] consultant response received", {
-          modality: payload.modality,
-          projectId,
-        });
-      }
-    } catch (error) {
-      if (error instanceof apiClient.ApiClientError) {
-        errorMessageKey.value = error.messageKey;
-      }
-      throw error;
-    }
-  }
-
-  async function resumeConsultantSession(projectId: string): Promise<ConsultantSession | null> {
-    const response = await apiClient.resumeConsultantSession(projectId);
-    if (response.session) {
-      consultantSessions.value = {
-        ...consultantSessions.value,
-        [projectId]: response.session,
-      };
-    }
-    return response.session;
-  }
-
-  async function startConsultantSession(
-    projectId: string,
-    payload: ConsultantSessionStartPayload,
-  ): Promise<ConsultantSession> {
-    const response = await apiClient.startConsultantSession(projectId, payload);
-    consultantSessions.value = {
-      ...consultantSessions.value,
-      [projectId]: response.session,
-    };
-    consultantResponse.value = response.result;
-    await Promise.all([loadProjectConversation(projectId, true), loadProjectWorkspace(projectId)]);
-    lastMessageKey.value = MessageKey.SUCCESS_ADD0;
-    errorMessageKey.value = null;
-    return response.session;
-  }
-
-  async function advanceConsultantSession(
-    projectId: string,
-    payload: ConsultantSessionAdvancePayload,
-  ): Promise<ConsultantSession> {
-    const response = await apiClient.advanceConsultantSession(projectId, payload);
-    consultantSessions.value = {
-      ...consultantSessions.value,
-      [projectId]: response.session,
-    };
-    consultantResponse.value = response.result;
-    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-    errorMessageKey.value = null;
-    return response.session;
-  }
-
-  async function optimizeSynopsis(projectName: string, projectType: string, synopsis: string): Promise<void> {
-    try {
-      synopsisSuggestion.value = await apiClient.optimizeSynopsis({
-        project_name: projectName,
-        project_type: projectType,
-        synopsis,
-      });
-      lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-      errorMessageKey.value = null;
-    } catch (error) {
-      if (error instanceof apiClient.ApiClientError) {
-        errorMessageKey.value = error.messageKey;
-      }
-      throw error;
-    }
-  }
-
-  function closeSynopsisSuggestion(): void {
-    synopsisSuggestion.value = null;
-  }
-
-  async function fetchIntegrationSnapshot(force = false): Promise<IntegrationSnapshot> {
-    const now = Date.now();
-    if (!force && integrationRequest) {
-      return integrationRequest;
-    }
-    if (!force && integrationLoadedAt > 0 && now - integrationLoadedAt < INTEGRATION_REFRESH_INTERVAL_MS) {
-      return integration.value;
-    }
-    integrationRequest = apiClient.integration()
-      .then((response) => {
-        integration.value = response;
-        integrationLoadedAt = Date.now();
-        return response;
-      })
-      .finally(() => {
-        integrationRequest = null;
-      });
-    return integrationRequest;
-  }
-
-  async function loadIntegrationSnapshot(force = false): Promise<void> {
-    await fetchIntegrationSnapshot(force);
-    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-    errorMessageKey.value = null;
-    if (isDevDiagnostics) {
-      console.info("[misaka.app] integration snapshot loaded", {
-        tools: integration.value.tools.length,
-        workers: integration.value.workers.length,
-        providers: integration.value.providers.length,
-      });
-    }
-  }
-
-  async function installWorker(workerName: string): Promise<void> {
-    await apiClient.installWorker(workerName);
-    lastMessageKey.value = MessageKey.SUCCESS_ADD0;
-    errorMessageKey.value = null;
-    await loadIntegrationSnapshot(true);
-  }
-
-  async function startWorker(workerName: string): Promise<void> {
-    await apiClient.startWorker(workerName);
-    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-    errorMessageKey.value = null;
-    await loadIntegrationSnapshot(true);
-  }
-
-  async function stopWorker(workerName: string): Promise<void> {
-    await apiClient.stopWorker(workerName);
-    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-    errorMessageKey.value = null;
-    await loadIntegrationSnapshot(true);
-  }
-
-  async function smokeWorker(workerName: string): Promise<void> {
-    const response = await apiClient.smokeWorker(workerName);
-    workerSmokeResults.value = {
-      ...workerSmokeResults.value,
-      [workerName]: response,
-    };
-    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-    errorMessageKey.value = null;
-    await loadIntegrationSnapshot(true);
-  }
-
-  async function fetchLocalLlmStatus(force = false): Promise<LocalLlmStatus> {
-    const now = Date.now();
-    if (!force && localLlmRequest) {
-      return localLlmRequest;
-    }
-    if (!force && localLlmStatus.value && localLlmLoadedAt > 0 && now - localLlmLoadedAt < LOCAL_LLM_REFRESH_INTERVAL_MS) {
-      return localLlmStatus.value;
-    }
-    localLlmRequest = apiClient.localLlmStatus()
-      .then((response) => {
-        localLlmStatus.value = response;
-        localLlmLoadedAt = Date.now();
-        return response;
-      })
-      .finally(() => {
-        localLlmRequest = null;
-      });
-    return localLlmRequest;
-  }
-
-  async function loadLocalLlmStatus(force = false): Promise<void> {
-    await fetchLocalLlmStatus(force);
-    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-    errorMessageKey.value = null;
-  }
-
-  async function startLocalLlm(): Promise<void> {
-    localLlmStatus.value = await apiClient.startLocalLlm();
-    localLlmLoadedAt = Date.now();
-    lastMessageKey.value = MessageKey.SUCCESS_SWITCH0;
-    errorMessageKey.value = null;
-    await loadIntegrationSnapshot(true);
-  }
-
-  async function downloadLocalModel(url: string): Promise<void> {
-    lastDownloadedModel.value = await apiClient.downloadLocalModel({ url });
-    lastMessageKey.value = MessageKey.SUCCESS_ADD0;
-    errorMessageKey.value = null;
-    await loadIntegrationSnapshot(true);
-  }
-
-  // ---------------------------------------------------------------------------
-  // §7.1.1 training entity actions (M4.c)
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Loads (or reloads) all five training entities for a project in parallel.
-   */
-  async function loadProjectTrainingEntities(projectId: string): Promise<TrainingEntitiesSnapshot> {
-    const snapshot = await apiClient.trainingEntities(projectId);
-    projectTrainingEntities.value = {
-      ...projectTrainingEntities.value,
-      [projectId]: snapshot,
-    };
-    lastMessageKey.value = MessageKey.SUCCESS_FETCH0;
-    errorMessageKey.value = null;
-    return snapshot;
-  }
-
-  // Per-entity CRUD is delegated to dedicated composables under
-  // stores/entities/* (spec §7.1.1). They share one context so each mutation
-  // refreshes the project snapshot and sets the success message key exactly as
-  // the previous inline implementation did — the store's public action names
-  // and signatures below are unchanged.
-  const entityCrudContext: EntityCrudContext = {
-    refresh: loadProjectTrainingEntities,
-    setMessageKey: (key) => {
-      lastMessageKey.value = key;
-    },
-  };
-  const characterActions = createCharacterActions(entityCrudContext);
-  const datasetPackActions = createDatasetPackActions(entityCrudContext);
-  const trainingRecipeActions = createTrainingRecipeActions(entityCrudContext);
-  const loraPresetActions = createLoraPresetActions(entityCrudContext);
-  const i2vRecipeActions = createI2vRecipeActions(entityCrudContext);
-
-  const createCharacter = characterActions.create;
-  const updateCharacter = characterActions.update;
-  const deleteCharacter = characterActions.remove;
-  const createDatasetPack = datasetPackActions.create;
-  const updateDatasetPack = datasetPackActions.update;
-  const deleteDatasetPack = datasetPackActions.remove;
-  const createTrainingRecipe = trainingRecipeActions.create;
-  const updateTrainingRecipe = trainingRecipeActions.update;
-  const deleteTrainingRecipe = trainingRecipeActions.remove;
-  const createLoraPreset = loraPresetActions.create;
-  const updateLoraPreset = loraPresetActions.update;
-  const deleteLoraPreset = loraPresetActions.remove;
-  const createI2vRecipe = i2vRecipeActions.create;
-  const updateI2vRecipe = i2vRecipeActions.update;
-  const deleteI2vRecipe = i2vRecipeActions.remove;
-
-  function updateProjectDraft(payload: CreateProjectPayload): void {
-    projectDraft.value = { ...payload };
-  }
-
-  function getStudioDraft(projectId: string | null): ClarifyPayload {
-    if (!projectId) {
-      return {
-        prompt: "",
-      };
-    }
-    return (
-      studioDrafts.value[projectId] ?? {
-        prompt: "",
-      }
-    );
-  }
-
-  function updateStudioDraft(projectId: string, payload: ClarifyPayload): void {
-    studioDrafts.value = {
-      ...studioDrafts.value,
-      [projectId]: { ...payload },
-    };
-  }
-
-  function setAssetDrawerOpen(nextValue: boolean): void {
-    assetDrawerOpen.value = nextValue;
+    await coreStore.selectProject(projectId, loadProjectDetail);
   }
 
   return {
@@ -839,57 +170,57 @@ export const useAppStore = defineStore("app", () => {
     workerSmokeResults,
     lastBatchResult,
     bootstrap,
-    closeSynopsisSuggestion,
-    createProject,
-    createProjectTrainingJob,
-    downloadLocalModel,
-    executeProjectJob,
-    executeReadyProjectJobs,
-    getStudioDraft,
-    importProjectAsset,
-    refineAsset,
-    installWorker,
-    loadIntegrationSnapshot,
-    loadLocalLlmStatus,
-    loadProject,
-    loadProjectConversation,
-    loadProjectLicenseReport,
-    loadProjectTrainingWorkspace,
-    subscribeTrainingJob,
-    loadProjectVersionGraph,
-    loadProjectVersionTree,
-    loadProjectVersionDiff,
-    loadProjectWorkspace,
-    loadProjects,
-    advanceConsultantSession,
-    optimizeSynopsis,
-    requestProjectClarification,
-    resumeConsultantSession,
+    closeSynopsisSuggestion: consultantStore.closeSynopsisSuggestion,
+    createProject: coreStore.createProject,
+    createProjectTrainingJob: trainingJobsStore.createProjectTrainingJob,
+    downloadLocalModel: localLlmStore.downloadLocalModel,
+    executeProjectJob: workspaceStore.executeProjectJob,
+    executeReadyProjectJobs: workspaceStore.executeReadyProjectJobs,
+    getStudioDraft: draftsStore.getStudioDraft,
+    importProjectAsset: workspaceStore.importProjectAsset,
+    refineAsset: workspaceStore.refineAsset,
+    installWorker: integrationStore.installWorker,
+    loadIntegrationSnapshot: integrationStore.loadIntegrationSnapshot,
+    loadLocalLlmStatus: localLlmStore.loadLocalLlmStatus,
+    loadProject: coreStore.loadProject,
+    loadProjectConversation: conversationsStore.loadProjectConversation,
+    loadProjectLicenseReport: licenseStore.loadProjectLicenseReport,
+    loadProjectTrainingWorkspace: trainingJobsStore.loadProjectTrainingWorkspace,
+    subscribeTrainingJob: trainingJobsStore.subscribeTrainingJob,
+    loadProjectVersionGraph: versionsStore.loadProjectVersionGraph,
+    loadProjectVersionTree: versionsStore.loadProjectVersionTree,
+    loadProjectVersionDiff: versionsStore.loadProjectVersionDiff,
+    loadProjectWorkspace: workspaceStore.loadProjectWorkspace,
+    loadProjects: coreStore.loadProjects,
+    advanceConsultantSession: consultantStore.advanceConsultantSession,
+    optimizeSynopsis: consultantStore.optimizeSynopsis,
+    requestProjectClarification: consultantStore.requestProjectClarification,
+    resumeConsultantSession: consultantStore.resumeConsultantSession,
     selectProject,
-    startConsultantSession,
-    setAssetDrawerOpen,
-    smokeWorker,
-    startLocalLlm,
-    startWorker,
-    stopWorker,
-    updateProjectJob,
-    updateProjectDraft,
-    updateStudioDraft,
-    loadProjectTrainingEntities,
-    createCharacter,
-    updateCharacter,
-    deleteCharacter,
-    createDatasetPack,
-    updateDatasetPack,
-    deleteDatasetPack,
-    createTrainingRecipe,
-    updateTrainingRecipe,
-    deleteTrainingRecipe,
-    createLoraPreset,
-    updateLoraPreset,
-    deleteLoraPreset,
-    createI2vRecipe,
-    updateI2vRecipe,
-    deleteI2vRecipe,
+    startConsultantSession: consultantStore.startConsultantSession,
+    setAssetDrawerOpen: workspaceStore.setAssetDrawerOpen,
+    smokeWorker: integrationStore.smokeWorker,
+    startLocalLlm: localLlmStore.startLocalLlm,
+    startWorker: integrationStore.startWorker,
+    stopWorker: integrationStore.stopWorker,
+    updateProjectJob: workspaceStore.updateProjectJob,
+    updateProjectDraft: draftsStore.updateProjectDraft,
+    updateStudioDraft: draftsStore.updateStudioDraft,
+    loadProjectTrainingEntities: trainingEntitiesStore.loadProjectTrainingEntities,
+    createCharacter: trainingEntitiesStore.createCharacter,
+    updateCharacter: trainingEntitiesStore.updateCharacter,
+    deleteCharacter: trainingEntitiesStore.deleteCharacter,
+    createDatasetPack: trainingEntitiesStore.createDatasetPack,
+    updateDatasetPack: trainingEntitiesStore.updateDatasetPack,
+    deleteDatasetPack: trainingEntitiesStore.deleteDatasetPack,
+    createTrainingRecipe: trainingEntitiesStore.createTrainingRecipe,
+    updateTrainingRecipe: trainingEntitiesStore.updateTrainingRecipe,
+    deleteTrainingRecipe: trainingEntitiesStore.deleteTrainingRecipe,
+    createLoraPreset: trainingEntitiesStore.createLoraPreset,
+    updateLoraPreset: trainingEntitiesStore.updateLoraPreset,
+    deleteLoraPreset: trainingEntitiesStore.deleteLoraPreset,
+    createI2vRecipe: trainingEntitiesStore.createI2vRecipe,
+    updateI2vRecipe: trainingEntitiesStore.updateI2vRecipe,
+    deleteI2vRecipe: trainingEntitiesStore.deleteI2vRecipe,
   };
 });
