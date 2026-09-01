@@ -81,6 +81,21 @@ describe("useIntegrationStore().fetchIntegrationSnapshot — dedup + cache", () 
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
+  it("re-fetches at exactly the refresh-interval boundary (elapsed === INTEGRATION_REFRESH_INTERVAL_MS)", async () => {
+    // The cache-window check is `now - loadedAt < INTERVAL` (strict-less-than):
+    // at elapsed === INTERVAL the window has just closed, so the correct
+    // behaviour is a fresh fetch, not a cache hit. Pins the `<` vs `<=`
+    // boundary that a Stryker equality mutant on integration.ts:59 flips.
+    const store = useIntegrationStore();
+    const spy = vi.spyOn(apiClient, "integration").mockResolvedValue(makeSnapshot());
+
+    await store.fetchIntegrationSnapshot();
+    await vi.advanceTimersByTimeAsync(3_000); // exactly the 3s window
+    await store.fetchIntegrationSnapshot();
+
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
   it("force=true bypasses both the in-flight dedup and the cache window", async () => {
     const store = useIntegrationStore();
     const spy = vi.spyOn(apiClient, "integration").mockResolvedValue(makeSnapshot());
