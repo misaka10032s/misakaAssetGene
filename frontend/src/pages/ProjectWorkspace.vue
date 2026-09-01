@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, watch } from "vue";
+import { computed, nextTick, onUnmounted, reactive, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
 
@@ -9,8 +9,13 @@ import ExportConfirmDialog from "@/components/ExportConfirmDialog.vue";
 import InpaintMaskEditor from "@/components/InpaintMaskEditor.vue";
 import LicenseReportView from "@/components/LicenseReportView.vue";
 import TrainingEntities from "@/components/TrainingEntities.vue";
-import type { AssetRecord, ConsultantAnalysis, ConversationEntry, GenerationJob } from "@/types/api";
+import type { AssetRecord, ConsultantAnalysis, ConversationEntry, GenerationJob, TrainingJob } from "@/types/api";
 import { Modality, PageKey } from "@/types/enums";
+
+// Training job statuses for which a live SSE subscription is worth holding
+// open (spec §7.3 deferred tail). Terminal statuses (completed/failed) and
+// pre-execution statuses (planned/blocked) never emit further progress.
+const LIVE_TRAINING_STATUSES = new Set<string>(["queued", "running"]);
 
 const route = useRoute();
 const { t } = useI18n();
@@ -126,9 +131,68 @@ function scrollConversationToBottom(): void {
   scrollTop.value = conversationViewport.value.scrollTop;
 }
 
+// ---------------------------------------------------------------------------
+// Live training progress via SSE (spec §7.3 deferred tail). Keeps exactly one
+// EventSource open per active (queued/running) training job for the current
+// project: subscribes newly-active jobs, unsubscribes jobs that left that set
+// (including via subscribeTrainingJob's own onDone callback on the terminal
+// frame), and tears everything down on a project switch or unmount so no
+// EventSource is ever leaked.
+// ---------------------------------------------------------------------------
+
+const trainingSubscriptions = ref<Record<string, () => void>>({});
+
+function unsubscribeTrainingJob(jobId: string): void {
+  const unsubscribe = trainingSubscriptions.value[jobId];
+  if (!unsubscribe) {
+    return;
+  }
+  unsubscribe();
+  const next = { ...trainingSubscriptions.value };
+  delete next[jobId];
+  trainingSubscriptions.value = next;
+}
+
+function unsubscribeAllTrainingJobs(): void {
+  for (const jobId of Object.keys(trainingSubscriptions.value)) {
+    unsubscribeTrainingJob(jobId);
+  }
+}
+
+function syncTrainingSubscriptions(jobs: TrainingJob[]): void {
+  const activeIds = new Set(jobs.filter((job) => LIVE_TRAINING_STATUSES.has(job.status)).map((job) => job.id));
+
+  for (const jobId of Object.keys(trainingSubscriptions.value)) {
+    if (!activeIds.has(jobId)) {
+      unsubscribeTrainingJob(jobId);
+    }
+  }
+
+  if (!projectId.value) {
+    return;
+  }
+  for (const jobId of activeIds) {
+    if (trainingSubscriptions.value[jobId]) {
+      continue;
+    }
+    trainingSubscriptions.value = {
+      ...trainingSubscriptions.value,
+      [jobId]: appStore.subscribeTrainingJob(projectId.value, jobId, () => unsubscribeTrainingJob(jobId)),
+    };
+  }
+}
+
+watch(projectTrainingJobs, syncTrainingSubscriptions);
+
+onUnmounted(unsubscribeAllTrainingJobs);
+
 watch(
   projectId,
   async (nextProjectId) => {
+    // Switching projects: close any subscriptions bound to the previous
+    // project before loading the next one's workspace (avoids a stray
+    // EventSource streaming into state nobody is looking at anymore).
+    unsubscribeAllTrainingJobs();
     if (!nextProjectId) {
       return;
     }
@@ -844,7 +908,23 @@ async function onInpaintSubmit(payload: { maskBlob: Blob; prompt: string }): Pro
                 </div>
                 <p class="mt-2 text-sm text-app-text">{{ job.worker }} · {{ job.modality }}</p>
                 <p class="mt-1 break-all text-sm text-app-muted">{{ job.dataset_path }}</p>
+                <!-- Live progress (spec §7.3): pushed via subscribeTrainingJob's SSE stream
+                     while status is queued/running; frozen at its last value once the
+                     terminal frame closes the stream. -->
+                <p
+                  v-if="job.progress_label || job.status === 'running' || job.status === 'queued'"
+                  class="mt-2 text-sm text-app-text"
+                  data-testid="training-job-progress"
+                >
+                  {{ $t("chat.progress") }}: {{ job.progress }}% · {{ job.progress_label }}
+                </p>
                 <p v-if="job.note" class="mt-2 text-sm text-app-warning">{{ job.note }}</p>
+                <p
+                  v-if="job.status === 'failed' && job.stderr_tail"
+                  class="mt-2 break-all text-xs text-app-warning"
+                >
+                  {{ $t("chat.lastError") }}: {{ job.stderr_tail }}
+                </p>
               </li>
             </ul>
           </section>
