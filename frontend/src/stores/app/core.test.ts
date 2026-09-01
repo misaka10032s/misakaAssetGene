@@ -1,14 +1,16 @@
 /**
  * Unit tests for useAppCoreStore() — the projects list, currentProjectId ->
- * currentProject derivation, network-status/tone derivation, and the shared
- * message-key status pair every other split store also writes to.
+ * currentProject derivation, network-status/tone derivation, the shared
+ * message-key status pair every other split store also writes to, and the
+ * `synopsisSuggestion` ref (see core.ts's doc comment for why it lives here
+ * instead of in `consultant`).
  *
  * Written against the pre-split stores/app.ts behaviour (merge-base copy).
- * NOTE: `createProject` there also reset the synopsis suggestion
- * (`synopsisSuggestion.value = null`), which `core.ts`'s `createProject` no
- * longer does — a suspected behaviour regression, reported separately
- * rather than encoded here as an expectation (see the bottom of the
- * `createProject` describe block and the dispatch report).
+ * `createProject` there also reset the synopsis suggestion
+ * (`synopsisSuggestion.value = null`) — a behaviour regression was found
+ * where `core.ts`'s `createProject` no longer did this after the split;
+ * fixed by relocating `synopsisSuggestion` ownership to this store (see the
+ * `createProject` describe block below for the regression test).
  *
  * apiClient is mocked at the network boundary only; the stores under test
  * are never mocked.
@@ -18,6 +20,7 @@ import { createPinia, setActivePinia } from "pinia";
 
 import { apiClient } from "@/api/client";
 import { useAppCoreStore } from "@/stores/app/core";
+import { useConsultantStore } from "@/stores/app/consultant";
 import { useDraftsStore } from "@/stores/app/drafts";
 import type { ProjectSummary } from "@/types/api";
 import { MessageKey, NetworkStatus, NetworkTone } from "@/types/enums";
@@ -129,16 +132,44 @@ describe("useAppCoreStore().createProject", () => {
     expect(draftsStore.projectDraft).toEqual({ name: "kept", type: "RPG", synopsis: "kept" });
   });
 
-  // NOTE: a test asserting that createProject also clears
-  // useConsultantStore().synopsisSuggestion (as the pre-split app.ts's
-  // createProject did via `synopsisSuggestion.value = null`) was written,
-  // run, and observed to FAIL against core.ts's createProject, which no
-  // longer resets it. Per this task's rules that is a suspected behaviour
-  // regression to report, not a test to force green or adjust — see the
-  // dispatch report for the reproduction. Deliberately not committed here
-  // pending an authoritative decision on whether core.ts should restore the
-  // reset or the behaviour change is accepted (which would then need a
-  // decision recorded elsewhere, not silently encoded into this test).
+  it("clears a stale synopsis suggestion from the previous project on success (regression: pre-split app.ts did this via synopsisSuggestion.value = null)", async () => {
+    const store = useAppCoreStore();
+    // synopsisSuggestion is owned by core but produced/displayed via
+    // useConsultantStore() — assert through BOTH handles to prove the
+    // relocation didn't just move the symptom (core.test.ts) while leaving
+    // the consumer (useConsultantStore()) still seeing the stale value.
+    const consultantStore = useConsultantStore();
+    consultantStore.synopsisSuggestion = {
+      optimized_synopsis: "stale suggestion from the previous project",
+      strategy: "rewrite",
+      provider: "ollama",
+    };
+    const created = makeProject({ id: "new-1", name: "New Project", type: "VN" });
+    vi.spyOn(apiClient, "createProject").mockResolvedValue({ project: created });
+    vi.spyOn(apiClient, "listProjects").mockResolvedValue({ projects: [created], current_project_id: "new-1" });
+
+    await store.createProject({ name: "New Project", type: "VN", synopsis: "..." });
+
+    expect(store.synopsisSuggestion).toBeNull();
+    expect(consultantStore.synopsisSuggestion).toBeNull();
+  });
+
+  it("on failure, leaves an existing synopsis suggestion untouched", async () => {
+    const store = useAppCoreStore();
+    const consultantStore = useConsultantStore();
+    consultantStore.synopsisSuggestion = {
+      optimized_synopsis: "kept suggestion",
+      strategy: "rewrite",
+      provider: "ollama",
+    };
+    vi.spyOn(apiClient, "createProject").mockRejectedValue(new apiClient.ApiClientError(MessageKey.FAIL_500));
+
+    await expect(store.createProject({ name: "x", type: "RPG", synopsis: "" })).rejects.toBeInstanceOf(
+      apiClient.ApiClientError,
+    );
+
+    expect(consultantStore.synopsisSuggestion?.optimized_synopsis).toBe("kept suggestion");
+  });
 });
 
 describe("useAppCoreStore().selectProject", () => {

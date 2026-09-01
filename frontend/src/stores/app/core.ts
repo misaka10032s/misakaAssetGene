@@ -3,7 +3,7 @@ import { defineStore } from "pinia";
 
 import { apiClient } from "@/api/client";
 import { appEnv } from "@/config/env";
-import type { CreateProjectPayload, ProjectSummary } from "@/types/api";
+import type { CreateProjectPayload, ProjectSummary, SynopsisOptimizeResult } from "@/types/api";
 import { MessageKey, NetworkStatus, NetworkTone } from "@/types/enums";
 
 import { useDraftsStore } from "@/stores/app/drafts";
@@ -23,6 +23,18 @@ const isDevDiagnostics = appEnv.diagnosticsEnabled;
  * The one exception is `drafts`: `createProject` resets the project draft on
  * success, so this store depends on `drafts` (one-directional; `drafts` does
  * not depend back on `core`).
+ *
+ * `synopsisSuggestion` also lives HERE rather than in `consultant` (where the
+ * suggestion is actually produced/displayed) for the same reason
+ * `lastMessageKey`/`errorMessageKey` do: `createProject` must clear a stale
+ * suggestion from the PREVIOUS project on every success (pre-split
+ * `stores/app.ts` did this inline), and `consultant` already depends on
+ * `core` — the reverse import would cycle. Owning the ref here means the
+ * reset is unconditional on every call to `createProject`, including a
+ * direct `useAppCoreStore().createProject(...)` call that bypasses the
+ * `useAppStore()` facade, not just the facade's own call site.
+ * `consultant.ts` re-exposes this exact ref (via `storeToRefs(coreStore)`)
+ * under the same public name so its own consumers see no change.
  */
 export const useAppCoreStore = defineStore("app/core", () => {
   const projects = ref<ProjectSummary[]>([]);
@@ -32,6 +44,7 @@ export const useAppCoreStore = defineStore("app/core", () => {
   const projectSchema = ref<string>("");
   const lastMessageKey = ref<MessageKey | null>(null);
   const errorMessageKey = ref<MessageKey | null>(null);
+  const synopsisSuggestion = ref<SynopsisOptimizeResult | null>(null);
 
   const currentProject = computed<ProjectSummary | null>(
     () => projects.value.find((project) => project.id === currentProjectId.value) ?? null,
@@ -67,6 +80,7 @@ export const useAppCoreStore = defineStore("app/core", () => {
         type: payload.type,
         synopsis: "",
       };
+      synopsisSuggestion.value = null;
       lastMessageKey.value = MessageKey.SUCCESS_ADD0;
       await loadProjects();
       return response.project;
@@ -108,6 +122,7 @@ export const useAppCoreStore = defineStore("app/core", () => {
     projectSchema,
     lastMessageKey,
     errorMessageKey,
+    synopsisSuggestion,
     currentProject,
     currentProjectName,
     networkTone,

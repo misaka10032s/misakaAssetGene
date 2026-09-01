@@ -1,5 +1,5 @@
 import { ref } from "vue";
-import { defineStore } from "pinia";
+import { defineStore, storeToRefs } from "pinia";
 
 import { apiClient } from "@/api/client";
 import { appEnv } from "@/config/env";
@@ -9,7 +9,6 @@ import type {
   ConsultantSession,
   ConsultantSessionAdvancePayload,
   ConsultantSessionStartPayload,
-  SynopsisOptimizeResult,
 } from "@/types/api";
 import { MessageKey } from "@/types/enums";
 
@@ -22,7 +21,10 @@ const isDevDiagnostics = appEnv.diagnosticsEnabled;
 
 /**
  * Consultant sessions and the synopsis-optimize suggestion flow. Depends on
- * `core` (message-key status), `conversations` + `workspace` (a successful
+ * `core` (message-key status AND the `synopsisSuggestion` ref itself — owned
+ * by `core` so `createProject` can unconditionally clear a stale suggestion
+ * from the previous project without `core` importing this store back; see
+ * `core.ts`'s doc comment), `conversations` + `workspace` (a successful
  * clarify/session-start reloads both, exactly as the previous inline
  * implementation did), and `drafts` (clears the studio draft on a successful
  * clarify). None of those four depend back on this store.
@@ -32,10 +34,10 @@ export const useConsultantStore = defineStore("app/consultant", () => {
   const conversationsStore = useConversationsStore();
   const workspaceStore = useWorkspaceStore();
   const draftsStore = useDraftsStore();
+  const { synopsisSuggestion } = storeToRefs(coreStore);
 
   const consultantResponse = ref<ClarifyResult | null>(null);
   const consultantSessions = ref<Record<string, ConsultantSession>>({});
-  const synopsisSuggestion = ref<SynopsisOptimizeResult | null>(null);
 
   async function requestProjectClarification(projectId: string, payload: ClarifyPayload): Promise<void> {
     try {
