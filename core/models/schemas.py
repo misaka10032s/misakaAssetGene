@@ -725,6 +725,13 @@ class TrainingJobCreateRequest(BaseModel):
     modality: Modality
     dataset_path: str = Field(min_length=1)
     worker: str | None = None
+    # spec §7.3 resume: caller-supplied path to a previously discovered
+    # kohya_ss saved-state dir (see TrainingJob.resume_checkpoint_path below).
+    # TrainingService.submit_job validates this is confined under the
+    # project's own <project_dir>/models output directory before it is ever
+    # stored on the job or spliced into a subprocess argv (security — this
+    # value comes from a client).
+    resume_checkpoint_path: str | None = None
 
 
 class TrainingJob(BaseModel):

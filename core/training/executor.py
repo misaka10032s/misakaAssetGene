@@ -590,12 +590,19 @@ class TrainingExecutor:
             kohya_dir = _Path(job.dataset_path).parent / "kohya_ss" if job.dataset_path else _Path("workers/kohya-ss")
             # In production the worker path comes from the workers manifest; the
             # asset_store_resolver path is sufficient for contract tests.
+            # Resume-from-checkpoint (spec §7.3): if the job carries a
+            # resume_checkpoint_path (set either by a previous failure's
+            # _discover_resume_checkpoint() below, or supplied by the caller
+            # on submit and validated in TrainingService.submit_job), pass it
+            # through so build_lora_command appends --resume <dir>.
+            resume_path = _Path(job.resume_checkpoint_path) if job.resume_checkpoint_path else None
             spec = build_lora_command(
                 character_sheet=sheet,
                 dataset_pack=matching_pack,
                 recipe=recipe,
                 project_models_dir=project_models_dir,
                 kohya_ss_dir=kohya_dir,
+                resume_checkpoint_path=resume_path,
             )
             return (spec.args, spec.cwd)
 

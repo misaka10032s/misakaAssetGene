@@ -456,6 +456,14 @@ export interface TrainingJob {
   dataset_path: string;
   status: string;
   note: string | null;
+  // Executor fields (spec §7.3 / M4.d) — populated by TrainingExecutor and
+  // pushed live via the SSE stream (subscribeTrainingJob in stores/app.ts).
+  // Mirrors core/models/schemas.py TrainingJob.
+  progress: number;
+  progress_label: string | null;
+  exit_code: number | null;
+  stderr_tail: string | null;
+  resume_checkpoint_path: string | null;
   created_at: string;
   updated_at: string;
 }

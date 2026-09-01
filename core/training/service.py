@@ -16,6 +16,15 @@ from core.training.executor import TrainingExecutor
 _TERMINAL_STATUSES = frozenset({TrainingJobStatus.COMPLETED, TrainingJobStatus.FAILED})
 
 
+class TrainingValidationError(ValueError):
+    """Raised when a training job submission fails validation.
+
+    Currently covers only the spec §7.3 resume-checkpoint-path containment
+    check in ``submit_job`` — mirrors ``ProjectValidationError``
+    (core/project/manager.py), a ValueError subclass main.py maps to HTTP 400.
+    """
+
+
 class TrainingService:
     def __init__(
         self,
@@ -39,6 +48,9 @@ class TrainingService:
 
     def submit_job(self, project_id: str, payload: TrainingJobCreateRequest) -> TrainingWorkspaceData:
         _, project_dir = self.project_manager.get_project(project_id)
+        resume_checkpoint_path = self._validate_resume_checkpoint_path(
+            project_dir, payload.resume_checkpoint_path
+        )
         jobs = self._read_jobs(project_dir)
         now = datetime.now(timezone.utc)
         modality = payload.modality
@@ -52,6 +64,7 @@ class TrainingService:
             dataset_path=payload.dataset_path.strip(),
             status=TrainingJobStatus.PLANNED,
             note="Job created; will be enqueued for execution.",
+            resume_checkpoint_path=resume_checkpoint_path,
             created_at=now,
             updated_at=now,
         )
@@ -143,6 +156,51 @@ class TrainingService:
             if clock() >= deadline:
                 return
             sleep(poll_interval_sec)
+
+    # ------------------------------------------------------------------
+    # Validation helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _validate_resume_checkpoint_path(project_dir: Path, raw_path: str | None) -> str | None:
+        """Confine a client-supplied resume checkpoint path under the project's
+        own training output directory before it is ever stored on a job or
+        spliced into a subprocess argv (spec §7.3 resume; security — this
+        value comes from a client, same lesson as
+        ``core.project.manager.validate_project_id``).
+
+        ``<project_dir>/models`` is the exact directory ``_discover_resume_checkpoint``
+        (core/training/executor.py) scans and that kohya_ss's ``--output_dir``
+        points at, so it is the correct containment root — not the whole
+        project directory (narrower is safer) and not an arbitrary path.
+
+        Uses the same resolve()-then-relative_to() pattern already used for
+        cross-project asset ref containment (core/project/export.py) —
+        ``Path.resolve()`` follows symlinks and normalizes ``..`` segments, so
+        a symlink planted inside ``models/`` pointing outside the project
+        cannot be used to escape containment.
+
+        Raises ``TrainingValidationError`` if the path does not resolve to an
+        existing directory under ``<project_dir>/models``. Returns ``None``
+        unchanged (no resume requested).
+        """
+        if raw_path is None or not raw_path.strip():
+            return None
+        models_dir = (project_dir / "models").resolve()
+        candidate = Path(raw_path)
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(models_dir)
+        except (OSError, ValueError) as error:
+            raise TrainingValidationError(
+                f"resume_checkpoint_path must resolve to a directory under "
+                f"{models_dir}: {raw_path!r}"
+            ) from error
+        if not resolved.is_dir():
+            raise TrainingValidationError(
+                f"resume_checkpoint_path does not exist or is not a directory: {raw_path!r}"
+            )
+        return str(resolved)
 
     # ------------------------------------------------------------------
     # Storage helpers

@@ -107,7 +107,7 @@ from core.reporting.license import LicenseReportService
 from core.scheduler.vram import ModelScheduler, SchedulerBudget
 from core.training.asset_store import AssetStore
 from core.training.executor import SubprocessRunner, TrainingExecutor
-from core.training.service import TrainingService
+from core.training.service import TrainingService, TrainingValidationError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROJECTS_ROOT = REPO_ROOT / "projects"
@@ -839,6 +839,10 @@ def create_project_training_job(project_id: str, payload: TrainingJobCreateReque
         result = training_service.submit_job(project_id, payload)
     except ProjectNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except TrainingValidationError as error:
+        if IS_DEV:
+            logger.warning("Training job submission rejected: %s", error)
+        raise HTTPException(status_code=400, detail=str(error)) from error
     return success_response(MessageKey.SUCCESS_ADD0, result.model_dump(mode="json"))
 
 

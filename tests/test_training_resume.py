@@ -6,6 +6,8 @@ All tests run without a real kohya_ss install or GPU.  They exercise:
   (R3) Resume submit: --resume <checkpoint_dir> appended when resume_checkpoint_path given.
   (R4) Path discovery: _discover_resume_checkpoint() picks the correct state dir.
   (R5) Executor integration: on job failure, sets resume_checkpoint_path when state dirs exist.
+  (R6) Round trip: a job carrying resume_checkpoint_path (as submit_job would store it
+       after validation) produces a LIVE argv containing --resume <that path>.
 """
 
 from __future__ import annotations
@@ -537,4 +539,147 @@ class TestExecutorSetsResumePathOnFailure:
         assert completed.status == TrainingJobStatus.COMPLETED
         assert completed.resume_checkpoint_path is None, (
             "resume_checkpoint_path must be None on a successfully completed job"
+        )
+
+
+# ===========================================================================
+# (R6) Round trip: a job's resume_checkpoint_path reaches the live argv
+# ===========================================================================
+
+class TestResumeCheckpointWiredThroughExecutor:
+    """Verifies the gap closed by this change: previously nothing ever handed
+    job.resume_checkpoint_path back to build_lora_command on the LIVE command
+    path (_build_live_command), so even a job that already recorded a
+    checkpoint (via a prior failure, or via a caller-supplied + validated
+    submit) was ignored and the next run started from zero.
+    """
+
+    def test_live_command_includes_resume_flag_when_job_carries_checkpoint_path(
+        self, tmp_path: Path
+    ) -> None:
+        """A job whose resume_checkpoint_path is set (as TrainingService.submit_job
+        would store it after validating a caller-supplied path) must produce a
+        LIVE kohya_ss argv containing --resume <that exact path> — not the
+        ['echo', ...] stub, and not a fresh argv missing --resume."""
+        sheet = _character_sheet()
+        pack = _dataset_pack(source="/data/kyuoka_dataset")
+        recipe = _training_recipe()
+
+        class FakeAssetStore:
+            def list_character_sheets(self, pid: str) -> list:
+                return [sheet]
+
+            def list_dataset_packs(self, pid: str) -> list:
+                return [pack]
+
+            def list_training_recipes(self, pid: str) -> list:
+                return [recipe]
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        # The checkpoint dir a previous failed run would have discovered and
+        # TrainingService.submit_job would have validated as confined under
+        # <project_dir>/models before storing it on the new job.
+        checkpoint_dir = project_dir / "models" / "kyuoka_lora-state"
+        checkpoint_dir.mkdir(parents=True)
+
+        job = TrainingJob(
+            id="live-resume-job-001",
+            project_id=_DEFAULT_PROJECT,
+            title="Resume-from-checkpoint job",
+            modality=Modality.IMAGE,
+            worker="kohya-ss",
+            dataset_path="/data/kyuoka_dataset",
+            status=TrainingJobStatus.PLANNED,
+            resume_checkpoint_path=str(checkpoint_dir),
+            created_at=_now(),
+            updated_at=_now(),
+        )
+
+        stores: dict[str, list[TrainingJob]] = {_DEFAULT_PROJECT: [job]}
+
+        def read_jobs(pid: str) -> list[TrainingJob]:
+            return list(stores.setdefault(pid, []))
+
+        def write_jobs(pid: str, new_jobs: list[TrainingJob]) -> None:
+            stores[pid] = list(new_jobs)
+
+        fake_runner = FakeRunner(exit_code=0)
+        sched = _make_scheduler()
+
+        ex = TrainingExecutor(
+            read_jobs=read_jobs,
+            write_jobs=write_jobs,
+            scheduler=sched,
+            runner=fake_runner,
+            asset_store_resolver=lambda pid: FakeAssetStore(),
+            project_dir_resolver=lambda pid: project_dir,
+        )
+
+        ex.enqueue(_DEFAULT_PROJECT, "live-resume-job-001")
+        _wait(stores, "live-resume-job-001", TrainingJobStatus.COMPLETED)
+
+        assert len(fake_runner.calls) == 1
+        captured_args, _captured_cwd = fake_runner.calls[0]
+
+        assert "--resume" in captured_args, (
+            f"Live argv must contain --resume when the job carries "
+            f"resume_checkpoint_path; got: {captured_args!r}"
+        )
+        idx = captured_args.index("--resume")
+        assert captured_args[idx + 1] == str(checkpoint_dir), (
+            f"--resume must be followed by the job's exact resume_checkpoint_path; "
+            f"got {captured_args[idx + 1]!r}, expected {str(checkpoint_dir)!r}"
+        )
+
+    def test_live_command_omits_resume_flag_when_job_has_no_checkpoint_path(
+        self, tmp_path: Path
+    ) -> None:
+        """A fresh job (resume_checkpoint_path=None) must NOT get --resume in its
+        live argv — regression guard against always-resume wiring bugs."""
+        sheet = _character_sheet()
+        pack = _dataset_pack(source="/data/kyuoka_dataset")
+        recipe = _training_recipe()
+
+        class FakeAssetStore:
+            def list_character_sheets(self, pid: str) -> list:
+                return [sheet]
+
+            def list_dataset_packs(self, pid: str) -> list:
+                return [pack]
+
+            def list_training_recipes(self, pid: str) -> list:
+                return [recipe]
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        job = _make_job("live-fresh-job-001")
+        stores: dict[str, list[TrainingJob]] = {_DEFAULT_PROJECT: [job]}
+
+        def read_jobs(pid: str) -> list[TrainingJob]:
+            return list(stores.setdefault(pid, []))
+
+        def write_jobs(pid: str, new_jobs: list[TrainingJob]) -> None:
+            stores[pid] = list(new_jobs)
+
+        fake_runner = FakeRunner(exit_code=0)
+        sched = _make_scheduler()
+
+        ex = TrainingExecutor(
+            read_jobs=read_jobs,
+            write_jobs=write_jobs,
+            scheduler=sched,
+            runner=fake_runner,
+            asset_store_resolver=lambda pid: FakeAssetStore(),
+            project_dir_resolver=lambda pid: project_dir,
+        )
+
+        ex.enqueue(_DEFAULT_PROJECT, "live-fresh-job-001")
+        _wait(stores, "live-fresh-job-001", TrainingJobStatus.COMPLETED)
+
+        captured_args, _ = fake_runner.calls[0]
+        assert "--resume" not in captured_args, (
+            f"--resume must NOT appear for a job with no resume_checkpoint_path; "
+            f"got: {captured_args!r}"
         )
