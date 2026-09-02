@@ -1,9 +1,13 @@
-# USER-PRIVATE - never ingest. prompt.txt is the owner's private scratch file and must
-# never enter the corpus, the graph, or the wiki. .graphifyignore REPLACES .gitignore as
+# USER-PRIVATE - never ingest. prompt.txt / prompt are the owner's private scratch files and
+# must never enter the corpus, the graph, or the wiki. .graphifyignore REPLACES .gitignore as
 # graphify's only ignore source, so this line has to live here even when it is also a
 # .gitignore rule. (Cluster-wide rollout 2026-08-14 after several graphs were found to
-# have already ingested it.)
+# have already ingested it.) The bare `/prompt` (no extension) is the same convention and is
+# git-tracked in this repo, so it needs its own explicit exclusion here — found 2026-09-03
+# during a graphify --update run: it never leaked (extensionless files aren't classified into
+# any corpus category by detect()), but the ignore file itself did not yet name it.
 /prompt.txt
+/prompt
 
 # Secrets
 .env
@@ -20,6 +24,7 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.grimp_cache/
 .coverage
 htmlcov/
 build/
