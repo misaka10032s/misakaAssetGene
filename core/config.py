@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     )
     misaka_model_dir: str = Field(default=".model", alias="MISAKA_MODEL_DIR")
     misaka_extra_model_paths: str = Field(default="", alias="MISAKA_EXTRA_MODEL_PATHS")
+    # Default ComfyUI checkpoint seeded onto newly-built IMAGE jobs and used as
+    # the fallback in _resolve_checkpoint_name when no explicit job/refine
+    # override is present (spec §6.2 / measured 2026-09-04: without this, the
+    # adapter fell back to the live checkpoint list's alphabetical first entry,
+    # which landed generations on an unrelated 3D-style checkpoint).
+    misaka_comfyui_default_checkpoint: str = Field(
+        default="novaAnimeXL_ilV180.safetensors",
+        alias="MISAKA_COMFYUI_DEFAULT_CHECKPOINT",
+    )
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     anthropic_api_base_url: str = Field(default="https://api.anthropic.com", alias="ANTHROPIC_API_BASE_URL")
     anthropic_model: str = Field(default="claude-3-5-sonnet-latest", alias="ANTHROPIC_MODEL")

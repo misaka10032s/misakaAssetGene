@@ -218,6 +218,48 @@ def test_resolve_checkpoint_honours_override(tmp_path: Path, monkeypatch: pytest
     assert comfyui._resolve_checkpoint_name(tmp_path / "worker", base_url="http://x", override="b.ckpt") == "b.ckpt"
 
 
+def test_resolve_checkpoint_override_beats_default_beats_live_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolution order (spec §6.2 / BP-COMFY): explicit override > configured
+    default > live[0]."""
+    monkeypatch.setattr(
+        comfyui, "fetch_live_checkpoints", lambda base_url, **k: ["a.ckpt", "b.ckpt", "c.ckpt"]
+    )
+    # override wins even though both default and live[0] are also present.
+    assert (
+        comfyui._resolve_checkpoint_name(
+            tmp_path / "worker", base_url="http://x", override="c.ckpt", default="b.ckpt"
+        )
+        == "c.ckpt"
+    )
+    # no override -> configured default wins over live[0] ("a.ckpt").
+    assert (
+        comfyui._resolve_checkpoint_name(
+            tmp_path / "worker", base_url="http://x", default="b.ckpt"
+        )
+        == "b.ckpt"
+    )
+    # neither override nor default -> falls back to live[0].
+    assert (
+        comfyui._resolve_checkpoint_name(tmp_path / "worker", base_url="http://x") == "a.ckpt"
+    )
+
+
+def test_resolve_checkpoint_default_absent_from_live_falls_through_with_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A configured default that the live server does not advertise must NOT
+    raise -- it logs a warning and falls through to live[0] (spec §6.2)."""
+    monkeypatch.setattr(comfyui, "fetch_live_checkpoints", lambda base_url, **k: ["a.ckpt", "b.ckpt"])
+    with caplog.at_level("WARNING", logger="misaka.generation.adapters.comfyui"):
+        result = comfyui._resolve_checkpoint_name(
+            tmp_path / "worker", base_url="http://x", default="missing.ckpt"
+        )
+    assert result == "a.ckpt"
+    assert any("missing.ckpt" in record.getMessage() for record in caplog.records)
+
+
 def test_execute_end_to_end_with_mocked_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     checkpoint_dir = tmp_path / "worker" / "models" / "checkpoints"
     checkpoint_dir.mkdir(parents=True)
