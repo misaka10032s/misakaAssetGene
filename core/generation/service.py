@@ -9,6 +9,7 @@ from pathlib import Path
 
 logger = logging.getLogger("misaka.generation.service")
 
+from core.config import get_settings
 from core.generation.adapters import get_adapter
 from core.generation.adapters.common import AdapterContext
 from core.models.schemas import (
@@ -187,12 +188,18 @@ class GenerationService:
         if target_index is None:
             raise FileNotFoundError(f"Job not found: {job_id}")
         current = jobs[target_index]
+        # Merge (not replace) patch.params into the job's existing params, so
+        # patching a single key (e.g. checkpoint) never drops sibling tunables
+        # already set (steps/cfg/width/height/... — spec §6.2 vocabulary,
+        # shared with RefineRequest.params / _sampler_inputs).
+        merged_params = {**current.params, **patch.params} if patch.params else current.params
         updated_job = current.model_copy(
             update={
                 "worker": patch.worker or current.worker,
-                "recipe": patch.recipe,
+                "recipe": patch.recipe or current.recipe,
                 "source_asset_id": patch.source_asset_id,
                 "mask_asset_id": patch.mask_asset_id,
+                "params": merged_params,
                 "updated_at": datetime.now(timezone.utc),
             }
         )
@@ -582,6 +589,14 @@ class GenerationService:
         now: datetime,
     ) -> GenerationJob:
         blocking_reason = self._build_blocking_reason(deliverable.worker, result)
+        # IMAGE jobs are seeded with the configured default ComfyUI checkpoint
+        # (spec §6.2 / measured 2026-09-04) so the job's own params already
+        # carry a sensible checkpoint before any user override is applied --
+        # _resolve_checkpoint_name still re-validates it against the live
+        # checkpoint list at execute time.
+        params: dict = {}
+        if deliverable.modality is Modality.IMAGE:
+            params["checkpoint"] = get_settings().misaka_comfyui_default_checkpoint
         return GenerationJob(
             id=uuid.uuid4().hex,
             project_id=project_id,
@@ -594,6 +609,7 @@ class GenerationService:
             worker=deliverable.worker,
             variants=list(deliverable.variants),
             recipe=GenerationRecipe.AUTO if deliverable.modality in {Modality.IMAGE, Modality.VIDEO} else None,
+            params=params,
             blocking_reason=blocking_reason,
             last_error=None,
             progress=0,

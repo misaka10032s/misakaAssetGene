@@ -440,6 +440,11 @@ class JobExecutionPatch(BaseModel):
     recipe: GenerationRecipe | None = None
     source_asset_id: str | None = None
     mask_asset_id: str | None = None
+    # Tunable sampler/recipe params (checkpoint/steps/cfg/width/height/sampler/
+    # scheduler/seed — same vocabulary as GenerationJob.params / RefineRequest.
+    # params, spec §6.2). Merged into the job's existing params on update, not
+    # a wholesale replace, so patching one key never drops the others.
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 class BatchExecuteRequest(BaseModel):

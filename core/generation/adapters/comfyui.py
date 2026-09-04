@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from pathlib import Path
@@ -7,8 +8,11 @@ from urllib.parse import urlencode
 
 import httpx
 
+from core.config import get_settings
 from core.generation.adapters.common import AdapterContext, AdapterExecutionResult, GeneratedArtifact
 from core.models.schemas import GenerationRecipe, Modality
+
+logger = logging.getLogger("misaka.generation.adapters.comfyui")
 
 DEFAULT_NEGATIVE_PROMPT = "low quality, blurry, deformed, extra limbs, bad anatomy"
 
@@ -24,6 +28,7 @@ def execute(context: AdapterContext) -> AdapterExecutionResult:
         context.worker_path,
         base_url=base_url,
         override=params.get("checkpoint") or params.get("ckpt_name"),
+        default=get_settings().misaka_comfyui_default_checkpoint,
     )
     prompt_id = uuid.uuid4().hex
     filename_prefix = f"misaka-{context.job.project_id}-{context.job.id[:8]}"
@@ -133,17 +138,42 @@ def _list_local_checkpoints(worker_path: Path) -> list[str]:
     )
 
 
-def _resolve_checkpoint_name(worker_path: Path, *, base_url: str | None = None, override: str | None = None) -> str:
-    """Pick the checkpoint name for a workflow. Prefer the live server's
-    advertised checkpoints when reachable (covers standalone ComfyUI with its
-    own model dirs); fall back to the local filesystem listing otherwise. The
-    deterministic choice is the sorted-first entry unless the job carries an
-    explicit ``checkpoint`` / ``ckpt_name`` override (spec §6.2)."""
+def _resolve_checkpoint_name(
+    worker_path: Path,
+    *,
+    base_url: str | None = None,
+    override: str | None = None,
+    default: str | None = None,
+) -> str:
+    """Pick the checkpoint name for a workflow (spec §6.2 / BP-COMFY resolution
+    order). Precedence:
+
+    1. ``override`` — an explicit ``checkpoint``/``ckpt_name`` carried on the
+       job/refine ``params`` (a user PATCH or a refine plan), honoured if it
+       is actually installed (live server first, then local filesystem).
+    2. ``default`` — the configured default checkpoint
+       (``MISAKA_COMFYUI_DEFAULT_CHECKPOINT``), honoured only if it is present
+       in the *live* server's advertised checkpoint list; if the live server
+       is reachable but does not have it, a warning is logged and resolution
+       falls through to the next rung rather than raising.
+    3. ``live[0]`` — the live server's sorted-first checkpoint (existing
+       behaviour, spec §5.13 live-first readiness).
+    4. ``local[0]`` — the local filesystem listing, when the live server is
+       unreachable or advertises nothing.
+    """
     live = fetch_live_checkpoints(base_url) if base_url else []
     if override and override in live:
         return override
     if override and override in _list_local_checkpoints(worker_path):
         return override
+    if default:
+        if default in live:
+            return default
+        logger.warning(
+            "Configured default checkpoint %r not found in the live ComfyUI "
+            "checkpoint list; falling back to the live/local first entry.",
+            default,
+        )
     if live:
         return live[0]
     local = _list_local_checkpoints(worker_path)
