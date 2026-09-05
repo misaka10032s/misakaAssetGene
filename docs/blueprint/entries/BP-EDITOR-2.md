@@ -98,3 +98,7 @@ CPU/記憶體卡死 core API。修法：
   為 556 passed；base `a883e49` 為 542 passed）。
 - `quality-gates/python/run.py l0`：G1/G2/G4 PASS（皆 0 new vs baseline）；
   G3(b) 對本批變更測試檔 PASS（assertion-presence，1 changed test file）。
+
+**Consumed by**: `BP-REFINE-2`（角色一致性自動精修迴圈）——迴圈控制器每輪透過
+`core.editor.mask.build_mask_png` + `subtract` 走同一段程式碼組裝遮罩（非自呼叫
+HTTP），本條目的 `dilate`/`feather`/`subtract` 幾何規則即是迴圈每輪遮罩的實際行為。
