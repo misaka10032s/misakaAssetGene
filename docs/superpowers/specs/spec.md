@@ -985,6 +985,82 @@ VRAM）為本機首選，新設定 `MISAKA_OLLAMA_VISION_MODEL`（預設 `qwen2.
 此 venv 未安裝 Pillow（依派工指示刻意不新增）：§3.3 的降採樣目前恆為原圖直送，
 scale factor 記為 1.0，此落差已記錄於 log，非隱藏缺口。
 
+> v0.9.6（Brief 2/3）：迴圈控制器 + 持久化 + API + SSE 新增。建議卡片 + blueprint
+> 條目仍留 Brief 3。
+
+**迴圈控制器**（`core/consultant/fidelity_loop.py`，純邏輯，I/O 全注入）：狀態機
+`PENDING_CRITIQUE → CRITIQUING →`（全過 `PASSED`；有 fail 且未達上限 `AWAITING_USER`；
+`round==max_rounds` 仍有 fail `STOPPED_MAX_ROUNDS`；`pass_count` 低於歷史最佳
+`STOPPED_REGRESSION_RECOVERED`，下一輪 target 回退 `best_asset_id`）；`FAILED` 只在
+I/O 例外時由 service 層設定，controller 本身不回傳。每輪組裝（`plan_round`）：
+top-k(k≤2) 失敗項依 confidence 降冪、貪婪跳過 bbox 已重疊(IoU>0)者；遮罩
+`dilate=12/feather=8`，`subtract` = 同批判定中「已過關且 bbox 與（膨脹後）選中區域
+重疊」的既有已知 bbox（Feature B 原生支援 `subtract`，無需本地後處理）——**但絕不
+挖空選中失敗項本身的修補區**（C2-review.md MAJOR #3，2026-09-06 修正）：候選 bbox
+與所屬失敗項「原始（未膨脹）bbox」的 IoU ≥ 0.3（`DEFAULT_SUBTRACT_IOU_THRESHOLD`，
+可調常數）時視為同一區域，整筆排除、完全不進 `subtract`；IoU < 0.3（真的只是鄰近
+但明顯不同的區塊）才保留，並裁掉與失敗項原始 bbox 重疊的部分（拆成最多 4 個不重疊
+的殘餘矩形——Feature B 的 `subtract` 沒有「減去一塊矩形」原生語法）。無論整筆排除
+或裁剪，該已過關項的 fix_tags 一律仍進 `instruction` 重申（見下）——排除只影響
+`subtract` 幾何，不影響是否重申。
+`instruction` = 選中失敗項 fix_tags ∪ 重疊已過關項 fix_tags（大小寫/空白不敏感去重、
+保序、上限 60 tag，防 prompt 膨脹）；`prompt_mode` 恆為 `append`；失敗區域面積 SUM
+超過全圖 40% 時顯式 `strategy=img2img`，否則不填（交給 `refine.py` 依
+`mask_asset_id` 自動選 `INPAINT`）；`negative` 不主動帶入，交由
+`GenerationService.refine_asset` 既有的 parent 繼承機制處理。
+
+**持久化**（`core/consultant/fidelity_store.py`，與 `SessionStore`/`AssetStore`
+同一 `memory.sqlite` 檔、同一 WAL/busy_timeout 連線慣例）：`fidelity_loops(id,
+project_id, root_asset_id, character_sheet_id, outfit_variant, status,
+current_round, max_rounds, best_asset_id, best_pass_count, auto_continue,
+last_error, created_at, updated_at)`、`fidelity_loop_rounds(id, loop_id, round_index,
+asset_id, critic_json, pass_count, fail_count, mask_asset_id, refine_job_id,
+created_at)`；`CREATE TABLE IF NOT EXISTS` 對舊版 DB 是安全的（新增兩表，不動既有
+表），`last_error`（2026-09-06 新增，見下）對已存在的 `fidelity_loops` 表則走
+`ALTER TABLE ... ADD COLUMN`（同 `AssetStore._migrate_character_sheets` 慣例）。
+每輪的完整決策記錄（`FidelityRoundPlan`：選中/重疊項 id、遮罩 regions/
+subtract、instruction、strategy、reason）不另存一份 SQLite 欄位——它可從已存的
+`critic_json` 決定性地重算，因此只在 API 回應中即時算出（`next_round_plan`），
+從不寫入 schema 之外的欄位。
+
+**Service**（`core/consultant/fidelity_service.py`）：`start_loop` 建立 loop 並
+立即跑第 0 輪（僅基準判定，不遮罩不 refine——啟動本身就是 spec §4.3 的第 0 輪
+「點擊」，不需再呼叫一次 advance）；`advance` 只跑「恰好一輪」refine
+（`BUILDING_MASK → REFINING → CRITIQUING`，遮罩透過 `core.editor.mask` +
+`GenerationService.import_asset` 走 B 路由同一段程式碼，非自呼叫 HTTP；refine
+透過 `GenerationService.refine_asset` + `execute_job`）；`auto_continue=True` 時
+於 service 內部連續呼叫直到終態（由 `max_rounds` 上限保護，避免無窮迴圈）。
+判官/遮罩/refine 三步皆為可注入 callable（`critique_fn`/`mask_builder_fn`/
+`refine_fn`），測試一律注入假實作，永不觸碰真實 Ollama/ComfyUI。
+
+**`advance` 並行防護**（C2-review.md MAJOR #1，2026-09-06 修正）：舊版
+check-then-act 讓兩個同時呼叫都能通過同一個 `status in _AWAITING_ROUND_STATUSES`
+判斷，導致同一輪 refine 跑兩次、彼此覆寫狀態。現改雙層防護：(1) process 內
+per-loop `threading.Lock`（non-blocking，搶不到立即失敗）；(2) 底層
+`FidelityStore.claim_round` 單一 `UPDATE ... WHERE status IN (...)` 原子判定
+`rowcount==1`。任一層失敗都拋 `FidelityLoopConflictError`（HTTP 409），絕不讓
+第二個呼叫跑進 refine 本體。
+
+**基準判定例外防護**（C2-review.md MAJOR #2，2026-09-06 修正）：`_run_baseline_critique`
+（第 0 輪）現在比照既有的 `_run_refine_round` 包 try/except——修正前若判官在第 0
+輪拋錯，loop 卡在 `PENDING_CRITIQUE` 永遠無法變 `FAILED`（`advance()` 只接受
+`_AWAITING_ROUND_STATUSES`），該 loop 永久卡死不可恢復。現兩處例外處理皆對稱：
+設 `FAILED` 並把例外訊息寫入 `fidelity_loops.last_error`（`GET` 回應可見）後
+re-raise。
+
+**API**（`core/main.py`）：
+
+| Method | Path | 說明 |
+|---|---|---|
+| POST | `/api/v1/projects/{pid}/assets/{aid}/fidelity-loop` | 啟動（`FidelityLoopStartRequest`），同步跑完第 0 輪 |
+| POST | `/api/v1/projects/{pid}/fidelity-loop/{lid}/advance` | 跑下一輪（僅 `AWAITING_USER`/`STOPPED_REGRESSION_RECOVERED` 可呼叫，否則 400；狀態並行被搶走則 409） |
+| GET | `/api/v1/projects/{pid}/fidelity-loop/{lid}` | 目前狀態 + `next_round_plan` 預覽 |
+| GET | `/api/v1/projects/{pid}/fidelity-loop/{lid}/stream` | SSE，比照 `training/service.py:109-158`；`(status, current_round, best_pass_count)` 變化才 yield，終態才有 `event: done`（`AWAITING_USER`/`STOPPED_REGRESSION_RECOVERED` 非終態，仍可能有後續 advance） |
+
+未知 `character_sheet_id`／`outfit_variant` 一律 400（後者訊息附可用變體清單，沿用
+`parse_character_checklist` 既有拋錯）。專案設定 `auto_loop_enabled` 開關與建議
+卡片留待 Brief 3。
+
 ---
 
 ## 6. 生成後端對應表（當前推薦 · 2026-04）

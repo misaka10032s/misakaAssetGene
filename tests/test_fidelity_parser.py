@@ -207,6 +207,46 @@ class TestUnknownVariant:
         assert len(checks_lower) == len(checks_mixed) == 12
 
 
+class TestWaistVsTorsoPriority:
+    """Regression test for the WAIST/TORSO keyword-priority bug (C2 fix,
+    reviewer C1-review.md non-blocking finding): a ``飾品`` bullet whose block
+    text mentions a generic TORSO word (圍裙) as a SECONDARY aside, after a
+    specific WAIST word (腰間/刀鞘) that appears first, must still classify
+    WAIST — the region whose trigger occurs EARLIEST in the text wins, not
+    simply whichever category is checked first in list order. Synthetic
+    fixture only (mirrors the real character file's structure, never copies
+    its text — the real conflict was 「飾品：腰間交叉皮質束帶，整合...刀鞘；
+    圍裙兩側設有隱藏式工具口袋」)."""
+
+    OUTFITS_MD_WAIST_CONFLICT = """# 服裝與形態變體：測試花
+
+## 👗 常駐服裝 (Static Outfits)
+1. **[TestD] 測試腰帶服裝 (Test Waist Outfit)**:
+    - **飾品**：腰間交叉皮質束帶，整合雙刀鞘；圍裙兩側設有隱藏式工具口袋。
+        - **腰間束帶**：深焦茶色真皮材質。
+        - **後背大蝴蝶結**：位於腰部正後方。
+    - **頸部**：布質頸環，圓領口縫合。
+    - **生成提示詞**：
+        - **ComfyUI**: `test hana, waist strap, dual daggers, apron pockets, cloth collar`
+"""
+
+    def test_waist_belt_daggers_wins_over_secondary_apron_mention(self) -> None:
+        checks = {
+            c.label_zh: c
+            for c in parse_character_checklist(SETTING_MD, self.OUTFITS_MD_WAIST_CONFLICT, "TestD")
+            if c.source == "outfits"
+        }
+        assert checks["飾品"].region_hint == BodyRegion.WAIST
+
+    def test_collar_with_no_waist_keyword_stays_torso(self) -> None:
+        checks = {
+            c.label_zh: c
+            for c in parse_character_checklist(SETTING_MD, self.OUTFITS_MD_WAIST_CONFLICT, "TestD")
+            if c.source == "outfits"
+        }
+        assert checks["頸部"].region_hint == BodyRegion.TORSO
+
+
 class TestMissingSettingSection:
     def test_missing_visual_identity_section_raises(self) -> None:
         broken_setting = "# 角色設定：無外型段落\n\n## 📋 基礎資料\n- **姓名**：無\n"

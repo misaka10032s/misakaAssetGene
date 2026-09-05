@@ -23,6 +23,8 @@ from fastapi.exceptions import RequestValidationError
 from core.config import get_settings
 from core.logging_redaction import install_redaction_filter
 from core.consultant.engine import ConsultantEngine
+from core.consultant.fidelity_service import FidelityLoopConflictError, FidelityService
+from core.consultant.fidelity_store import FidelityStore
 from core.editor.mask import ImageHeaderError, MaskRegionError, build_mask_png, read_image_size
 from core.generation.service import GenerationService
 from core.integration.model_registry import ModelRegistryService
@@ -49,6 +51,8 @@ from core.models.schemas import (
     DatasetPack,
     DatasetPackCreateRequest,
     DatasetPackUpdateRequest,
+    FidelityLoopStartRequest,
+    FidelityLoopStatus,
     HealthData,
     ImageToVideoRecipe,
     ImageToVideoRecipeCreateRequest,
@@ -86,6 +90,7 @@ from core.models.schemas import (
     WorkerSmokeResult,
 )
 from core.network.service import NetworkStateService
+from core.network.state import NetworkState
 from core.project.cross_project import (
     RefStatus,
     collect_project_refs,
@@ -212,6 +217,47 @@ def _project_dir(project_id: str) -> Path:
     """Return the project directory path."""
     _, project_dir = project_manager.get_project(project_id)
     return project_dir
+
+
+# Fidelity-loop stores — one per project, same memory.sqlite AssetStore uses,
+# opened lazily (spec §5, mirrors _asset_store above).
+_fidelity_stores: dict[str, FidelityStore] = {}
+
+
+def _fidelity_store(project_id: str) -> FidelityStore:
+    if project_id not in _fidelity_stores:
+        _, project_dir = project_manager.get_project(project_id)
+        _fidelity_stores[project_id] = FidelityStore(project_dir / "memory.sqlite")
+    return _fidelity_stores[project_id]
+
+
+def _character_sheet_resolver(project_id: str, character_sheet_id: str) -> CharacterSheet | None:
+    return _asset_store(project_id).get_character_sheet(project_id, character_sheet_id)
+
+
+def _current_network_state() -> NetworkState:
+    """Mirror the /api/v1/integration route's network snapshot construction
+    (see below) so the fidelity-loop VLM critic gates cloud providers the
+    same way every other LLM call in this repo does."""
+    return network_state_service.snapshot(
+        settings.misaka_network_mode,
+        [
+            settings.anthropic_api_base_url,
+            settings.openai_api_base_url,
+            settings.gemini_api_base_url,
+        ],
+        local_urls=[f"{settings.misaka_ollama_base_url.rstrip('/')}/api/tags"],
+    ).state
+
+
+fidelity_service = FidelityService(
+    project_manager,
+    generation_service,
+    _fidelity_store,
+    _character_sheet_resolver,
+    settings=settings,
+    network_state_provider=_current_network_state,
+)
 
 
 # Per-project job read/write callables — take project_id so the executor never
@@ -702,6 +748,101 @@ def refine_project_asset(project_id: str, asset_id: str, payload: RefineRequest)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return success_response(MessageKey.SUCCESS_ADD0, result.model_dump(mode="json"))
+
+
+# ---------------------------------------------------------------------------
+# §5.15 / C-spec.md §4-5 — Character fidelity refine LOOP (Brief 2)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/projects/{project_id}/assets/{asset_id}/fidelity-loop", response_model=ApiResponse)
+def start_fidelity_loop(project_id: str, asset_id: str, payload: FidelityLoopStartRequest) -> ApiResponse:
+    """Start a character-fidelity refine loop against ``asset_id`` as the
+    root version (spec §4.1/§5). Runs round 0 (baseline critique, no
+    mask/refine) synchronously before returning — starting the loop IS the
+    round-0 "click" (spec §4.3)."""
+    if IS_DEV:
+        logger.info(
+            "POST /api/v1/projects/%s/assets/%s/fidelity-loop character_sheet_id=%s outfit_variant=%s",
+            project_id, asset_id, payload.character_sheet_id, payload.outfit_variant,
+        )
+    try:
+        result = fidelity_service.start_loop(project_id, asset_id, payload)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return success_response(MessageKey.SUCCESS_ADD0, result.model_dump(mode="json"))
+
+
+@app.post("/api/v1/projects/{project_id}/fidelity-loop/{loop_id}/advance", response_model=ApiResponse)
+def advance_fidelity_loop(project_id: str, loop_id: str) -> ApiResponse:
+    """Run exactly one refine round of an AWAITING_USER /
+    STOPPED_REGRESSION_RECOVERED loop (spec §4.1/§5)."""
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/%s/fidelity-loop/%s/advance", project_id, loop_id)
+    try:
+        result = fidelity_service.advance(project_id, loop_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except FidelityLoopConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return success_response(MessageKey.SUCCESS_ADD0, result.model_dump(mode="json"))
+
+
+@app.get("/api/v1/projects/{project_id}/fidelity-loop/{loop_id}", response_model=ApiResponse)
+def get_fidelity_loop(project_id: str, loop_id: str) -> ApiResponse:
+    """Current state of a fidelity loop, including a preview of the next
+    round's plan when one is pending (spec §5)."""
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/fidelity-loop/%s", project_id, loop_id)
+    try:
+        result = fidelity_service.get(project_id, loop_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return success_response(MessageKey.SUCCESS_FETCH0, result.model_dump(mode="json"))
+
+
+@app.get("/api/v1/projects/{project_id}/fidelity-loop/{loop_id}/stream")
+def stream_fidelity_loop(project_id: str, loop_id: str) -> StreamingResponse:
+    """Server-Sent Events stream of a fidelity loop's progress (spec §4.4,
+    mirrors ``stream_training_job`` below). Each frame's ``event`` name is
+    ``done`` once the loop reaches a terminal status (PASSED /
+    STOPPED_MAX_ROUNDS / FAILED), ``progress`` otherwise."""
+    if IS_DEV:
+        logger.info("GET /api/v1/projects/%s/fidelity-loop/%s/stream", project_id, loop_id)
+    try:
+        project_manager.get_project(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    if _fidelity_store(project_id).get_loop(project_id, loop_id) is None:
+        raise HTTPException(status_code=404, detail=f"Fidelity loop not found: {loop_id}")
+
+    def event_source() -> "Iterator[str]":
+        for loop in fidelity_service.stream_loop_progress(project_id, loop_id):
+            envelope = loop.model_dump(mode="json")
+            is_terminal = loop.status in {
+                FidelityLoopStatus.PASSED,
+                FidelityLoopStatus.STOPPED_MAX_ROUNDS,
+                FidelityLoopStatus.FAILED,
+            }
+            event_name = "done" if is_terminal else "progress"
+            yield f"event: {event_name}\ndata: {json.dumps(envelope, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/v1/projects/{project_id}/assets/{asset_id}/file")

@@ -1158,5 +1158,111 @@ class FidelityCheckResult(BaseModel):
     note: str = ""
 
 
+# ---------------------------------------------------------------------------
+# §5.15 / C-spec.md §4-6 — Fidelity refine LOOP (Brief 2): controller state,
+# persistence records, and API request/response shapes.
+# ---------------------------------------------------------------------------
+
+class FidelityLoopStatus(str, Enum):  # noqa: UP042 -- matches every sibling enum in this file (see RefinePromptMode above); not switching to enum.StrEnum for one class only.
+    """Spec §4.1 loop-controller state machine.
+
+    ``FAILED`` is reserved for an unexpected execution error (mask build /
+    refine dispatch raising) — never returned by the pure planner in
+    ``core.consultant.fidelity_loop``, only set by ``FidelityService`` when a
+    round's I/O step raises.
+    """
+
+    PENDING_CRITIQUE = "pending_critique"
+    CRITIQUING = "critiquing"
+    AWAITING_USER = "awaiting_user"
+    BUILDING_MASK = "building_mask"
+    REFINING = "refining"
+    PASSED = "passed"
+    STOPPED_MAX_ROUNDS = "stopped_max_rounds"
+    STOPPED_REGRESSION_RECOVERED = "stopped_regression_recovered"
+    FAILED = "failed"
+
+
+class FidelityLoopStartRequest(BaseModel):
+    """``POST .../assets/{asset_id}/fidelity-loop`` body (spec §5)."""
+
+    character_sheet_id: str = Field(min_length=1)
+    outfit_variant: str = Field(min_length=1)
+    max_rounds: int = Field(default=4, ge=1, le=8)
+    auto_continue: bool = False
+
+
+class FidelityRoundPlan(BaseModel):
+    """Per-round decision record (spec §4.2) — the controller's own audit
+    trail: which checks it targeted, how it built the mask, and what refine
+    request it assembled. Computed by ``core.consultant.fidelity_loop.plan_round``
+    (pure), never persisted as its own SQLite row (spec §5's schema has no
+    plan column) — it is deterministically re-derivable from a round's
+    already-persisted ``critic_json``, so it is surfaced live in API
+    responses (``FidelityLoopData.next_round_plan``) instead of duplicating
+    storage.
+    """
+
+    round_index: int
+    target_asset_id: str
+    chosen_check_ids: list[str] = Field(default_factory=list)
+    reasserted_check_ids: list[str] = Field(default_factory=list)
+    mask_regions: list[MaskRegion] = Field(default_factory=list)
+    mask_subtract: list[MaskRegion] = Field(default_factory=list)
+    instruction: str = ""
+    instruction_tags: list[str] = Field(default_factory=list)
+    strategy: RefineStrategy | None = None
+    reason: str = ""
+
+
+class FidelityLoop(BaseModel):
+    """Spec §5 ``fidelity_loops`` row."""
+
+    id: str
+    project_id: str
+    root_asset_id: str
+    character_sheet_id: str
+    outfit_variant: str
+    status: FidelityLoopStatus
+    current_round: int = 0
+    max_rounds: int = 4
+    best_asset_id: str
+    best_pass_count: int = 0
+    auto_continue: bool = False
+    last_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class FidelityLoopRound(BaseModel):
+    """Spec §5 ``fidelity_loop_rounds`` row.
+
+    ``critic_results`` is the parsed form of the persisted ``critic_json``
+    column (kept as a convenience field on the API-facing model; the store
+    round-trips it through ``critic_json`` on disk, spec §6 "判官 JSON 存
+    fidelity_loop_rounds.critic_json").
+    """
+
+    id: str
+    loop_id: str
+    round_index: int
+    asset_id: str
+    critic_results: list[FidelityCheckResult] = Field(default_factory=list)
+    pass_count: int
+    fail_count: int
+    mask_asset_id: str | None = None
+    refine_job_id: str | None = None
+    created_at: datetime
+
+
+class FidelityLoopData(BaseModel):
+    """Response envelope for start / advance / get (spec §5)."""
+
+    loop: FidelityLoop
+    rounds: list[FidelityLoopRound] = Field(default_factory=list)
+    unresolved_check_ids: list[str] = Field(default_factory=list)
+    next_round_plan: FidelityRoundPlan | None = None
+
+
 ConversationEntry.model_rebuild()
 ProjectWorkspaceData.model_rebuild()
