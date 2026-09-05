@@ -58,3 +58,24 @@ superpowers:
 | `model` / `vocal_language` / `bpm` / `key_scale` / `time_signature` | 同名欄位 | 僅在 `params` 存在該鍵時才加入 payload |
 
 `params` 為空（或缺少上述鍵）時，`_build_payload` 產出的 payload 與修改前逐位元組相同（`tests/test_ace_step_adapter.py::test_empty_params_reproduces_prior_hardcoded_payload` 保證）。前端仍無 UI 可編輯這些 job params（同 `BP-COMFY-3` 的範圍外備註），只能透過 API 直接 PATCH。
+
+### `ace_step.py` thinking / LM 規劃參數開放（2026-09-05）
+
+研究（`@PM/state/runs/misakaAssetGene-gen-test-260904/song-sop.md` §1 第 5 條）指出 `thinking`（ACE-Step 5Hz LM 規劃模式，本機已裝 `acestep-5Hz-lm-1.7B` checkpoint）被 `_build_payload` 寫死 `False`，且不在任何白名單內，job 無法打開它來提升人聲連貫度/清晰度。本次在既有白名單機制上，新增 12 個 LM/規劃相關欄位（同樣對照 `GenerateMusicRequest` 的確切欄位名，非猜測；`constrained_decoding*`／`allow_lm_batch`／`track_name`／`track_classes`／`is_format_caption` 屬多軌合成/除錯內部機制，非規劃品質旋鈕，本次不開放）：
+
+| job.params 鍵 | 對應 worker 欄位 | 型別 |
+|---|---|---|
+| `thinking` | `thinking` | bool |
+| `use_cot_caption` | `use_cot_caption` | bool |
+| `use_cot_language` | `use_cot_language` | bool |
+| `lm_model_path` | `lm_model_path` | str |
+| `lm_backend` | `lm_backend` | str |
+| `lm_negative_prompt` | `lm_negative_prompt` | str |
+| `sample_query` | `sample_query` | str |
+| `lm_temperature` | `lm_temperature` | float |
+| `lm_cfg_scale` | `lm_cfg_scale` | float |
+| `lm_top_p` | `lm_top_p` | float |
+| `lm_repetition_penalty` | `lm_repetition_penalty` | float |
+| `lm_top_k` | `lm_top_k` | int |
+
+bool 欄位維持嚴格型別（不接受 `"true"`/`"false"` 字串）：非 bool 值會拋 `ValueError`，呼應本檔案既有數值欄位（`int()`/`float()`）遇到型別錯誤即失敗、不靜默吞掉的一貫風格。除 `thinking`（既有硬編碼預設 `False` 的 key，`params` 提供時才覆蓋）外，其餘 11 個欄位在 `params` 未提供時完全不加入 payload（byte-for-byte 與修改前相同，含既有 `BASELINE_PAYLOAD` 測試維持不動）——這一點對 worker 有影響：這些欄位在 worker 端本就有自己的 Pydantic 預設值（如 `use_cot_caption`/`use_cot_language` 預設 `True`），未指定時由 worker 沿用其預設，adapter 不代為決定。`sample_query` 僅在 `sample_mode=True`（目前仍硬編碼 `False`，本次未變動）時才對 worker 生效，暫為待用欄位。測試：`tests/test_ace_step_adapter.py`（`test_thinking_*`、`test_lm_*` 共 8 條新測試）。

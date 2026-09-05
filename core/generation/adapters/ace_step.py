@@ -23,7 +23,34 @@ _STRING_PARAM_FIELDS: tuple[tuple[str, str], ...] = (
     ("vocal_language", "vocal_language"),
     ("key_scale", "key_scale"),
     ("time_signature", "time_signature"),
+    # BP-ADAPTER-1 260905: 5Hz LM planning/thinking-mode knobs (see
+    # docs/blueprint/entries/BP-ADAPTER-1.md).
+    ("lm_model_path", "lm_model_path"),
+    ("lm_backend", "lm_backend"),
+    ("lm_negative_prompt", "lm_negative_prompt"),
+    ("sample_query", "sample_query"),
 )
+
+# BP-ADAPTER-1 260905: bool-typed LM/planning knobs. Strict bool only (no
+# "true"/"false" string coercion) -- a non-bool value is a caller bug, so it
+# fails loud (ValueError) rather than being silently coerced or dropped,
+# mirroring this module's existing fail-loud int()/float() casts above.
+_BOOL_PARAM_FIELDS: tuple[tuple[str, str], ...] = (
+    ("thinking", "thinking"),
+    ("use_cot_caption", "use_cot_caption"),
+    ("use_cot_language", "use_cot_language"),
+)
+
+# BP-ADAPTER-1 260905: float-typed LM sampling knobs.
+_FLOAT_PARAM_FIELDS: tuple[tuple[str, str], ...] = (
+    ("lm_temperature", "lm_temperature"),
+    ("lm_cfg_scale", "lm_cfg_scale"),
+    ("lm_top_p", "lm_top_p"),
+    ("lm_repetition_penalty", "lm_repetition_penalty"),
+)
+
+# BP-ADAPTER-1 260905: int-typed LM sampling knobs.
+_INT_PARAM_FIELDS: tuple[tuple[str, str], ...] = (("lm_top_k", "lm_top_k"),)
 
 
 def _build_payload(job: GenerationJob) -> dict[str, object]:
@@ -64,6 +91,25 @@ def _build_payload(job: GenerationJob) -> dict[str, object]:
         value = params.get(job_key)
         if value is not None:
             payload[worker_key] = str(value)
+    for job_key, worker_key in _BOOL_PARAM_FIELDS:
+        if job_key not in params:
+            continue
+        value = params[job_key]
+        if value is None:
+            continue
+        if not isinstance(value, bool):
+            raise ValueError(
+                f"job.params[{job_key!r}] must be a bool, got {type(value).__name__}."
+            )
+        payload[worker_key] = value
+    for job_key, worker_key in _FLOAT_PARAM_FIELDS:
+        value = params.get(job_key)
+        if value is not None:
+            payload[worker_key] = float(value)
+    for job_key, worker_key in _INT_PARAM_FIELDS:
+        value = params.get(job_key)
+        if value is not None:
+            payload[worker_key] = int(value)
     return payload
 
 
