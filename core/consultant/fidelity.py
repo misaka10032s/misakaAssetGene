@@ -81,11 +81,45 @@ _CATEGORIES: list[tuple[BodyRegion, tuple[str, ...], tuple[str, ...]]] = [
 _DEFAULT_REGION = BodyRegion.TORSO
 
 
+def _earliest_trigger_index(block_text: str, zh_triggers: tuple[str, ...]) -> int | None:
+    positions = [block_text.index(trigger) for trigger in zh_triggers if trigger in block_text]
+    return min(positions) if positions else None
+
+
 def _classify(block_text: str) -> tuple[BodyRegion, tuple[str, ...]]:
+    """Pick the category whose trigger substring occurs EARLIEST in
+    ``block_text`` (ties broken by ``_CATEGORIES`` list order) — NOT simply
+    "first category in list order with any match anywhere in the text".
+
+    Fix for a real misclassification (reviewer C1-review.md non-blocking
+    finding, C-spec.md §4.2 depends on region_hint for mask exclusion): a
+    single bullet block routinely mentions more than one region's keyword in
+    passing (e.g. an outfits.md "飾品" bullet about a waist belt/dagger set
+    ALSO mentions "圍裙" (apron) as an aside about a nearby pocket). Scanning
+    categories in a fixed list order and stopping at the first one whose
+    trigger appears ANYWHERE in the text let a late, incidental TORSO mention
+    beat an earlier, primary WAIST mention. Picking the trigger with the
+    SMALLEST string index instead means whichever concept the bullet's own
+    text leads with wins, which matches how these bullets are actually
+    written (the defining feature comes first; secondary asides come after).
+    Verified this does not regress any pre-existing region_hint assertion in
+    ``test_fidelity_parser.py`` (all pass on the earliest-index rule too,
+    since none of those fixtures interleave two categories' triggers).
+    """
+    best_region: BodyRegion | None = None
+    best_filters: tuple[str, ...] = ()
+    best_index: int | None = None
     for region, zh_triggers, en_filters in _CATEGORIES:
-        if any(trigger in block_text for trigger in zh_triggers):
-            return region, en_filters
-    return _DEFAULT_REGION, ()
+        index = _earliest_trigger_index(block_text, zh_triggers)
+        if index is None:
+            continue
+        if best_index is None or index < best_index:
+            best_index = index
+            best_region = region
+            best_filters = en_filters
+    if best_region is None:
+        return _DEFAULT_REGION, ()
+    return best_region, best_filters
 
 
 # Finer, per-BULLET-LABEL keyword set for fix_tags — tried BEFORE the coarse

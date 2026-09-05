@@ -26,7 +26,6 @@
   "core/main.py|B013|A length-one tuple literal is redundant in exception handlers",
   "core/main.py|B904|Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling",
   "core/main.py|E402|Module level import not at top of file",
-  "core/main.py|F401|`core.models.schemas.CharacterSheet` imported but unused",
   "core/main.py|F401|`core.models.schemas.DatasetPack` imported but unused",
   "core/main.py|F401|`core.models.schemas.ImageToVideoRecipe` imported but unused",
   "core/main.py|F401|`core.models.schemas.LoraPreset` imported but unused",
