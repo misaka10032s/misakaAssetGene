@@ -254,6 +254,153 @@ class TestMissingSettingSection:
             parse_character_checklist(broken_setting, OUTFITS_MD, "TestA")
 
 
+class TestModesVisualWeaponsNegativeTags:
+    """C4 fix (checklist-modes, 2026-09-06) — visual-only exclusion, mode
+    tagging + overrides, the weapons section, and negative_tags. Synthetic
+    fixture only (a SECOND invented test character, "測試花二"), same rule
+    as every other fixture in this file: never copy real character text."""
+
+    SETTING_MD_MODES = """# 角色設定：測試花二
+
+## 🎨 外型特徵 (Visual Identity)
+- **髮型**：銀色長直髮。
+- **瞳色**：
+    - 平常：亮黃色瞳孔。
+    - 發動魔法：轉變為亮綠色，瞳孔轉化為五角星形狀。
+- **特殊變換**：發動魔法時，左側瀏海變為淺藍色挑染。
+- **感官細節**：偶發 2000Hz 短促「叮」聲，散發淡雅氣味。
+- **測量細節**：#FF85A1，20cm，4cm，15 度，1mm。
+- **其他特徵**：整體氣質溫和。
+
+## ⚔️ 武裝與魔法 (Combat & Magic)
+- **主要武器 (雙刀)**：名為「測刀一」與「測刀二」的對刀，平時隱藏於異空間，戰鬥時抽出。
+- **遠程武器 (測試弓)**：特製的魔法弓，向後抓取虛空時具現化。
+
+## 🏷️ 標籤 (Tags for Generation)
+`test hana, 1girl, solo, silver hair, yellow eyes, dual blades, compound bow`
+"""
+
+    OUTFITS_MD_MODES = """# 服裝與形態變體：測試花二
+
+## 👗 常駐服裝 (Static Outfits)
+1. **[TestE] 測試服裝 (Test Outfit E)**:
+    - **整體描述**：簡單的測試服裝。
+    - **內衣內褲**：白色棉質內衣，搭配內褲。
+    - **鞋子**：黑色鞋子。
+    - **生成提示詞**：
+        - **ComfyUI**: `test hana, white outfit, black shoes`
+"""
+
+    # ------------------------------------------------------------------
+    # Non-visual exclusion
+    # ------------------------------------------------------------------
+
+    def test_non_visual_keyword_checks_excluded_by_default(self) -> None:
+        checks = parse_character_checklist(self.SETTING_MD_MODES, self.OUTFITS_MD_MODES, "TestE")
+        labels = [c.label_zh for c in checks]
+        assert "感官細節" not in labels
+        assert "內衣內褲" not in labels
+
+    def test_measurement_only_check_excluded_by_default(self) -> None:
+        checks = parse_character_checklist(self.SETTING_MD_MODES, self.OUTFITS_MD_MODES, "TestE")
+        assert "測量細節" not in [c.label_zh for c in checks]
+
+    def test_include_non_visual_recovers_them_with_visual_false(self) -> None:
+        checks = {
+            c.label_zh: c
+            for c in parse_character_checklist(
+                self.SETTING_MD_MODES, self.OUTFITS_MD_MODES, "TestE", include_non_visual=True
+            )
+        }
+        assert checks["感官細節"].visual is False
+        assert checks["內衣內褲"].visual is False
+        assert checks["測量細節"].visual is False
+
+    def test_ordinary_checks_stay_visual_true(self) -> None:
+        checks = {
+            c.label_zh: c
+            for c in parse_character_checklist(
+                self.SETTING_MD_MODES, self.OUTFITS_MD_MODES, "TestE", include_non_visual=True
+            )
+        }
+        assert checks["髮型"].visual is True
+        assert checks["瞳色"].visual is True
+        assert checks["其他特徵"].visual is True
+
+    # ------------------------------------------------------------------
+    # Mode tagging + compound-bullet split/override
+    # ------------------------------------------------------------------
+
+    def test_default_mode_has_baseline_eyes_not_casting_split_or_hair_streak(self) -> None:
+        checks = {c.label_zh: c for c in parse_character_checklist(self.SETTING_MD_MODES, self.OUTFITS_MD_MODES, "TestE", mode="default")}
+        assert checks["瞳色"].mode == "default"
+        assert "亮黃色瞳孔" in checks["瞳色"].pass_criteria
+        assert "瞳色（casting）" not in checks
+        assert "特殊變換" not in checks  # casting-only, no baseline counterpart
+
+    def test_casting_mode_swaps_in_green_star_eyes_and_hair_streak(self) -> None:
+        checks_list = parse_character_checklist(self.SETTING_MD_MODES, self.OUTFITS_MD_MODES, "TestE", mode="casting")
+        checks = {c.label_zh: c for c in checks_list}
+        assert "瞳色" not in checks  # baseline check overridden, dropped
+        cast_eyes = checks["瞳色（casting）"]
+        assert cast_eyes.mode == "casting"
+        assert cast_eyes.overrides == ["setting-2"]
+        assert "亮綠色" in cast_eyes.pass_criteria
+        assert "五角星" in cast_eyes.pass_criteria
+        assert checks["特殊變換"].mode == "casting"
+        assert "淺藍色挑染" in checks["特殊變換"].pass_criteria
+        # non-overridden default checks still apply in every mode.
+        assert "髮型" in checks
+
+    def test_setting2_split_ids(self) -> None:
+        checks_by_id = {c.id: c for c in parse_character_checklist(self.SETTING_MD_MODES, self.OUTFITS_MD_MODES, "TestE", mode="casting")}
+        assert "setting-2" not in checks_by_id  # overridden default half dropped
+        assert checks_by_id["setting-2-casting"].overrides == ["setting-2"]
+        assert checks_by_id["setting-3"].label_zh == "特殊變換"
+
+    # ------------------------------------------------------------------
+    # Weapons section
+    # ------------------------------------------------------------------
+
+    def test_default_mode_has_weapons_hidden_not_combat_weapons(self) -> None:
+        checks = {c.id: c for c in parse_character_checklist(self.SETTING_MD_MODES, self.OUTFITS_MD_MODES, "TestE", mode="default")}
+        assert "weapons-1" not in checks
+        assert "weapons-2" not in checks
+        hidden = checks["weapons-hidden"]
+        assert hidden.mode == "default"
+        assert hidden.fix_tags == []
+        assert hidden.negative_tags == ["weapon", "sword", "bow", "crossbow"]
+
+    def test_combat_mode_has_weapons_visible_and_drops_weapons_hidden(self) -> None:
+        checks = {c.id: c for c in parse_character_checklist(self.SETTING_MD_MODES, self.OUTFITS_MD_MODES, "TestE", mode="combat")}
+        assert "weapons-hidden" not in checks  # overridden by both weapon checks
+        main_weapon = checks["weapons-1"]
+        assert main_weapon.mode == "combat"
+        assert main_weapon.overrides == ["weapons-hidden"]
+        assert main_weapon.fix_tags == ["dual daggers drawn", "dual wielding"]
+        assert main_weapon.region_hint == BodyRegion.WAIST
+        ranged_weapon = checks["weapons-2"]
+        assert ranged_weapon.fix_tags == ["compound bow"]
+        # default-mode checks still apply in combat mode too.
+        assert "setting-1" in checks
+
+    def test_weapon_tags_stripped_from_setting_fallback_pool(self) -> None:
+        # "其他特徵" matches no label/category keyword filter -> falls back to
+        # the FULL setting.md tag pool (spec §2.1) — which must NOT include
+        # "dual blades"/"compound bow" (DEMO-report.md §4: these leaked into
+        # a default-mode render as a crossbow + sword).
+        checks = {c.label_zh: c for c in parse_character_checklist(self.SETTING_MD_MODES, self.OUTFITS_MD_MODES, "TestE")}
+        other = checks["其他特徵"]
+        assert other.fix_tags == ["test hana", "1girl", "solo", "silver hair", "yellow eyes"]
+        assert not any("blade" in tag.lower() or "bow" in tag.lower() for tag in other.fix_tags)
+
+    def test_no_weapons_section_yields_no_weapons_checks_and_no_error(self) -> None:
+        # Existing TestA fixture's SETTING_MD carries no "## ⚔️" heading at
+        # all — an unarmed character is a legitimate SSOT, never an error.
+        checks = parse_character_checklist(SETTING_MD, OUTFITS_MD, "TestA")
+        assert "weapons-hidden" not in [c.id for c in checks]
+
+
 class TestLoadCharacterSources:
     def test_reads_only_setting_and_outfits(self, tmp_path: Path) -> None:
         (tmp_path / "setting.md").write_text(SETTING_MD, encoding="utf-8")

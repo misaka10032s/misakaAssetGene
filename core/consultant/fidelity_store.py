@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS fidelity_loops (
     best_asset_id       TEXT NOT NULL,
     best_pass_count     INTEGER NOT NULL DEFAULT 0,
     auto_continue       INTEGER NOT NULL DEFAULT 0,
+    mode                TEXT NOT NULL DEFAULT 'default',
     last_error          TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
@@ -87,6 +88,7 @@ class FidelityStore:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
             self._migrate_last_error(conn)
+            self._migrate_mode(conn)
 
     def _migrate_last_error(self, conn: sqlite3.Connection) -> None:
         """Add ``last_error`` to a pre-existing ``fidelity_loops`` table
@@ -101,6 +103,20 @@ class FidelityStore:
         if "last_error" not in columns:
             conn.execute("ALTER TABLE fidelity_loops ADD COLUMN last_error TEXT")
 
+    def _migrate_mode(self, conn: sqlite3.Connection) -> None:
+        """Add ``mode`` to a pre-existing ``fidelity_loops`` table (C4
+        gap-fix, fidelity-modes 2026-09-06 — ``FidelityLoopStartRequest.mode``
+        was only ever honoured within the SAME ``start_loop()`` call because
+        this column never existed; see ``FidelityLoop.mode`` docstring).
+        Same idiom as ``_migrate_last_error`` above: a ``memory.sqlite``
+        created before this column existed keeps its original column set
+        forever unless migrated here. Existing rows back-fill as
+        ``'default'`` — the correct behavior for every loop started before
+        modes existed."""
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(fidelity_loops)")}
+        if "mode" not in columns:
+            conn.execute("ALTER TABLE fidelity_loops ADD COLUMN mode TEXT NOT NULL DEFAULT 'default'")
+
     # ------------------------------------------------------------------
     # FidelityLoop
     # ------------------------------------------------------------------
@@ -114,6 +130,7 @@ class FidelityStore:
         outfit_variant: str,
         max_rounds: int,
         auto_continue: bool,
+        mode: str = "default",
         status: FidelityLoopStatus = FidelityLoopStatus.PENDING_CRITIQUE,
     ) -> FidelityLoop:
         now = _now()
@@ -129,6 +146,7 @@ class FidelityStore:
             best_asset_id=root_asset_id,
             best_pass_count=0,
             auto_continue=auto_continue,
+            mode=mode,
             created_at=now,
             updated_at=now,
         )
@@ -136,12 +154,12 @@ class FidelityStore:
             conn.execute(
                 "INSERT INTO fidelity_loops "
                 "(id, project_id, root_asset_id, character_sheet_id, outfit_variant, status, "
-                " current_round, max_rounds, best_asset_id, best_pass_count, auto_continue, "
-                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " current_round, max_rounds, best_asset_id, best_pass_count, auto_continue, mode, "
+                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     loop.id, loop.project_id, loop.root_asset_id, loop.character_sheet_id,
                     loop.outfit_variant, loop.status.value, loop.current_round, loop.max_rounds,
-                    loop.best_asset_id, loop.best_pass_count, int(loop.auto_continue),
+                    loop.best_asset_id, loop.best_pass_count, int(loop.auto_continue), loop.mode,
                     loop.created_at.isoformat(), loop.updated_at.isoformat(),
                 ),
             )
@@ -219,6 +237,7 @@ class FidelityStore:
             best_asset_id=row["best_asset_id"],
             best_pass_count=row["best_pass_count"],
             auto_continue=bool(row["auto_continue"]),
+            mode=row["mode"],
             last_error=row["last_error"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),

@@ -8,6 +8,7 @@ from core.consultant.fidelity_loop import (
     INITIAL_BEST_PASS_COUNT,
     build_instruction_tags,
     build_mask_regions,
+    build_negative_tags,
     build_refine_request,
     decide_round_outcome,
     plan_round,
@@ -25,9 +26,12 @@ from core.models.schemas import (
 )
 
 
-def _check(id: str, region: BodyRegion, fix_tags: list[str]) -> FidelityCheck:
+def _check(
+    id: str, region: BodyRegion, fix_tags: list[str], negative_tags: list[str] | None = None
+) -> FidelityCheck:
     return FidelityCheck(
-        id=id, label_zh=id, pass_criteria=f"criteria for {id}", region_hint=region, fix_tags=fix_tags, source="outfits"
+        id=id, label_zh=id, pass_criteria=f"criteria for {id}", region_hint=region, fix_tags=fix_tags,
+        negative_tags=negative_tags or [], source="outfits",
     )
 
 
@@ -227,6 +231,27 @@ class TestSelectStrategyForRound:
         assert strategy is RefineStrategy.IMG2IMG
 
 
+class TestBuildNegativeTags:
+    """C4 fix (checklist-modes) — union of chosen+reasserted checks'
+    negative_tags, same dedup/cap idiom as build_instruction_tags."""
+
+    def test_union_of_chosen_and_reasserted_dedup_preserve_order(self) -> None:
+        chosen_checks = [_check("c1", BodyRegion.WAIST, [], negative_tags=["weapon", "sword"])]
+        reasserted_checks = [_check("c2", BodyRegion.TORSO, [], negative_tags=["sword", "bow"])]
+        tags = build_negative_tags(chosen_checks, reasserted_checks)
+        assert tags == ["weapon", "sword", "bow"]
+
+    def test_empty_when_no_check_carries_negative_tags(self) -> None:
+        chosen_checks = [_check("c1", BodyRegion.WAIST, ["dagger"])]
+        assert build_negative_tags(chosen_checks, []) == []
+
+    def test_tag_cap_enforced(self) -> None:
+        many_tags = [f"neg{i}" for i in range(80)]
+        chosen_checks = [_check("c1", BodyRegion.TORSO, [], negative_tags=many_tags)]
+        tags = build_negative_tags(chosen_checks, [], tag_cap=60)
+        assert len(tags) == 60
+
+
 class TestBuildRefineRequest:
     def test_prompt_mode_always_append_and_no_negative(self) -> None:
         plan = plan_round(
@@ -244,6 +269,53 @@ class TestBuildRefineRequest:
         assert "negative" not in request.params
         assert request.instruction == "dagger"
 
+    def test_negative_tags_reach_params_negative_when_no_inherited_value(self) -> None:
+        plan = plan_round(
+            round_index=1,
+            target_asset_id="asset-1",
+            checks=[_check("f1", BodyRegion.WAIST, ["no weapon visible"], negative_tags=["weapon", "sword", "bow"])],
+            critic_results=[_result("f1", False, bbox=(0, 0, 10, 10))],
+            image_width=1000,
+            image_height=1000,
+        )
+        assert plan is not None
+        assert plan.negative_tags == ["weapon", "sword", "bow"]
+        request = build_refine_request(plan, mask_asset_id="mask-1")
+        assert request.params["negative"] == "weapon, sword, bow"
+
+    def test_negative_tags_append_to_inherited_negative_and_dedup(self) -> None:
+        # "sword" is duplicated (case/whitespace-insensitively) between the
+        # inherited value and the check's own negative_tags — the merge must
+        # APPEND (never replace) the inherited value, deduping the overlap.
+        plan = plan_round(
+            round_index=1,
+            target_asset_id="asset-1",
+            checks=[_check("f1", BodyRegion.WAIST, ["no weapon visible"], negative_tags=["Sword", "bow"])],
+            critic_results=[_result("f1", False, bbox=(0, 0, 10, 10))],
+            image_width=1000,
+            image_height=1000,
+        )
+        assert plan is not None
+        request = build_refine_request(plan, mask_asset_id="mask-1", inherited_negative="extra fingers, sword")
+        assert request.params["negative"] == "extra fingers, sword, bow"
+
+    def test_no_negative_tags_leaves_inherited_negative_untouched_by_this_layer(self) -> None:
+        # When the plan carries no negative_tags at all, this controller
+        # must NOT set params.negative even if an inherited value is passed
+        # in — GenerationService.refine_asset inherits it on its own
+        # (BP-REFINE-1) whenever params.negative is absent.
+        plan = plan_round(
+            round_index=1,
+            target_asset_id="asset-1",
+            checks=[_check("f1", BodyRegion.WAIST, ["dagger"])],
+            critic_results=[_result("f1", False, bbox=(0, 0, 10, 10))],
+            image_width=1000,
+            image_height=1000,
+        )
+        assert plan is not None
+        request = build_refine_request(plan, mask_asset_id="mask-1", inherited_negative="extra fingers")
+        assert "negative" not in request.params
+
 
 class TestPlanRound:
     def test_returns_none_when_no_fails(self) -> None:
@@ -259,8 +331,8 @@ class TestPlanRound:
 
     def test_full_plan_shape(self) -> None:
         checks = [
-            _check("waist-belt", BodyRegion.WAIST, ["dagger", "belt"]),
-            _check("collar", BodyRegion.TORSO, ["collar"]),
+            _check("waist-belt", BodyRegion.WAIST, ["dagger", "belt"], negative_tags=["weapon"]),
+            _check("collar", BodyRegion.TORSO, ["collar"], negative_tags=["weapon", "extra fingers"]),
         ]
         critic_results = [
             _result("waist-belt", False, confidence=0.8, bbox=(100, 100, 200, 200)),
@@ -287,6 +359,9 @@ class TestPlanRound:
         # unclipped [190, 190, 205, 205]).
         assert [r.bbox for r in plan.mask_subtract] == [[190, 200, 205, 205], [200, 190, 205, 200]]
         assert plan.instruction_tags == ["dagger", "belt", "collar"]
+        # union of chosen ("waist-belt") + reasserted ("collar") negative_tags,
+        # deduped ("weapon" appears on both).
+        assert plan.negative_tags == ["weapon", "extra fingers"]
         assert plan.strategy is None  # small area, no forced img2img
 
     def test_plan_reasserts_fix_tags_even_when_subtract_fully_excludes_check(self) -> None:
