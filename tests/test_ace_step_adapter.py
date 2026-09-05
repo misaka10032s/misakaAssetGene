@@ -124,6 +124,93 @@ def test_extra_whitelisted_params_pass_through() -> None:
     assert payload["time_signature"] == "3/4"
 
 
+def test_thinking_true_reaches_payload() -> None:
+    payload = ace_step._build_payload(_job({"thinking": True}))
+    assert payload["thinking"] is True
+    # unrelated defaults stay untouched.
+    assert payload["inference_steps"] == 8
+
+
+def test_thinking_false_explicit_also_reaches_payload() -> None:
+    payload = ace_step._build_payload(_job({"thinking": False}))
+    assert payload["thinking"] is False
+
+
+def test_thinking_non_bool_raises() -> None:
+    with pytest.raises(ValueError, match="thinking"):
+        ace_step._build_payload(_job({"thinking": "true"}))
+
+
+def test_lm_bool_params_reach_payload() -> None:
+    payload = ace_step._build_payload(
+        _job({"use_cot_caption": False, "use_cot_language": True})
+    )
+    assert payload["use_cot_caption"] is False
+    assert payload["use_cot_language"] is True
+
+
+def test_lm_bool_param_non_bool_raises() -> None:
+    with pytest.raises(ValueError, match="use_cot_caption"):
+        ace_step._build_payload(_job({"use_cot_caption": 1}))
+
+
+def test_lm_string_params_reach_payload() -> None:
+    payload = ace_step._build_payload(
+        _job(
+            {
+                "lm_model_path": "acestep-5Hz-lm-1.7B",
+                "lm_backend": "vllm",
+                "lm_negative_prompt": "muffled, off-key",
+                "sample_query": "an upbeat anime opening",
+            }
+        )
+    )
+    assert payload["lm_model_path"] == "acestep-5Hz-lm-1.7B"
+    assert payload["lm_backend"] == "vllm"
+    assert payload["lm_negative_prompt"] == "muffled, off-key"
+    assert payload["sample_query"] == "an upbeat anime opening"
+
+
+def test_lm_float_and_int_params_reach_payload() -> None:
+    payload = ace_step._build_payload(
+        _job(
+            {
+                "lm_temperature": 0.6,
+                "lm_cfg_scale": 3.5,
+                "lm_top_p": 0.95,
+                "lm_repetition_penalty": 1.1,
+                "lm_top_k": 40,
+            }
+        )
+    )
+    assert payload["lm_temperature"] == 0.6
+    assert payload["lm_cfg_scale"] == 3.5
+    assert payload["lm_top_p"] == 0.95
+    assert payload["lm_repetition_penalty"] == 1.1
+    assert payload["lm_top_k"] == 40
+
+
+def test_no_lm_params_means_only_baseline_thinking_key() -> None:
+    """Absent LM/planning params: payload carries only the pre-existing
+    hardcoded ``thinking: False`` and none of the new optional LM keys."""
+    payload = ace_step._build_payload(_job())
+    assert payload["thinking"] is False
+    for key in (
+        "use_cot_caption",
+        "use_cot_language",
+        "lm_model_path",
+        "lm_backend",
+        "lm_negative_prompt",
+        "sample_query",
+        "lm_temperature",
+        "lm_cfg_scale",
+        "lm_top_p",
+        "lm_repetition_penalty",
+        "lm_top_k",
+    ):
+        assert key not in payload
+
+
 class _FakeClient:
     """Minimal httpx.Client stand-in for the ACE-Step release/query/download flow."""
 
