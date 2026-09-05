@@ -43,3 +43,18 @@ superpowers:
 ### 現況核對（2026-07-23 盤點）
 
 9 個 adapter 檔案皆存在且非空樁（`comfyui.py` 支援 txt2img/img2img/inpaint，見 `BP-COMFY-1`）。M2（928dd77）追加 inpaint/img2img e2e 與多階段精修；M3（7af6066/2e1aa19）補齊 offline gating（見 `BP-OFFLINE-1`）與 VRAM 熱切換（見 `BP-VRAM-1`）。@PM 登記 M2 有 70 tests green + Chrome UI e2e 驗證（真實 ComfyUI 生成 + img2img refine lineage）。「影片」模態（`video_backend.py`）與「角色台詞文字」不經 adapter（走 LLM router 直接生文字），故 spec §2 表格中的「圖文、台詞、角色語音、歌曲、影片」在此以「6 大 adapter 覆蓋圖像/語音/歌曲/影片四種二進位輸出」理解；台詞文字由顧問引擎（`BP-CONSULT-1`）直接以 LLM 產生。
+
+### `ace_step.py` job.params 消費（2026-09-05）
+
+`BP-COMFY-3` 已讓一般（非 refine）job 攜帶 `params`（`_build_job` 種預設值 + `PATCH .../jobs/{id}` `JobExecutionPatch.params`），但當時「範圍外」明列僅涵蓋 `comfyui.py`，`ace_step.execute()` 仍把 `/release_task` payload 的 `lyrics` 寫死為 `""`、`prompt`/`global_caption` 只讀 `context.job.prompt`/`summary`，job 完全無法要求帶歌詞的人聲、覆寫 tags/caption 或指定時長。本次比照 `comfyui.py` 的作法（helper + explicit key whitelist，不做 `**params` 任意透傳）新增 `ace_step._build_payload(job)`，消費 `job.params`（欄位名對照 `workers/ace-step-1.5/acestep/api/http/release_task_models.py` 的 `GenerateMusicRequest`，非猜測）：
+
+| job.params 鍵 | 對應 worker 欄位 | 說明 |
+|---|---|---|
+| `lyrics` | `lyrics` | 預設 `""`（純伴奏），非空即人聲歌詞 |
+| `tags` 或 `prompt` | `prompt`（ACE-Step 的 tags/caption 欄位） | 不存在時沿用既有行為，回退到 `job.prompt` |
+| `duration` 或 `audio_duration` | `audio_duration` | 未提供時完全不帶這個 key（與修改前行為一致） |
+| `seed` | `seed`（連動 `use_random_seed=False`） | 未提供時維持原本 `seed=-1`／`use_random_seed=True` |
+| `inference_steps` / `guidance_scale` / `task_type` / `audio_format` | 同名欄位 | 未提供時維持原硬編碼預設值 |
+| `model` / `vocal_language` / `bpm` / `key_scale` / `time_signature` | 同名欄位 | 僅在 `params` 存在該鍵時才加入 payload |
+
+`params` 為空（或缺少上述鍵）時，`_build_payload` 產出的 payload 與修改前逐位元組相同（`tests/test_ace_step_adapter.py::test_empty_params_reproduces_prior_hardcoded_payload` 保證）。前端仍無 UI 可編輯這些 job params（同 `BP-COMFY-3` 的範圍外備註），只能透過 API 直接 PATCH。
