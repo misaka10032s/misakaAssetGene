@@ -1056,10 +1056,35 @@ re-raise。
 | POST | `/api/v1/projects/{pid}/fidelity-loop/{lid}/advance` | 跑下一輪（僅 `AWAITING_USER`/`STOPPED_REGRESSION_RECOVERED` 可呼叫，否則 400；狀態並行被搶走則 409） |
 | GET | `/api/v1/projects/{pid}/fidelity-loop/{lid}` | 目前狀態 + `next_round_plan` 預覽 |
 | GET | `/api/v1/projects/{pid}/fidelity-loop/{lid}/stream` | SSE，比照 `training/service.py:109-158`；`(status, current_round, best_pass_count)` 變化才 yield，終態才有 `event: done`（`AWAITING_USER`/`STOPPED_REGRESSION_RECOVERED` 非終態，仍可能有後續 advance） |
+| PATCH | `/api/v1/projects/{pid}/settings` | `ProjectSettingsUpdateRequest{auto_loop_enabled}`；欄位為 `None` 視為不變更 |
 
 未知 `character_sheet_id`／`outfit_variant` 一律 400（後者訊息附可用變體清單，沿用
-`parse_character_checklist` 既有拋錯）。專案設定 `auto_loop_enabled` 開關與建議
-卡片留待 Brief 3。
+`parse_character_checklist` 既有拋錯）。
+
+> v0.9.7（Brief 3）：建議卡片 + 專案設定 + blueprint 條目新增（詳見 `BP-REFINE-2`）。
+
+**專案設定 `auto_loop_enabled`**（`ProjectSummary.auto_loop_enabled: bool = False`，
+`core/project/manager.py` 持久化於 `project.json`）：`FidelityLoopStartRequest.
+auto_continue` 改為 `bool | None`；省略（`None`）時，`POST .../fidelity-loop`
+路由層（`core/main.py:start_fidelity_loop`）在呼叫 `FidelityService.start_loop`
+之前，用這個專案設定解出一個具體的 `bool` 再往下傳——顯式帶入的 `True`/`False`
+永遠優先於專案預設，服務/持久層完全不需要知道「省略」這回事。
+
+**`FidelitySuggestionCard`**（`core/consultant/fidelity_suggestion.py`，比照
+`TrainingSuggestionCard` spec §4.4/§5.12.1，同樣**不自動執行**）：與訓練建議卡片
+不同——訓練卡片是「這次對話意圖」觸發（planner 分析當前 prompt/modality），
+本卡片的條件是**專案層級的事實**，與當前對話內容無關：專案已有至少一個 IMAGE
+asset（`asset_type == "image"`，排除遮罩 `asset_type == "mask"`）**且**至少一個
+`CharacterSheet.sheet_source_path` 已設定，就會在
+`POST .../consultant/clarify`、`POST .../consultant/session`、
+`POST .../consultant/session/advance` 三條回應的 `ClarifyResult.
+fidelity_suggestion_cards` 附上一張卡（最多一張；挑選規則：最新建立的 IMAGE
+asset ＋ 第一個有 `sheet_source_path` 的 CharacterSheet）。卡片預填
+`asset_id`／`character_sheet_id`／`outfit_variant_choices`（即時讀該角色資料夾
+`outfits.md` 解析，讀取失敗降級為空清單，不影響卡片本身出現）／
+`auto_continue`（預設取自上述專案設定）。此欄位於路由層組裝（`core/main.py`），
+非顧問 planner 內部產生——planner 是無狀態的，沒有專案 asset/character-sheet
+存取權。
 
 ---
 

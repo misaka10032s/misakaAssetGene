@@ -23,8 +23,10 @@ from fastapi.exceptions import RequestValidationError
 from core.config import get_settings
 from core.logging_redaction import install_redaction_filter
 from core.consultant.engine import ConsultantEngine
+from core.consultant.fidelity import load_character_sources, list_outfit_variants
 from core.consultant.fidelity_service import FidelityLoopConflictError, FidelityService
 from core.consultant.fidelity_store import FidelityStore
+from core.consultant.fidelity_suggestion import build_fidelity_suggestion_cards
 from core.editor.mask import ImageHeaderError, MaskRegionError, build_mask_png, read_image_size
 from core.generation.service import GenerationService
 from core.integration.model_registry import ModelRegistryService
@@ -72,7 +74,9 @@ from core.models.schemas import (
     ModelDownloadRequest,
     ModelDownloadResult,
     Modality,
+    ClarifyResult,
     ProjectLicenseReport,
+    ProjectSettingsUpdateRequest,
     ProjectWorkspaceData,
     ProjectListData,
     ProjectVersionGraph,
@@ -233,6 +237,50 @@ def _fidelity_store(project_id: str) -> FidelityStore:
 
 def _character_sheet_resolver(project_id: str, character_sheet_id: str) -> CharacterSheet | None:
     return _asset_store(project_id).get_character_sheet(project_id, character_sheet_id)
+
+
+def _outfit_variant_choices(character_sheet: CharacterSheet) -> list[str]:
+    """Real I/O resolver for ``FidelitySuggestionCard.outfit_variant_choices``
+    (spec §5.15 / C-spec.md §4.3) — reads the sheet's ``outfits.md`` live
+    (spec §2.2: never cached), same source ``core.consultant.fidelity``
+    already reads for the checklist itself. A malformed/missing
+    ``sheet_source_path`` must never break the whole consultant clarify
+    response just to surface a suggestion card, so any parse failure here
+    is logged and degrades to an empty choice list (the card still appears;
+    the frontend's outfit dropdown is simply empty until the sheet is
+    fixed)."""
+    if not character_sheet.sheet_source_path:
+        return []
+    try:
+        _, outfits_text = load_character_sources(character_sheet.sheet_source_path)
+        return list_outfit_variants(outfits_text)
+    except (OSError, ValueError) as error:
+        logger.warning(
+            "fidelity suggestion card: could not read outfit variants for character_sheet=%s: %s",
+            character_sheet.id, error,
+        )
+        return []
+
+
+def _attach_fidelity_suggestion_cards(project_dir: Path, project_id: str, project_auto_loop_enabled: bool, result: ClarifyResult) -> ClarifyResult:
+    """Attach ``FidelitySuggestionCard``(s) to a consultant response
+    (spec §5.15 / C-spec.md §4.3). Computed at the route layer, never inside
+    the stateless planner — the emission condition (an IMAGE asset + a
+    CharacterSheet with sheet_source_path) is project state the planner has
+    no access to. A no-op (returns ``result`` unchanged) when the condition
+    is not met, so every existing caller/test keeps getting an empty list
+    (the pydantic field default) exactly as before this feature existed."""
+    assets = generation_service._read_assets(project_dir)
+    character_sheets = _asset_store(project_id).list_character_sheets(project_id)
+    cards = build_fidelity_suggestion_cards(
+        assets,
+        character_sheets,
+        outfit_variant_resolver=_outfit_variant_choices,
+        auto_continue_default=project_auto_loop_enabled,
+    )
+    if not cards:
+        return result
+    return result.model_copy(update={"fidelity_suggestion_cards": cards})
 
 
 def _current_network_state() -> NetworkState:
@@ -415,6 +463,21 @@ def get_project(project_id: str) -> ApiResponse:
     return success_response(MessageKey.SUCCESS_FETCH0, {"project": project.model_dump()})
 
 
+@app.patch("/api/v1/projects/{project_id}/settings", response_model=ApiResponse)
+def update_project_settings(project_id: str, payload: ProjectSettingsUpdateRequest) -> ApiResponse:
+    """Spec §5.15 / C-spec.md §5 — currently the single setting
+    ``auto_loop_enabled`` (the default for an omitted
+    ``FidelityLoopStartRequest.auto_continue``); shaped to grow additional
+    project settings later without a new route."""
+    if IS_DEV:
+        logger.info("PATCH /api/v1/projects/%s/settings auto_loop_enabled=%s", project_id, payload.auto_loop_enabled)
+    try:
+        project = project_manager.update_settings(project_id, auto_loop_enabled=payload.auto_loop_enabled)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return success_response(MessageKey.SUCCESS_SWITCH0, {"project": project.model_dump()})
+
+
 @app.get("/api/v1/project-schema", response_model=ApiResponse)
 def get_project_schema() -> ApiResponse:
     schema_path = REPO_ROOT / "core" / "project" / "project.schema.json"
@@ -475,7 +538,7 @@ def clarify_project(project_id: str, payload: ClarifyRequest) -> ApiResponse:
     if IS_DEV:
         logger.info("POST /api/v1/projects/%s/consultant/clarify modality=%s", project_id, payload.modality.value if payload.modality else "auto")
     try:
-        project, _ = project_manager.get_project(project_id)
+        project, project_dir = project_manager.get_project(project_id)
     except ProjectNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
@@ -488,6 +551,7 @@ def clarify_project(project_id: str, payload: ClarifyRequest) -> ApiResponse:
             project_synopsis=project.synopsis,
         )
     )
+    result = _attach_fidelity_suggestion_cards(project_dir, project_id, project.auto_loop_enabled, result)
     project_manager.append_conversation_entries(
         project_id,
         [
@@ -529,7 +593,7 @@ def start_consultant_session(project_id: str, payload: ConsultantSessionStartReq
     if IS_DEV:
         logger.info("POST /api/v1/projects/%s/consultant/session", project_id)
     try:
-        project, _ = project_manager.get_project(project_id)
+        project, project_dir = project_manager.get_project(project_id)
     except ProjectNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     session_data = consultant_engine.start_session(
@@ -543,6 +607,14 @@ def start_consultant_session(project_id: str, payload: ConsultantSessionStartReq
         ),
         session_id=payload.session_id,
     )
+    if session_data.result is not None:
+        session_data = session_data.model_copy(
+            update={
+                "result": _attach_fidelity_suggestion_cards(
+                    project_dir, project_id, project.auto_loop_enabled, session_data.result
+                )
+            }
+        )
     return success_response(MessageKey.SUCCESS_ADD0, session_data.model_dump(mode="json"))
 
 
@@ -551,7 +623,7 @@ def advance_consultant_session(project_id: str, payload: ConsultantSessionAdvanc
     if IS_DEV:
         logger.info("POST /api/v1/projects/%s/consultant/session/advance id=%s", project_id, payload.session_id)
     try:
-        project, _ = project_manager.get_project(project_id)
+        project, project_dir = project_manager.get_project(project_id)
     except ProjectNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     try:
@@ -572,6 +644,14 @@ def advance_consultant_session(project_id: str, payload: ConsultantSessionAdvanc
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    if session_data.result is not None:
+        session_data = session_data.model_copy(
+            update={
+                "result": _attach_fidelity_suggestion_cards(
+                    project_dir, project_id, project.auto_loop_enabled, session_data.result
+                )
+            }
+        )
     return success_response(MessageKey.SUCCESS_SWITCH0, session_data.model_dump(mode="json"))
 
 
@@ -766,7 +846,19 @@ def start_fidelity_loop(project_id: str, asset_id: str, payload: FidelityLoopSta
             project_id, asset_id, payload.character_sheet_id, payload.outfit_variant,
         )
     try:
-        result = fidelity_service.start_loop(project_id, asset_id, payload)
+        project, _ = project_manager.get_project(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    # Brief 3 (spec §5.15 / C-spec.md §5): an omitted auto_continue defaults
+    # to this project's auto_loop_enabled setting; resolved to a concrete
+    # bool HERE, before FidelityService ever sees the request, so an
+    # explicit True/False in the request always wins over the project
+    # default and the service/store never have to know about the default.
+    resolved_payload = payload if payload.auto_continue is not None else payload.model_copy(
+        update={"auto_continue": project.auto_loop_enabled}
+    )
+    try:
+        result = fidelity_service.start_loop(project_id, asset_id, resolved_payload)
     except ProjectNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except FileNotFoundError as error:

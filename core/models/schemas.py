@@ -151,6 +151,23 @@ class ProjectSummary(BaseModel):
     name: str
     type: str
     synopsis: str = ""
+    # Spec §5.15 / C-spec.md §5 — per-project default for
+    # FidelityLoopStartRequest.auto_continue when the caller omits it.
+    # Persisted in project.json; changed via PATCH .../settings. Setting it
+    # never itself starts or auto-continues a loop — it only supplies a
+    # default the NEXT explicit start request may still override.
+    auto_loop_enabled: bool = False
+
+
+class ProjectSettingsUpdateRequest(BaseModel):
+    """``PATCH /api/v1/projects/{project_id}/settings`` body (spec §5).
+
+    Every field is optional (``None`` = "leave unchanged") so this request
+    shape can grow additional project settings later without breaking a
+    caller that only wants to touch one of them.
+    """
+
+    auto_loop_enabled: bool | None = None
 
 
 class ProjectListData(BaseModel):
@@ -283,6 +300,14 @@ class ClarifyResult(BaseModel):
     template_loaded: bool
     next_step: str
     analysis: ConsultantAnalysis | None = None
+    # Spec §5.15 / C-spec.md §4.3 — attached at the route layer (core/main.py),
+    # never inside the planner: unlike TrainingSuggestionCard (keyed off the
+    # session's modality/prompt text), this card's condition is a PROJECT-level
+    # fact (an IMAGE asset + a CharacterSheet with sheet_source_path) that the
+    # stateless planner has no access to. Forward-referenced (class defined
+    # later in this file) + rebuilt at module bottom, same idiom as
+    # ConversationEntry.analysis above.
+    fidelity_suggestion_cards: list["FidelitySuggestionCard"] = Field(default_factory=list)
 
 
 class ConsultantState(str, Enum):
@@ -1189,7 +1214,12 @@ class FidelityLoopStartRequest(BaseModel):
     character_sheet_id: str = Field(min_length=1)
     outfit_variant: str = Field(min_length=1)
     max_rounds: int = Field(default=4, ge=1, le=8)
-    auto_continue: bool = False
+    # Brief 3 (spec §5.15 / C-spec.md §5): ``None`` (the field omitted) means
+    # "use this project's ``ProjectSummary.auto_loop_enabled`` setting" —
+    # resolved at the route layer (core/main.py:start_fidelity_loop) BEFORE
+    # this request reaches FidelityService, so the service/store always see
+    # a concrete bool. An explicit True/False in the request always wins.
+    auto_continue: bool | None = None
 
 
 class FidelityRoundPlan(BaseModel):
@@ -1264,5 +1294,44 @@ class FidelityLoopData(BaseModel):
     next_round_plan: FidelityRoundPlan | None = None
 
 
+class FidelitySuggestionCard(BaseModel):
+    """Backend data shape for a suggestion card proposing to start a
+    character-fidelity refine loop (spec §5.15 / C-spec.md §4.3, mirrors
+    ``TrainingSuggestionCard`` — spec §4.4 / §5.12.1).
+
+    Built by ``core.consultant.fidelity_suggestion.build_fidelity_suggestion_cards``
+    and attached to ``ClarifyResult.fidelity_suggestion_cards`` at the route
+    layer (``core/main.py``) whenever the project already has an IMAGE asset
+    AND at least one ``CharacterSheet`` with ``sheet_source_path`` set — a
+    project-level fact, independent of the current session's modality/state
+    (unlike ``TrainingSuggestionCard``, which is keyed off the session's
+    prompt text). The frontend renders it as a clickable button that opens
+    the ``FidelityLoopStartRequest`` form pre-filled with these fields; the
+    consultant NEVER auto-starts the loop (spec §4.4 — no auto-exec).
+
+    Fields
+    ------
+    action                 : always "start_fidelity_loop" in the current phase
+    asset_id               : prefilled root IMAGE asset id
+    character_sheet_id     : prefilled CharacterSheet id
+    outfit_variant_choices : outfit variants parsed live from the sheet's
+                              outfits.md (spec §2.1 list_outfit_variants);
+                              empty if the folder could not be parsed
+    auto_continue          : prefilled from the project's
+                              ``auto_loop_enabled`` setting (spec §5's
+                              PATCH .../settings)
+    """
+
+    action: str = "start_fidelity_loop"
+    asset_id: str
+    character_sheet_id: str
+    outfit_variant_choices: list[str] = Field(default_factory=list)
+    auto_continue: bool = False
+    title: str = "檢查角色一致性"
+    description: str = "對這張立繪跑角色一致性自動精修迴圈：VLM 逐項比對角色 SSOT，局部遮罩重繪不一致之處，最多數輪直到全過。"
+    reason: str = ""
+
+
 ConversationEntry.model_rebuild()
 ProjectWorkspaceData.model_rebuild()
+ClarifyResult.model_rebuild()

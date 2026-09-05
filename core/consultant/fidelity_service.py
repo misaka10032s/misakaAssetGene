@@ -134,7 +134,14 @@ class FidelityService:
             character_sheet_id=request.character_sheet_id,
             outfit_variant=request.outfit_variant,
             max_rounds=request.max_rounds,
-            auto_continue=request.auto_continue,
+            # Brief 3: FidelityLoopStartRequest.auto_continue is now
+            # ``bool | None`` (None = "use the project's auto_loop_enabled
+            # setting"). The route layer (core/main.py:start_fidelity_loop)
+            # always resolves it to a concrete bool BEFORE calling
+            # start_loop; this ``bool(...)`` is a defensive fallback only
+            # (mirrors the legacy default of False), never the primary
+            # resolution point.
+            auto_continue=bool(request.auto_continue),
         )
 
         self._run_baseline_critique(project_dir, store, loop, checks)

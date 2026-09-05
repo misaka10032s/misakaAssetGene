@@ -210,6 +210,9 @@ class ProjectManager:
             name=normalized_name,
             type=str(data.get("type") or ""),
             synopsis=str(data.get("synopsis") or ""),
+            # Absent on project.json files written before this field existed
+            # (spec §5.15 / C-spec.md §5) — default False, never a migration.
+            auto_loop_enabled=bool(data.get("auto_loop_enabled", False)),
         )
         if data.get("id") != normalized_id:
             (project_dir / "project.json").write_text(
@@ -217,6 +220,25 @@ class ProjectManager:
                 encoding="utf-8",
             )
         return summary
+
+    def update_settings(self, project_id: str, *, auto_loop_enabled: bool | None) -> ProjectSummary:
+        """``PATCH /api/v1/projects/{project_id}/settings`` (spec §5).
+
+        Only fields explicitly provided (non-``None``) are changed; omitted
+        fields keep their current persisted value. Raises
+        :class:`ProjectNotFoundError` for an unknown project_id (same
+        contract as every other project route).
+        """
+        summary, project_dir = self.get_project(project_id)
+        if auto_loop_enabled is None:
+            return summary
+        updated = summary.model_copy(update={"auto_loop_enabled": auto_loop_enabled})
+        (project_dir / "project.json").write_text(
+            json.dumps(updated.model_dump(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        logger.info("Updated project %s settings: auto_loop_enabled=%s", project_id, auto_loop_enabled)
+        return updated
 
     def _conversation_path(self, project_dir: Path) -> Path:
         return project_dir / "conversation.json"

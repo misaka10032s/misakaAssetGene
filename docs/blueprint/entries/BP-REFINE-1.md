@@ -54,3 +54,7 @@ superpowers:
 - `quality-gates/python/run.py l0`：G1/G2/G3b/G4 全部 PASS（G1 ruff baseline 178→178，一筆新增 `RefinePromptMode` 的 `UP042` 以行內 `# noqa` 註記維持與同檔其餘 10 個 `(str, Enum)` enum 一致風格，未動 baseline 機制本身；另兩筆既有「未使用 import」pre-existing 因新測試實際用到而合法收斂，178 pre-existing 已 `--update-baseline` 收斂為 resolved-only）。
 - `quality-gates/python/run.py l1`：G5 diff coverage PASS（>=60%）。
 - 真實 API 路徑（8402，ComfyUI 未啟動）：見 run dir `state/runs/misakaAssetGene-refine-loop-260905/A-impl.md`。
+
+**Consumed by**: `BP-REFINE-2`（角色一致性自動精修迴圈）——`prompt_mode=append` 是
+每輪 instruction 疊加既有通過項 fix_tags 的前提；`effective_negative` 繼承機制是
+迴圈每輪 refine 呼叫直接沿用、不重新指定 negative 的原因。
