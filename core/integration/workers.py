@@ -348,9 +348,7 @@ class WorkersService:
         pid = int(runtime_state.get("pid") or 0)
         if pid <= 0:
             return None
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if not _pid_alive(pid):
             return None
         return pid
 
@@ -573,3 +571,59 @@ class WorkersService:
         except (FileNotFoundError, subprocess.CalledProcessError):
             return False
         return completed.stdout.strip() == requested_python
+
+
+# Windows-only constants for the pid liveness probe below (harmless to define
+# on POSIX -- they're only referenced inside the `os.name == "nt"` branch).
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+
+
+def _pid_alive(pid: int) -> bool:
+    """Cross-platform, side-effect-free "is this pid alive" probe.
+
+    ``os.kill(pid, 0)`` is NOT a safe liveness probe on Windows: ``sig=0`` is
+    numerically identical to ``signal.CTRL_C_EVENT`` (0), so CPython's Windows
+    implementation of ``os.kill`` routes it through
+    ``GenerateConsoleCtrlEvent`` -- a *broadcast* to the whole console process
+    group the target pid belongs to, not a targeted, read-only query (see
+    CPython ``Doc/library/os.rst``: "the CTRL_C_EVENT and CTRL_BREAK_EVENT
+    signals are special signals which can only be sent to console processes
+    which share a common console window ... [other signals] cause the
+    process to be unconditionally killed by the TerminateProcess API" --
+    sig 0/1 are exactly the two values that do NOT go through TerminateProcess
+    and instead broadcast). Measured 2026-09-05: calling this on a worker's
+    own pid raised ``SystemError`` inside a request handler AND, in the same
+    instant, killed the live ACE-Step worker sharing the app's console (14 GB
+    VRAM loaded) -- see
+    ``D:/backup/CSIA/@PM/state/runs/misakaAssetGene-gen-test-260904/D-report.md`` § E.
+
+    On Windows this uses ``OpenProcess``/``GetExitCodeProcess`` instead, which
+    only reads process state and sends no signal of any kind. On POSIX it
+    keeps the standard ``os.kill(pid, 0)`` idiom, whose signal 0 has no
+    special meaning there and is documented as a pure existence/permission
+    check.
+    """
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == _STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but we can't signal it (e.g. owned by another user)
+        # -- that still means it's alive.
+        return True
+    return True
