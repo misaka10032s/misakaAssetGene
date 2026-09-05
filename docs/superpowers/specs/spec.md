@@ -950,6 +950,41 @@ project workspace 的 conversation history 不可一次完整渲染所有訊息�
 - 輸入 Hugging Face 模型檔 URL 並下載到本機模型路徑
 - 顯示目前模型搜尋路徑與 provider 順序
 
+### 5.15 角色一致性檢查（Fidelity Critic）
+> v0.9.5 (Brief 1/3): checklist 解析器 + VLM 判官新增。控制器/持久化/API 為 Brief 2；
+> 建議卡片 + blueprint 條目為 Brief 3（詳細規格：`@PM/state/runs/misakaAssetGene-refine-loop-260905/C-spec.md`）。
+
+**Checklist 派生**（`core/consultant/fidelity.py`）：從角色 SSOT（`setting.md` 的
+`## 🎨 外型特徵` 逐 bullet、`outfits.md` 指定服裝變體的巢狀子 bullet）動態解析出
+`FidelityCheck` 清單（`id` / `label_zh` / `pass_criteria` 原文逐字 / `region_hint`
+六分區 HEAD·FACE·TORSO·WAIST·LEGS·BACKGROUND / `fix_tags` / `source`）。`fix_tags`
+優先用 label 專屬關鍵詞從標籤行 / 該服裝「生成提示詞 → ComfyUI」整行過濾，找不到
+就整段 fallback，絕不留空。未知服裝變體或缺少 `外型特徵` 段落 → 明確拋錯並列出
+可用變體，不回空清單。`CharacterSheet.sheet_source_path`（可選，向後相容既有列）
+指向角色資料夾；`load_character_sources` 只讀該資料夾下的 `setting.md` /
+`outfits.md` 兩檔，其餘檔案一律不讀。此解析為關鍵詞啟發式，非翻譯，會有已知的
+誤判（例如頭部關鍵詞「ribbon」可能誤收軀幹裝飾），非本迴圈可自動修正，交由後續
+輪次的人工/驗收判斷。
+
+**VLM 判官**（`core/llm/vision.py` 編排 + `providers/ollama.py` /
+`providers/openai.py` 的 `critique_image`）：比照 `llm/service.py` 的
+handler-dict + `settings.llm_provider_order` 模式；Ollama 走 `/api/chat`
+（`images` base64、`format:"json"`、`temperature 0.2`、`keep_alive:0` 立即釋放
+VRAM）為本機首選，新設定 `MISAKA_OLLAMA_VISION_MODEL`（預設 `qwen2.5vl:7b`）獨立
+於既有文字模型鍵；OpenAI Chat Completions（`image_url` data URI）為雲端備援，離線
+閘門沿用 `router.py` 的「非 ONLINE 時停用 CLOUD provider」規則。輸出
+`FidelityCheckResult{id, passed, confidence, region_bbox, note}`，JSON 解析失敗
+或缺欄位一律預設該項 `pass` 並記警告，絕不中斷整批判定。
+
+**防幻覺三閘門**（於 `vision.critique` 套用，僅會把 `fail` 降級為 `pass`，
+`pass` 不受影響，每次降級皆記 INFO log 附 check id）：
+1. `region_bbox` 為 null，或面積 > 全圖 60% → 判定過於空泛，降級。
+2. 兩輪一致性 AND：同圖跑兩次，僅兩次皆 fail 才算數；一 fail 一 pass 視為 pass。
+3. bbox 中心落在 `region_hint` 預期的頭到腳分區之外（例如 HEAD 卻落在下 20%）→ 降級。
+
+此 venv 未安裝 Pillow（依派工指示刻意不新增）：§3.3 的降採樣目前恆為原圖直送，
+scale factor 記為 1.0，此落差已記錄於 log，非隱藏缺口。
+
 ---
 
 ## 6. 生成後端對應表（當前推薦 · 2026-04）

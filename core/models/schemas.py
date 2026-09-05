@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -854,6 +854,12 @@ class CharacterSheet(BaseModel):
     trigger_words: list[str] = Field(default_factory=list)   # trigger words
     forbidden_features: list[str] = Field(default_factory=list)  # forbidden features
     reference_image_refs: list[str] = Field(default_factory=list)  # reference images (relative paths)
+    # Spec §5.15 / §7.1.1 — optional path to a character reference folder
+    # (containing setting.md + outfits.md) used by the fidelity checklist
+    # parser (core/consultant/fidelity.py). Always read live, never cached
+    # into SQLite beyond this path string. Optional + defaulted to None so
+    # existing rows created before this field existed still load.
+    sheet_source_path: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -864,6 +870,7 @@ class CharacterSheetCreateRequest(BaseModel):
     trigger_words: list[str] = Field(default_factory=list)
     forbidden_features: list[str] = Field(default_factory=list)
     reference_image_refs: list[str] = Field(default_factory=list)
+    sheet_source_path: str | None = None
 
 
 class CharacterSheetUpdateRequest(BaseModel):
@@ -872,6 +879,7 @@ class CharacterSheetUpdateRequest(BaseModel):
     trigger_words: list[str] | None = None
     forbidden_features: list[str] | None = None
     reference_image_refs: list[str] | None = None
+    sheet_source_path: str | None = None
 
 
 class DatasetPack(BaseModel):
@@ -1095,6 +1103,59 @@ class MaterializeData(BaseModel):
     materialized: list[MaterializeResultEntry] = Field(default_factory=list)
     broken: list[MaterializeResultEntry] = Field(default_factory=list)
     total: int = 0
+
+
+class BodyRegion(str, Enum):
+    """Spec §5.15 / §2.1 — coarse body-region hint for a fidelity check.
+
+    Used both to bucket a derived checklist item (parser,
+    core/consultant/fidelity.py) and to sanity-check a VLM critic's returned
+    ``region_bbox`` against the expected region (core/llm/vision.py §3.4
+    anti-hallucination gate 3).
+    """
+
+    HEAD = "head"
+    FACE = "face"
+    TORSO = "torso"
+    WAIST = "waist"
+    LEGS = "legs"
+    BACKGROUND = "background"
+
+
+class FidelityCheck(BaseModel):
+    """Spec §5.15 / §2.1 — one derived checklist item to critique against a render.
+
+    Derived by ``core.consultant.fidelity.parse_character_checklist`` from a
+    character's ``setting.md`` (source="setting") or the selected outfit's
+    section of ``outfits.md`` (source="outfits"). ``pass_criteria`` is the
+    original SSOT bullet text verbatim — never summarized — so a human can
+    always trace a check back to its source sentence.
+    """
+
+    id: str
+    label_zh: str
+    pass_criteria: str
+    region_hint: BodyRegion
+    fix_tags: list[str] = Field(default_factory=list)
+    source: Literal["setting", "outfits"]
+
+
+class FidelityCheckResult(BaseModel):
+    """Spec §5.15 / §3.2 — one VLM critic verdict for a single ``FidelityCheck``.
+
+    ``region_bbox`` is ``(x0, y0, x1, y1)`` in original-image pixel
+    coordinates (already rescaled from any downsampled critic input, spec
+    §3.3). Anti-hallucination gates (§3.4) may downgrade a raw ``passed=False``
+    verdict to ``True`` when the critic could not localize the failure
+    convincingly — that downgrade happens in ``core.llm.vision``, not here;
+    this model only carries the final, already-gated verdict.
+    """
+
+    id: str
+    passed: bool
+    confidence: float = Field(ge=0, le=1)
+    region_bbox: tuple[int, int, int, int] | None = None
+    note: str = ""
 
 
 ConversationEntry.model_rebuild()

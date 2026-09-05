@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     misaka_default_locale: str = Field(default="zh-TW", alias="MISAKA_DEFAULT_LOCALE")
     misaka_ollama_base_url: str = Field(default="http://127.0.0.1:11434", alias="MISAKA_OLLAMA_BASE_URL")
     misaka_ollama_model: str = Field(default="qwen2.5:7b-instruct", alias="MISAKA_OLLAMA_MODEL")
+    # Vision model used ONLY by the fidelity critic (core/llm/vision.py,
+    # spec §5.15 / §3.1) — a separate key from misaka_ollama_model since a
+    # text-only model cannot serve image-critique requests.
+    misaka_ollama_vision_model: str = Field(default="qwen2.5vl:7b", alias="MISAKA_OLLAMA_VISION_MODEL")
     misaka_auto_start_ollama: bool = Field(default=False, alias="MISAKA_AUTO_START_OLLAMA")
     misaka_llm_provider_order: str = Field(
         default="ollama",
