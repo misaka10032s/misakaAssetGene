@@ -47,7 +47,7 @@
       ],
       "python": "3.11",
       "install_cmd": "uv pip install -e .",
-      "start_cmd": "python -m acestep.api.server_cli --host 127.0.0.1 --port 8190 --no-init",
+      "start_cmd": "python -m acestep.api_server --host 127.0.0.1 --port 8190 --no-init",
       "health_check": "http://127.0.0.1:8190/health",
       "smoke_test": "scripts/smoke/ace_step.py",
       "vram_requirement_mb": 6000
