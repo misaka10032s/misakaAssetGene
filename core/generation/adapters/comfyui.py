@@ -14,8 +14,6 @@ from core.models.schemas import GenerationRecipe, Modality
 
 logger = logging.getLogger("misaka.generation.adapters.comfyui")
 
-DEFAULT_NEGATIVE_PROMPT = "low quality, blurry, deformed, extra limbs, bad anatomy"
-
 
 def adapter_name() -> str:
     return "comfyui"
@@ -43,7 +41,15 @@ def execute(context: AdapterContext) -> AdapterExecutionResult:
             base_url=base_url,
             checkpoint_name=checkpoint_name,
             positive_prompt=context.job.prompt,
-            negative_prompt=DEFAULT_NEGATIVE_PROMPT,
+            # params.negative (BP-REFINE-1 / spec §6.2) overrides the
+            # configured default; a refine inherits its parent's negative
+            # into params before this point (GenerationService.refine_asset).
+            # Presence, not truthiness: an explicit "" means "no negative
+            # this round" and must reach the CLIPTextEncode node as "",
+            # not be treated as unset and replaced by the configured default.
+            negative_prompt=(
+                params["negative"] if "negative" in params else get_settings().misaka_comfyui_default_negative_prompt
+            ),
             filename_prefix=filename_prefix,
             seed=_resolve_seed(context.job.params, prompt_id),
             params=context.job.params or {},

@@ -152,8 +152,6 @@
   "tests/test_read_jobs_compat.py|F401|`core.models.schemas.GenerationJob` imported but unused",
   "tests/test_read_jobs_compat.py|I001|Import block is un-sorted or un-formatted",
   "tests/test_read_jobs_compat.py|UP017|Use `datetime.UTC` alias",
-  "tests/test_refine_service.py|F401|`core.models.schemas.AssetRecord` imported but unused",
-  "tests/test_refine_service.py|F401|`datetime.datetime` imported but unused",
   "tests/test_refine_service.py|F401|`datetime.timezone` imported but unused",
   "tests/test_setup_diagnostics.py|F401|`pytest` imported but unused",
   "tests/test_setup_diagnostics.py|F401|`re` imported but unused",

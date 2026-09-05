@@ -7,6 +7,7 @@ from core.generation import refine
 from core.models.schemas import (
     GenerationRecipe,
     PromptDecompositionPass,
+    RefinePromptMode,
     RefineRequest,
     RefineStrategy,
 )
@@ -161,6 +162,46 @@ def test_dedup_no_stage_emitted_twice() -> None:
     steps = refine.decompose_prompt(instruction)
     stages = [step.stage for step in steps]
     assert len(stages) == len(set(stages)), "Same stage emitted more than once"
+
+
+# ---------------------------------------------------------------------------
+# BP-REFINE-1: compose_prompt (append/replace prompt composition)
+# ---------------------------------------------------------------------------
+
+def test_compose_prompt_append_combines_parent_and_instruction() -> None:
+    composed = refine.compose_prompt("brown hair, maid outfit", "twin daggers", RefinePromptMode.APPEND)
+    assert composed == "brown hair, maid outfit, twin daggers"
+
+
+def test_compose_prompt_append_dedupes_identical_tags() -> None:
+    # The instruction repeats a tag the parent prompt already carries -- the
+    # append must not duplicate it (spec §5.11 lineage / BP-REFINE-1).
+    composed = refine.compose_prompt("brown hair, twin daggers", "twin daggers, long hair", RefinePromptMode.APPEND)
+    assert composed == "brown hair, twin daggers, long hair"
+    assert composed.count("twin daggers") == 1
+
+
+def test_compose_prompt_append_dedupes_case_insensitively() -> None:
+    # Same tag repeated with different casing must still be treated as one
+    # tag; the first occurrence's original text (casing/spacing) survives.
+    composed = refine.compose_prompt("Brown Hair, maid outfit", "brown hair, twin daggers", RefinePromptMode.APPEND)
+    assert composed == "Brown Hair, maid outfit, twin daggers"
+    assert composed.lower().count("brown hair") == 1
+
+
+def test_compose_prompt_replace_ignores_parent() -> None:
+    composed = refine.compose_prompt("brown hair, maid outfit", "long hair only", RefinePromptMode.REPLACE)
+    assert composed == "long hair only"
+
+
+def test_compose_prompt_append_with_no_parent_prompt_falls_back_to_instruction() -> None:
+    # Legacy / imported assets with no known effective prompt (BP-REFINE-1
+    # backward-compat fallback): append degrades to today's pre-existing
+    # "instruction becomes the whole prompt" behaviour.
+    composed = refine.compose_prompt("", "twin daggers", RefinePromptMode.APPEND)
+    assert composed == "twin daggers"
+    composed_none = refine.compose_prompt(None, "twin daggers", RefinePromptMode.APPEND)
+    assert composed_none == "twin daggers"
 
 
 def test_dedup_lineage_metadata_preserved() -> None:

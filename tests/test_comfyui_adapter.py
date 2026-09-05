@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from core.config import get_settings
 from core.generation.adapters import comfyui
 from core.generation.adapters.common import AdapterContext
 from core.models.schemas import GenerationJob, GenerationJobStatus, GenerationRecipe, Modality
@@ -258,6 +259,96 @@ def test_resolve_checkpoint_default_absent_from_live_falls_through_with_warning(
         )
     assert result == "a.ckpt"
     assert any("missing.ckpt" in record.getMessage() for record in caplog.records)
+
+
+def _mock_execute_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _FakeClient:
+    checkpoint_dir = tmp_path / "worker" / "models" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    (checkpoint_dir / "model.safetensors").write_bytes(b"ckpt")
+    monkeypatch.setattr(comfyui, "fetch_live_checkpoints", lambda base_url, **k: [])
+
+    fake = _FakeClient()
+
+    class _CM:
+        def __enter__(self):
+            return fake
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(comfyui.httpx, "Client", lambda *a, **k: _CM())
+    return fake
+
+
+def test_execute_negative_defaults_to_configured_setting_for_txt2img_img2img_inpaint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BP-REFINE-1: with no ``params.negative``, every recipe's negative
+    ``CLIPTextEncode`` (node "7") gets the configured default -- not the old
+    hardcoded module constant, which had no override path at all."""
+    fake = _mock_execute_environment(tmp_path, monkeypatch)
+    default_negative = get_settings().misaka_comfyui_default_negative_prompt
+
+    txt2img_context = AdapterContext(
+        project_dir=tmp_path / "proj",
+        job=_job(GenerationRecipe.TXT2IMG),
+        worker_path=tmp_path / "worker",
+        health_check="http://127.0.0.1:8188/system_stats",
+    )
+    comfyui.execute(txt2img_context)
+    assert fake.submitted_workflow["7"]["inputs"]["text"] == default_negative
+
+    source = tmp_path / "src.png"
+    source.write_bytes(b"x")
+    img2img_context = AdapterContext(
+        project_dir=tmp_path / "proj",
+        job=_job(GenerationRecipe.IMG2IMG),
+        worker_path=tmp_path / "worker",
+        health_check="http://127.0.0.1:8188/system_stats",
+        source_asset_path=source,
+    )
+    comfyui.execute(img2img_context)
+    assert fake.submitted_workflow["7"]["inputs"]["text"] == default_negative
+
+    mask = tmp_path / "mask.png"
+    mask.write_bytes(b"y")
+    inpaint_context = AdapterContext(
+        project_dir=tmp_path / "proj",
+        job=_job(GenerationRecipe.INPAINT),
+        worker_path=tmp_path / "worker",
+        health_check="http://127.0.0.1:8188/system_stats",
+        source_asset_path=source,
+        mask_asset_path=mask,
+    )
+    comfyui.execute(inpaint_context)
+    assert fake.submitted_workflow["7"]["inputs"]["text"] == default_negative
+
+
+def test_execute_honours_explicit_negative_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _mock_execute_environment(tmp_path, monkeypatch)
+    context = AdapterContext(
+        project_dir=tmp_path / "proj",
+        job=_job(GenerationRecipe.TXT2IMG, params={"negative": "custom neg"}),
+        worker_path=tmp_path / "worker",
+        health_check="http://127.0.0.1:8188/system_stats",
+    )
+    comfyui.execute(context)
+    assert fake.submitted_workflow["7"]["inputs"]["text"] == "custom neg"
+
+
+def test_execute_honours_explicit_empty_negative(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BP-REFINE-1 fix: ``params={"negative": ""}`` means "no negative this
+    round" and must reach the CLIPTextEncode node as an empty string --
+    presence, not truthiness, decides whether the configured default applies."""
+    fake = _mock_execute_environment(tmp_path, monkeypatch)
+    context = AdapterContext(
+        project_dir=tmp_path / "proj",
+        job=_job(GenerationRecipe.TXT2IMG, params={"negative": ""}),
+        worker_path=tmp_path / "worker",
+        health_check="http://127.0.0.1:8188/system_stats",
+    )
+    comfyui.execute(context)
+    assert fake.submitted_workflow["7"]["inputs"]["text"] == ""
 
 
 def test_execute_end_to_end_with_mocked_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
