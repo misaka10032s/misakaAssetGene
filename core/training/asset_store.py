@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS character_sheets (
     trigger_words       TEXT NOT NULL DEFAULT '[]',
     forbidden_features  TEXT NOT NULL DEFAULT '[]',
     reference_image_refs TEXT NOT NULL DEFAULT '[]',
+    sheet_source_path   TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );
@@ -148,6 +149,22 @@ class AssetStore:
     def _init_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            self._migrate_character_sheets(conn)
+
+    def _migrate_character_sheets(self, conn: sqlite3.Connection) -> None:
+        """Add ``sheet_source_path`` to a pre-existing ``character_sheets`` table.
+
+        ``CREATE TABLE IF NOT EXISTS`` above only applies to a brand-new DB
+        file; a ``memory.sqlite`` created before this column existed keeps its
+        original column set forever unless migrated here. Existing rows must
+        still load (spec §7.1.1 backward-compat requirement) — SQLite's
+        ``ALTER TABLE ... ADD COLUMN`` with no ``NOT NULL`` back-fills every
+        existing row with ``NULL``, which round-trips through Pydantic as
+        ``sheet_source_path=None``.
+        """
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(character_sheets)")}
+        if "sheet_source_path" not in columns:
+            conn.execute("ALTER TABLE character_sheets ADD COLUMN sheet_source_path TEXT")
 
     # ------------------------------------------------------------------
     # CharacterSheet CRUD
@@ -165,6 +182,7 @@ class AssetStore:
             trigger_words=req.trigger_words,
             forbidden_features=req.forbidden_features,
             reference_image_refs=req.reference_image_refs,
+            sheet_source_path=req.sheet_source_path,
             created_at=now,
             updated_at=now,
         )
@@ -172,14 +190,15 @@ class AssetStore:
             conn.execute(
                 "INSERT INTO character_sheets "
                 "(id, project_id, name, visual_anchors, trigger_words, "
-                " forbidden_features, reference_image_refs, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                " forbidden_features, reference_image_refs, sheet_source_path, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     record.id, record.project_id, record.name,
                     json.dumps(record.visual_anchors, ensure_ascii=False),
                     json.dumps(record.trigger_words, ensure_ascii=False),
                     json.dumps(record.forbidden_features, ensure_ascii=False),
                     json.dumps(record.reference_image_refs, ensure_ascii=False),
+                    record.sheet_source_path,
                     record.created_at.isoformat(),
                     record.updated_at.isoformat(),
                 ),
@@ -217,19 +236,21 @@ class AssetStore:
             trigger_words=req.trigger_words if req.trigger_words is not None else existing.trigger_words,
             forbidden_features=req.forbidden_features if req.forbidden_features is not None else existing.forbidden_features,
             reference_image_refs=req.reference_image_refs if req.reference_image_refs is not None else existing.reference_image_refs,
+            sheet_source_path=req.sheet_source_path if req.sheet_source_path is not None else existing.sheet_source_path,
             created_at=existing.created_at,
             updated_at=now,
         )
         with self._connect() as conn:
             conn.execute(
                 "UPDATE character_sheets SET name=?, visual_anchors=?, trigger_words=?, "
-                "forbidden_features=?, reference_image_refs=?, updated_at=? WHERE id=? AND project_id=?",
+                "forbidden_features=?, reference_image_refs=?, sheet_source_path=?, updated_at=? WHERE id=? AND project_id=?",
                 (
                     updated.name,
                     json.dumps(updated.visual_anchors, ensure_ascii=False),
                     json.dumps(updated.trigger_words, ensure_ascii=False),
                     json.dumps(updated.forbidden_features, ensure_ascii=False),
                     json.dumps(updated.reference_image_refs, ensure_ascii=False),
+                    updated.sheet_source_path,
                     updated.updated_at.isoformat(),
                     updated.id, updated.project_id,
                 ),
@@ -245,6 +266,10 @@ class AssetStore:
         return cursor.rowcount > 0
 
     def _row_to_character_sheet(self, row: sqlite3.Row) -> CharacterSheet:
+        # row["sheet_source_path"] may be absent (KeyError) on a row read via
+        # sqlite3.Row from a connection whose migration somehow did not run;
+        # .keys() lets us check membership without raising.
+        sheet_source_path = row["sheet_source_path"] if "sheet_source_path" in row.keys() else None
         return CharacterSheet(
             id=row["id"],
             project_id=row["project_id"],
@@ -253,6 +278,7 @@ class AssetStore:
             trigger_words=json.loads(row["trigger_words"] or "[]"),
             forbidden_features=json.loads(row["forbidden_features"] or "[]"),
             reference_image_refs=json.loads(row["reference_image_refs"] or "[]"),
+            sheet_source_path=sheet_source_path,
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )

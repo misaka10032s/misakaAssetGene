@@ -14,6 +14,7 @@ API-level tests (via TestClient):
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,77 @@ class TestCharacterSheetStore:
         store = AssetStore(tmp_path / "memory.sqlite")
         result = store.update_character_sheet("proj-a", "ghost", CharacterSheetUpdateRequest(name="X"))
         assert result is None
+
+    def test_sheet_source_path_roundtrip(self, tmp_path: Path) -> None:
+        store = AssetStore(tmp_path / "memory.sqlite")
+        created = store.create_character_sheet(
+            "proj-a",
+            CharacterSheetCreateRequest(name="Saiko", sheet_source_path="/chars/saiko"),
+        )
+        assert created.sheet_source_path == "/chars/saiko"
+        fetched = store.get_character_sheet("proj-a", created.id)
+        assert fetched is not None
+        assert fetched.sheet_source_path == "/chars/saiko"
+
+        updated = store.update_character_sheet(
+            "proj-a", created.id,
+            CharacterSheetUpdateRequest(sheet_source_path="/chars/saiko-v2"),
+        )
+        assert updated is not None
+        assert updated.sheet_source_path == "/chars/saiko-v2"
+
+    def test_sheet_source_path_defaults_to_none(self, tmp_path: Path) -> None:
+        store = AssetStore(tmp_path / "memory.sqlite")
+        created = store.create_character_sheet("proj-a", CharacterSheetCreateRequest(name="NoPath"))
+        assert created.sheet_source_path is None
+
+    def test_migration_loads_pre_existing_rows_without_sheet_source_path(self, tmp_path: Path) -> None:
+        """Spec §7.1.1 backward-compat: a ``character_sheets`` table created
+        before ``sheet_source_path`` existed must still load through the new
+        AssetStore, with the new field defaulting to ``None`` for old rows.
+        """
+        db_path = tmp_path / "memory.sqlite"
+        # Simulate a pre-migration DB: the OLD schema, no sheet_source_path column.
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE character_sheets (
+                    id                  TEXT PRIMARY KEY,
+                    project_id          TEXT NOT NULL,
+                    name                TEXT NOT NULL,
+                    visual_anchors      TEXT NOT NULL DEFAULT '[]',
+                    trigger_words       TEXT NOT NULL DEFAULT '[]',
+                    forbidden_features  TEXT NOT NULL DEFAULT '[]',
+                    reference_image_refs TEXT NOT NULL DEFAULT '[]',
+                    created_at          TEXT NOT NULL,
+                    updated_at          TEXT NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO character_sheets "
+                "(id, project_id, name, visual_anchors, trigger_words, "
+                " forbidden_features, reference_image_refs, created_at, updated_at) "
+                "VALUES ('old-1','proj-a','Legacy','[]','[]','[]','[]',"
+                "'2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Opening with the new AssetStore must migrate in place, not crash.
+        store = AssetStore(db_path)
+        fetched = store.get_character_sheet("proj-a", "old-1")
+        assert fetched is not None
+        assert fetched.name == "Legacy"
+        assert fetched.sheet_source_path is None
+
+        # And new writes on the migrated table work normally.
+        created = store.create_character_sheet(
+            "proj-a", CharacterSheetCreateRequest(name="New", sheet_source_path="/chars/new")
+        )
+        assert created.sheet_source_path == "/chars/new"
 
 
 class TestDatasetPackStore:

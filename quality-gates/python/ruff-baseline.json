@@ -42,6 +42,7 @@
   "core/main.py|F401|`core.project.cross_project.parse_reference` imported but unused",
   "core/main.py|I001|Import block is un-sorted or un-formatted",
   "core/main.py|RUF059|Unpacked variable `project_dir` is never used",
+  "core/models/schemas.py|UP042|Class BodyRegion inherits from both `str` and `enum.Enum`",
   "core/models/schemas.py|UP042|Class ConsultantState inherits from both `str` and `enum.Enum`",
   "core/models/schemas.py|UP042|Class CrossRefStatus inherits from both `str` and `enum.Enum`",
   "core/models/schemas.py|UP042|Class GenerationJobStatus inherits from both `str` and `enum.Enum`",
