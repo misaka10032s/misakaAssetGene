@@ -23,6 +23,7 @@ from fastapi.exceptions import RequestValidationError
 from core.config import get_settings
 from core.logging_redaction import install_redaction_filter
 from core.consultant.engine import ConsultantEngine
+from core.editor.mask import ImageHeaderError, MaskRegionError, build_mask_png, read_image_size
 from core.generation.service import GenerationService
 from core.integration.model_registry import ModelRegistryService
 from core.integration.tools import ToolsService
@@ -58,6 +59,8 @@ from core.models.schemas import (
     LoraPreset,
     LoraPresetCreateRequest,
     LoraPresetUpdateRequest,
+    MaskFromRegionsRequest,
+    MaskFromRegionsResponse,
     MaterializeData,
     MaterializeRequest,
     MaterializeResultEntry,
@@ -612,6 +615,77 @@ async def import_project_asset(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     return success_response(MessageKey.SUCCESS_ADD0, payload.model_dump(mode="json"))
+
+
+@app.post("/api/v1/projects/{project_id}/assets/{asset_id}/mask", response_model=ApiResponse)
+def create_asset_mask_from_regions(
+    project_id: str, asset_id: str, payload: MaskFromRegionsRequest
+) -> ApiResponse:
+    """Build a bbox-region mask PNG from an existing image asset (BP-EDITOR-2).
+
+    White-on-black output, same polarity the manual mask-painting editor
+    already produces (LoadImageMask channel=red — BP-EDITOR-1,
+    comfyui.py:316-319): union of ``regions`` (each optionally
+    dilated/feathered) minus the union of ``subtract`` regions, same
+    width/height as the source asset. Stored as a new mask AssetRecord via
+    the SAME ``import_asset`` path the manual editor's upload uses.
+
+    Security: reuses the identical resolve-then-contain guard as
+    GET .../assets/{asset_id}/file (M5.3/M5.9) before reading source bytes.
+    """
+    if IS_DEV:
+        logger.info("POST /api/v1/projects/%s/assets/%s/mask", project_id, asset_id)
+    try:
+        _, project_dir = project_manager.get_project(project_id)
+    except ProjectNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+    assets = generation_service._read_assets(project_dir)
+    source_asset = next((a for a in assets if a.id == asset_id), None)
+    if source_asset is None:
+        raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
+    if source_asset.modality != Modality.IMAGE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Source asset must be an image, got modality={source_asset.modality.value!r}",
+        )
+
+    # Path-containment guard identical to GET .../assets/{asset_id}/file.
+    assets_root = (project_dir / "assets").resolve()
+    file_path = (project_dir / source_asset.path).resolve()
+    try:
+        file_path.relative_to(assets_root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Asset file path is outside the permitted directory.")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Asset file not found on disk: {source_asset.path}")
+
+    try:
+        source_bytes = file_path.read_bytes()
+        width, height = read_image_size(source_bytes)
+        result = build_mask_png(width, height, payload)
+    except (ImageHeaderError, MaskRegionError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    mask_title = payload.name or f"mask-{asset_id}"
+    workspace = generation_service.import_asset(
+        project_id,
+        filename=f"{mask_title}.png",
+        content=result.png_bytes,
+        modality=Modality.IMAGE,
+        asset_type="mask",
+        title=mask_title,
+        description=f"Auto-generated mask from {len(payload.regions)} region(s) for asset {asset_id}",
+    )
+    mask_asset_id = workspace.assets[-1].id
+    response = MaskFromRegionsResponse(
+        mask_asset_id=mask_asset_id,
+        width=result.width,
+        height=result.height,
+        coverage_ratio=result.coverage_ratio,
+        clamped=result.clamped,
+    )
+    return success_response(MessageKey.SUCCESS_ADD0, response.model_dump(mode="json"))
 
 
 @app.post("/api/v1/projects/{project_id}/assets/{asset_id}/refine", response_model=ApiResponse)

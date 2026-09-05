@@ -379,6 +379,51 @@ class RefinePromptMode(str, Enum):  # noqa: UP042 -- matches every sibling enum 
     REPLACE = "replace"
 
 
+class MaskRegion(BaseModel):
+    """A single mask-paint region in SOURCE-IMAGE pixel coordinates (BP-EDITOR-2).
+
+    ``bbox`` is ``[x0, y0, x1, y1]``, half-open like a Python slice
+    (``x1 > x0`` and ``y1 > y0`` — enforced in ``core.editor.mask``, not
+    here, so the route can report ``clamped`` instead of a bare 422).
+    A bbox that extends past the source image bounds is clamped to fit,
+    never rejected.
+    """
+
+    bbox: list[int] = Field(min_length=4, max_length=4)
+    dilate: int = Field(default=0, ge=0, le=256)
+    feather: int = Field(default=0, ge=0, le=256)
+
+
+class MaskFromRegionsRequest(BaseModel):
+    """``POST .../assets/{asset_id}/mask`` body (BP-EDITOR-2).
+
+    Produces a white-on-black mask PNG (LoadImageMask channel=red
+    convention) the same size as the source asset: the union of
+    ``regions`` (each optionally dilated/feathered) minus the union of
+    ``subtract`` regions.
+
+    ``regions``/``subtract`` are capped at 32 entries each — a bound on the
+    request shape (never the source image), so a single request cannot pin
+    the core API's CPU/memory rasterizing an unbounded region list
+    (``core/editor/mask.py``'s own ``MAX_MASK_PIXELS`` bounds the OTHER half
+    of that same risk, the source image's pixel count).
+    """
+
+    regions: list[MaskRegion] = Field(min_length=1, max_length=32)
+    subtract: list[MaskRegion] = Field(default_factory=list, max_length=32)
+    name: str | None = None
+
+
+class MaskFromRegionsResponse(BaseModel):
+    """Result of a bbox-region mask build (BP-EDITOR-2)."""
+
+    mask_asset_id: str
+    width: int
+    height: int
+    coverage_ratio: float
+    clamped: bool = False
+
+
 class PromptDecompositionPass(str, Enum):
     """Multi-stage refine passes for image generation (spec §5.11)."""
 
