@@ -8,31 +8,70 @@ from urllib.parse import urlparse
 import httpx
 
 from core.generation.adapters.common import AdapterContext, AdapterExecutionResult, GeneratedArtifact
-from core.models.schemas import Modality
+from core.models.schemas import GenerationJob, Modality
 
 
 def adapter_name() -> str:
     return "ace-step"
 
 
+# Explicit job.params -> ACE-Step /release_task field whitelist (GenerateMusicRequest,
+# workers/ace-step-1.5/acestep/api/http/release_task_models.py). No **params passthrough
+# of arbitrary keys -- only these are threaded through, mirroring comfyui.py's style.
+_STRING_PARAM_FIELDS: tuple[tuple[str, str], ...] = (
+    ("model", "model"),
+    ("vocal_language", "vocal_language"),
+    ("key_scale", "key_scale"),
+    ("time_signature", "time_signature"),
+)
+
+
+def _build_payload(job: GenerationJob) -> dict[str, object]:
+    """Build the ACE-Step ``/release_task`` payload, threading job.params (spec
+    BP-COMFY-3-style tunables carried via ``_build_job`` seeding / the
+    ``JobExecutionPatch.params`` PATCH) on top of the prior hardcoded defaults.
+    An empty/absent ``params`` reproduces the previous payload byte-for-byte."""
+    params = job.params or {}
+    tags = params.get("tags")
+    if tags is None:
+        tags = params.get("prompt")
+    if tags is None:
+        tags = job.prompt
+    lyrics = params.get("lyrics", "")
+    seed = params.get("seed")
+    payload: dict[str, object] = {
+        "prompt": str(tags),
+        "global_caption": job.summary,
+        "lyrics": str(lyrics),
+        "thinking": False,
+        "sample_mode": False,
+        "use_format": False,
+        "inference_steps": int(params.get("inference_steps", 8)),
+        "guidance_scale": float(params.get("guidance_scale", 7.0)),
+        "use_random_seed": seed is None,
+        "seed": int(seed) if seed is not None else -1,
+        "task_type": str(params.get("task_type", "text2music")),
+        "audio_format": str(params.get("audio_format", "wav")),
+    }
+    duration = params.get("duration")
+    if duration is None:
+        duration = params.get("audio_duration")
+    if duration is not None:
+        payload["audio_duration"] = float(duration)
+    if "bpm" in params and params.get("bpm") is not None:
+        payload["bpm"] = int(params["bpm"])
+    for job_key, worker_key in _STRING_PARAM_FIELDS:
+        value = params.get(job_key)
+        if value is not None:
+            payload[worker_key] = str(value)
+    return payload
+
+
 def execute(context: AdapterContext) -> AdapterExecutionResult:
     if not context.health_check:
         raise RuntimeError("ACE-Step health check URL is missing.")
     base_url = context.health_check.removesuffix("/health").rstrip("/")
-    payload = {
-        "prompt": context.job.prompt,
-        "global_caption": context.job.summary,
-        "lyrics": "",
-        "thinking": False,
-        "sample_mode": False,
-        "use_format": False,
-        "inference_steps": 8,
-        "guidance_scale": 7.0,
-        "use_random_seed": True,
-        "seed": -1,
-        "task_type": "text2music",
-        "audio_format": "wav",
-    }
+    payload = _build_payload(context.job)
 
     with httpx.Client(timeout=120.0) as client:
         if context.report_progress:
