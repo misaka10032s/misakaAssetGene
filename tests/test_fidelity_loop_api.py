@@ -66,6 +66,36 @@ OUTFITS_MD = """# 服裝與形態變體：測試花
         - **ComfyUI**: `white dress, blue ribbon`
 """
 
+# C4 gap-fix (fidelity-modes, 2026-09-06) — a synthetic character carrying a
+# "武裝與魔法" (weapons) section, same shape as
+# TestModesVisualWeaponsNegativeTags.SETTING_MD_MODES in
+# tests/test_fidelity_parser.py. mode="combat" surfaces "weapons-1"/
+# "weapons-2" (overriding "weapons-hidden"); mode="default" surfaces
+# "weapons-hidden" instead — the two are mutually exclusive, which is what
+# makes this fixture able to prove a LATER advance()/get() call is still
+# using the mode the loop was started with.
+SETTING_MD_COMBAT = """# 角色設定：測試花二
+
+## 🎨 外型特徵
+- **髮型**：銀色長直髮。
+
+## ⚔️ 武裝與魔法
+- **主要武器 (雙刀)**：名為「測刀一」與「測刀二」的對刀，平時隱藏於異空間，戰鬥時抽出。
+- **遠程武器 (測試弓)**：特製的魔法弓，向後抓取虛空時具現化。
+
+## 🏷️ 標籤
+`test hana2, silver hair, dual blades, compound bow`
+"""
+
+OUTFITS_MD_COMBAT = """# 服裝與形態變體：測試花二
+
+## 👗 常駐服裝
+1. **[TestF] 測試服裝**:
+    - **身體服裝**：黑色戰鬥服。
+    - **生成提示詞**：
+        - **ComfyUI**: `black battle suit`
+"""
+
 
 def _result(id: str, passed: bool, confidence: float = 0.9, bbox: tuple[int, int, int, int] | None = None) -> FidelityCheckResult:
     return FidelityCheckResult(id=id, passed=passed, confidence=confidence, region_bbox=bbox, note="")
@@ -81,8 +111,16 @@ class _FakeIO:
         self._critic_sequence = list(critic_sequence)
         self.mask_calls: list[tuple[str, object]] = []
         self.refine_calls: list[tuple[str, object]] = []
+        # C4 gap-fix (fidelity-modes) — the exact FidelityCheck ids passed
+        # into critique_fn on each call, in order. Lets a test assert which
+        # checklist (i.e. which ``mode``) a given round was actually judged
+        # against, e.g. that ``advance()`` re-derives checks with the loop's
+        # OWN persisted ``mode`` rather than silently falling back to
+        # "default".
+        self.check_ids_seen: list[list[str]] = []
 
     def critique(self, image_bytes: bytes, checks: list, width: int, height: int) -> list[FidelityCheckResult]:
+        self.check_ids_seen.append(sorted(check.id for check in checks))
         if not self._critic_sequence:
             raise AssertionError("critique_fn called more times than scripted")
         return self._critic_sequence.pop(0)
@@ -127,11 +165,18 @@ def _create_project(client: TestClient) -> str:
     return resp.json()["data"]["project"]["id"]
 
 
-def _create_character_sheet(client: TestClient, project_id: str, tmp_path: Path) -> str:
+def _create_character_sheet(
+    client: TestClient,
+    project_id: str,
+    tmp_path: Path,
+    *,
+    setting_md: str = SETTING_MD,
+    outfits_md: str = OUTFITS_MD,
+) -> str:
     source_dir = tmp_path / "character-source"
     source_dir.mkdir(parents=True, exist_ok=True)
-    (source_dir / "setting.md").write_text(SETTING_MD, encoding="utf-8")
-    (source_dir / "outfits.md").write_text(OUTFITS_MD, encoding="utf-8")
+    (source_dir / "setting.md").write_text(setting_md, encoding="utf-8")
+    (source_dir / "outfits.md").write_text(outfits_md, encoding="utf-8")
     resp = client.post(
         f"/api/v1/projects/{project_id}/characters",
         json={"name": "Test Hana", "sheet_source_path": str(source_dir)},
@@ -464,6 +509,106 @@ class TestGetLoop:
         project_id = _create_project(client)
         resp = client.get(f"/api/v1/projects/{project_id}/fidelity-loop/missing")
         assert resp.status_code == 404
+
+
+class TestMode:
+    """C4 gap-fix (fidelity-modes, 2026-09-06) — ``FidelityLoopStartRequest.
+    mode`` must be honoured by a LATER separate ``advance()`` call, not just
+    within the same ``start_loop()`` call that created the loop. Proven via
+    the ``SETTING_MD_COMBAT`` fixture: mode="combat" surfaces "weapons-1"
+    (never "weapons-hidden"), mode="default" is the reverse — so recording
+    the exact check ids ``critique_fn`` was called with, per round, shows
+    directly whether a round was judged against the combat checklist or a
+    silently-defaulted one."""
+
+    def test_start_with_combat_mode_then_advance_both_use_combat_checklist(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project_id = _create_project(client)
+        sheet_id = _create_character_sheet(
+            client, project_id, tmp_path,
+            setting_md=SETTING_MD_COMBAT, outfits_md=OUTFITS_MD_COMBAT,
+        )
+        asset_id = _import_root_asset(client, project_id)
+        fake = _install_fake_service(
+            monkeypatch,
+            project_id,
+            critic_sequence=[
+                # Round 0 (baseline, inside start_loop): weapons-1 fails.
+                [_result("weapons-1", False, confidence=0.9, bbox=(0, 0, 20, 20))],
+                # Round 1 (post-refine, inside advance()): weapons-1 passes.
+                [_result("weapons-1", True, confidence=1.0)],
+            ],
+        )
+
+        start = client.post(
+            f"/api/v1/projects/{project_id}/assets/{asset_id}/fidelity-loop",
+            json={
+                "character_sheet_id": sheet_id,
+                "outfit_variant": "TestF",
+                "mode": "combat",
+                "auto_continue": False,
+            },
+        )
+        assert start.status_code == 200, start.text
+        start_data = start.json()["data"]
+        assert start_data["loop"]["mode"] == "combat"
+        assert start_data["loop"]["status"] == "awaiting_user"
+        loop_id = start_data["loop"]["id"]
+
+        advanced = client.post(f"/api/v1/projects/{project_id}/fidelity-loop/{loop_id}/advance")
+        assert advanced.status_code == 200, advanced.text
+        advanced_data = advanced.json()["data"]
+        assert advanced_data["loop"]["mode"] == "combat"
+        assert advanced_data["loop"]["status"] == "passed"
+
+        # Both rounds must have been judged against the COMBAT checklist —
+        # this is the actual regression: before this fix, advance() always
+        # re-derived checks with mode="default", so round 1 would have been
+        # judged against "weapons-hidden" instead of "weapons-1"/"weapons-2".
+        assert len(fake.check_ids_seen) == 2
+        for check_ids in fake.check_ids_seen:
+            assert "weapons-1" in check_ids
+            assert "weapons-2" in check_ids
+            assert "weapons-hidden" not in check_ids
+
+    def test_get_after_advance_still_reports_combat_checklist(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``get()`` re-derives checks the same way ``advance()`` does
+        (both now read ``loop.mode``) — a GET right after start (loop still
+        AWAITING_USER) must expose a ``next_round_plan`` scoped to the
+        combat checklist too, never the default one."""
+        project_id = _create_project(client)
+        sheet_id = _create_character_sheet(
+            client, project_id, tmp_path,
+            setting_md=SETTING_MD_COMBAT, outfits_md=OUTFITS_MD_COMBAT,
+        )
+        asset_id = _import_root_asset(client, project_id)
+        _install_fake_service(
+            monkeypatch,
+            project_id,
+            critic_sequence=[[_result("weapons-1", False, confidence=0.9, bbox=(0, 0, 20, 20))]],
+        )
+
+        start = client.post(
+            f"/api/v1/projects/{project_id}/assets/{asset_id}/fidelity-loop",
+            json={
+                "character_sheet_id": sheet_id,
+                "outfit_variant": "TestF",
+                "mode": "combat",
+                "auto_continue": False,
+            },
+        )
+        loop_id = start.json()["data"]["loop"]["id"]
+
+        got = client.get(f"/api/v1/projects/{project_id}/fidelity-loop/{loop_id}")
+        assert got.status_code == 200, got.text
+        got_data = got.json()["data"]
+        assert got_data["loop"]["mode"] == "combat"
+        plan = got_data["next_round_plan"]
+        assert plan is not None
+        assert "weapons-1" in plan["chosen_check_ids"]
 
 
 class TestStream:

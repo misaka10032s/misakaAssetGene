@@ -237,6 +237,78 @@ class TestLastError:
         assert loop.last_error is None
 
 
+class TestMode:
+    """C4 gap-fix (fidelity-modes, 2026-09-06) — ``mode`` persistence."""
+
+    def test_create_loop_defaults_mode_to_default(self, tmp_path: Path) -> None:
+        store = FidelityStore(tmp_path / "memory.sqlite")
+        loop = store.create_loop(
+            project_id="proj-1", root_asset_id="a", character_sheet_id="s",
+            outfit_variant="default", max_rounds=4, auto_continue=False,
+        )
+        assert loop.mode == "default"
+        fetched = store.get_loop("proj-1", loop.id)
+        assert fetched is not None
+        assert fetched.mode == "default"
+
+    def test_create_loop_persists_non_default_mode_round_trip(self, tmp_path: Path) -> None:
+        store = FidelityStore(tmp_path / "memory.sqlite")
+        loop = store.create_loop(
+            project_id="proj-1", root_asset_id="a", character_sheet_id="s",
+            outfit_variant="default", max_rounds=4, auto_continue=False, mode="combat",
+        )
+        assert loop.mode == "combat"
+
+        fetched = store.get_loop("proj-1", loop.id)
+        assert fetched is not None
+        assert fetched.mode == "combat"
+
+        # save_loop() must never clobber the mode a loop was created with.
+        fetched.status = FidelityLoopStatus.CRITIQUING
+        store.save_loop(fetched)
+        refetched = store.get_loop("proj-1", loop.id)
+        assert refetched is not None
+        assert refetched.mode == "combat"
+
+    def test_opens_against_db_missing_the_mode_column(self, tmp_path: Path) -> None:
+        """Simulate a ``memory.sqlite`` created BEFORE the ``mode`` column
+        existed (the original Brief-2 schema + the later ``last_error``
+        column, but no ``mode``) — ``FidelityStore`` must migrate it in
+        without disturbing existing rows, same idiom as
+        ``TestLastError.test_opens_against_db_missing_the_last_error_column``."""
+        db_path = tmp_path / "memory.sqlite"
+        now = datetime.now(UTC).isoformat()
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE fidelity_loops ("
+            "id TEXT PRIMARY KEY, project_id TEXT NOT NULL, root_asset_id TEXT NOT NULL, "
+            "character_sheet_id TEXT NOT NULL, outfit_variant TEXT NOT NULL, status TEXT NOT NULL, "
+            "current_round INTEGER NOT NULL DEFAULT 0, max_rounds INTEGER NOT NULL DEFAULT 4, "
+            "best_asset_id TEXT NOT NULL, best_pass_count INTEGER NOT NULL DEFAULT 0, "
+            "auto_continue INTEGER NOT NULL DEFAULT 0, last_error TEXT, "
+            "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO fidelity_loops (id, project_id, root_asset_id, character_sheet_id, "
+            "outfit_variant, status, best_asset_id, created_at, updated_at) "
+            "VALUES ('loop-1', 'proj-1', 'a', 's', 'default', 'awaiting_user', 'a', ?, ?)",
+            (now, now),
+        )
+        conn.commit()
+        conn.close()
+
+        store = FidelityStore(db_path)
+        fetched = store.get_loop("proj-1", "loop-1")
+        assert fetched is not None
+        assert fetched.mode == "default"  # back-filled default, not a crash
+
+        loop = store.create_loop(
+            project_id="proj-1", root_asset_id="b", character_sheet_id="s",
+            outfit_variant="default", max_rounds=4, auto_continue=False,
+        )
+        assert loop.mode == "default"
+
+
 class TestMigrationSafety:
     def test_opens_against_db_missing_the_new_tables(self, tmp_path: Path) -> None:
         """Simulate an OLDER memory.sqlite (as AssetStore/SessionStore would

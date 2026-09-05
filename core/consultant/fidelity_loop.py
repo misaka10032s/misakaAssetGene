@@ -291,6 +291,26 @@ def build_instruction_tags(
     return ", ".join(tags), tags
 
 
+def build_negative_tags(
+    chosen_checks: list[FidelityCheck],
+    reasserted_checks: list[FidelityCheck],
+    *,
+    tag_cap: int = DEFAULT_TAG_CAP,
+) -> list[str]:
+    """Union of chosen+reasserted checks' ``FidelityCheck.negative_tags``
+    (C4 fix, checklist-modes), deduped case/whitespace-insensitively and
+    order-preserved, capped at ``tag_cap`` — same idiom as
+    ``build_instruction_tags`` but for tokens to EXCLUDE from the render
+    (e.g. a "no weapon visible" check's ``negative_tags=["weapon", "sword",
+    "bow", "crossbow"]``) rather than tokens to include."""
+    raw_tags: list[str] = []
+    for check in chosen_checks:
+        raw_tags.extend(check.negative_tags)
+    for check in reasserted_checks:
+        raw_tags.extend(check.negative_tags)
+    return _dedupe_casefold(raw_tags)[:tag_cap]
+
+
 def select_strategy_for_round(
     chosen: list[FidelityCheckResult],
     image_width: int,
@@ -316,20 +336,42 @@ def select_strategy_for_round(
     return None
 
 
-def build_refine_request(plan: FidelityRoundPlan, mask_asset_id: str) -> RefineRequest:
+def _merge_negative(inherited_negative: str | None, negative_tags: list[str]) -> str:
+    """Append ``negative_tags`` onto whatever ``inherited_negative`` string
+    already carries, deduped case/whitespace-insensitively (C4 fix,
+    checklist-modes) — an APPEND, never a replace, so an earlier round's
+    inherited exclusion (e.g. "extra fingers") survives alongside a new
+    check-driven one (e.g. "weapon")."""
+    existing = [tag.strip() for tag in (inherited_negative or "").split(",") if tag.strip()]
+    return ", ".join(_dedupe_casefold([*existing, *negative_tags]))
+
+
+def build_refine_request(
+    plan: FidelityRoundPlan, mask_asset_id: str, *, inherited_negative: str | None = None
+) -> RefineRequest:
     """Assemble the ``RefineRequest`` for a planned round.
 
     ``prompt_mode`` is ALWAYS ``append`` (spec §4.2.3) so the parent's
-    already-established prompt elements survive; ``params.negative`` is
-    deliberately left unset so ``GenerationService.refine_asset`` inherits
-    the parent's effective negative prompt (BP-REFINE-1) rather than this
-    controller overriding it.
+    already-established prompt elements survive. ``params.negative`` is
+    deliberately left UNSET (empty ``params``) whenever ``plan.negative_tags``
+    is empty, so ``GenerationService.refine_asset`` inherits the parent's
+    effective negative prompt (BP-REFINE-1) rather than this controller
+    overriding it. When ``plan.negative_tags`` IS non-empty (C4 fix,
+    checklist-modes — e.g. a "no weapon visible" check's negative_tags),
+    ``params.negative`` is explicitly set to ``inherited_negative`` (the
+    caller-supplied parent negative, when known) with ``plan.negative_tags``
+    APPENDED and deduped — never a bare replace, since that would silently
+    drop whatever the parent round had already excluded.
     """
+    params: dict[str, object] = {}
+    if plan.negative_tags:
+        params["negative"] = _merge_negative(inherited_negative, plan.negative_tags)
     return RefineRequest(
         instruction=plan.instruction,
         strategy=plan.strategy,
         mask_asset_id=mask_asset_id,
         prompt_mode=RefinePromptMode.APPEND,
+        params=params,
     )
 
 
@@ -369,6 +411,7 @@ def plan_round(
     chosen_checks = [checks_by_id[result.id] for result in chosen if result.id in checks_by_id]
     reasserted_checks = [checks_by_id[result.id] for result in reasserted if result.id in checks_by_id]
     instruction, tags = build_instruction_tags(chosen_checks, reasserted_checks, tag_cap=tag_cap)
+    negative_tags = build_negative_tags(chosen_checks, reasserted_checks, tag_cap=tag_cap)
     strategy = select_strategy_for_round(chosen, image_width, image_height, area_threshold=area_threshold)
 
     reason = (
@@ -386,6 +429,7 @@ def plan_round(
         mask_subtract=subtract,
         instruction=instruction,
         instruction_tags=tags,
+        negative_tags=negative_tags,
         strategy=strategy,
         reason=reason,
     )

@@ -123,7 +123,11 @@ class FidelityService:
         — a separate advance() call is never needed for round 0."""
         _, project_dir = self.project_manager.get_project(project_id)
         sheet = self._resolve_character_sheet(project_id, request.character_sheet_id)
-        checks = self._load_checks(sheet, request.outfit_variant)
+        # C4 fix (checklist-modes): request.mode scopes the checklist for
+        # THIS start_loop call (baseline critique + any auto_continue
+        # rounds it triggers below) — see _load_checks' mode param docstring
+        # for the known gap on a later separate advance()/get() call.
+        checks = self._load_checks(sheet, request.outfit_variant, mode=request.mode)
         # Validate the root asset exists/is an image BEFORE creating any row.
         self._read_asset_image(project_dir, asset_id)
 
@@ -135,6 +139,7 @@ class FidelityService:
             outfit_variant=request.outfit_variant,
             max_rounds=request.max_rounds,
             auto_continue=request.auto_continue,
+            mode=request.mode,
         )
 
         self._run_baseline_critique(project_dir, store, loop, checks)
@@ -177,7 +182,10 @@ class FidelityService:
                     f"Loop {loop_id} is not awaiting a round (status changed concurrently)."
                 )
             sheet = self._resolve_character_sheet(project_id, loop.character_sheet_id)
-            checks = self._load_checks(sheet, loop.outfit_variant)
+            # C4 gap-fix (fidelity-modes): re-derive with the loop's OWN
+            # persisted mode (FidelityLoop.mode), not "default" — this is
+            # the single source of truth start_loop() wrote at creation time.
+            checks = self._load_checks(sheet, loop.outfit_variant, mode=loop.mode)
             self._run_refine_round(project_dir, store, loop, checks)
             return self._to_data(store, loop, checks)
         finally:
@@ -187,7 +195,7 @@ class FidelityService:
         store = self._fidelity_store_resolver(project_id)
         loop = self._require_loop(store, project_id, loop_id)
         sheet = self._resolve_character_sheet(project_id, loop.character_sheet_id)
-        checks = self._load_checks(sheet, loop.outfit_variant)
+        checks = self._load_checks(sheet, loop.outfit_variant, mode=loop.mode)
         return self._to_data(store, loop, checks)
 
     def stream_loop_progress(
@@ -310,7 +318,10 @@ class FidelityService:
 
             loop.status = FidelityLoopStatus.REFINING
             store.save_loop(loop)
-            refine_request = fidelity_loop.build_refine_request(plan, mask_asset_id)
+            inherited_negative = self._resolve_inherited_negative(project_dir, target_asset_id)
+            refine_request = fidelity_loop.build_refine_request(
+                plan, mask_asset_id, inherited_negative=inherited_negative
+            )
             new_asset_id, refine_job_id = self._refine_fn(loop.project_id, target_asset_id, refine_request)
 
             loop.status = FidelityLoopStatus.CRITIQUING
@@ -425,7 +436,14 @@ class FidelityService:
         return sheet
 
     @staticmethod
-    def _load_checks(sheet: CharacterSheet, outfit_variant: str) -> list[FidelityCheck]:
+    def _load_checks(sheet: CharacterSheet, outfit_variant: str, *, mode: str = "default") -> list[FidelityCheck]:
+        """``mode`` scopes the returned checklist (core.consultant.fidelity.
+        parse_character_checklist §5.15 C4). ``FidelityLoop.mode`` (persisted
+        by ``core.consultant.fidelity_store``) is the single source of truth
+        for a loop's mode once created — ``start_loop`` calls this with
+        ``request.mode`` (also written to the loop row), and every LATER
+        ``advance()``/``get()`` call passes back the loop's own persisted
+        ``loop.mode`` instead of falling back to ``"default"``."""
         if not sheet.sheet_source_path:
             raise ValueError(
                 f"Character sheet {sheet.id!r} has no sheet_source_path configured "
@@ -435,7 +453,7 @@ class FidelityService:
         # parse_character_checklist itself raises ValueError, listing every
         # available variant, on an unknown outfit_variant (core/consultant/
         # fidelity.py) — propagated as-is, mapped to HTTP 400 by main.py.
-        return parse_character_checklist(setting_md, outfits_md, outfit_variant)
+        return parse_character_checklist(setting_md, outfits_md, outfit_variant, mode=mode)
 
     def _require_loop(self, store: FidelityStore, project_id: str, loop_id: str) -> FidelityLoop:
         loop = store.get_loop(project_id, loop_id)
@@ -469,6 +487,19 @@ class FidelityService:
         content = file_path.read_bytes()
         width, height = read_image_size(content)
         return content, width, height
+
+    def _resolve_inherited_negative(self, project_dir: Path, asset_id: str) -> str | None:
+        """The target asset's own ``effective_negative`` (C4 fix,
+        checklist-modes) — read the SAME way ``_read_asset_image`` already
+        reaches into ``GenerationService._read_assets`` above, so
+        ``build_refine_request`` can APPEND a check's ``negative_tags`` onto
+        it instead of silently replacing it. Returns ``None`` (nothing to
+        append onto) when the asset is missing or has no recorded negative —
+        e.g. a pre-existing asset from before ``effective_negative`` existed
+        (AssetRecord docstring, core/models/schemas.py)."""
+        assets = self.generation_service._read_assets(project_dir)
+        asset = next((item for item in assets if item.id == asset_id), None)
+        return asset.effective_negative if asset is not None else None
 
     # ------------------------------------------------------------------
     # Default (real) I/O implementations — injectable for tests

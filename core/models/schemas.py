@@ -1130,6 +1130,29 @@ class FidelityCheck(BaseModel):
     section of ``outfits.md`` (source="outfits"). ``pass_criteria`` is the
     original SSOT bullet text verbatim — never summarized — so a human can
     always trace a check back to its source sentence.
+
+    C4 fix (2026-09-06, checklist-modes) — four fields added so a checklist
+    can be scoped to what a render actually needs to show:
+
+    - ``mode``: which render state this check applies to. ``"default"``
+      checks apply in EVERY mode unless overridden (see ``overrides``);
+      ``"combat"``/``"casting"``/``"sleep"`` checks apply only when that
+      exact mode is requested (``parse_character_checklist(mode=...)``).
+    - ``visual``: ``False`` for a check no static image could ever confirm
+      (underwear, sound/smell prose, a pure material/measurement spec) —
+      the parser computes this; ``parse_character_checklist`` drops
+      ``visual=False`` checks by default (``include_non_visual=True``
+      recovers them for debugging).
+    - ``negative_tags``: tokens that should be actively EXCLUDED from a
+      render (e.g. ``["weapon", "sword", "bow", "crossbow"]`` on a
+      "no weapon visible in default mode" check) — a fidelity-loop refine
+      round appends these into the refine request's negative prompt
+      (``core.consultant.fidelity_loop.build_refine_request``).
+    - ``overrides``: ids of ``mode="default"`` checks this check REPLACES
+      when both would otherwise apply to the same requested mode (e.g. a
+      combat-mode "dual daggers drawn" check overrides the default-mode
+      "no weapon visible" check) — the overridden default check is dropped
+      from that mode's checklist instead of coexisting contradictorily.
     """
 
     id: str
@@ -1138,6 +1161,10 @@ class FidelityCheck(BaseModel):
     region_hint: BodyRegion
     fix_tags: list[str] = Field(default_factory=list)
     source: Literal["setting", "outfits"]
+    mode: Literal["default", "combat", "casting", "sleep"] = "default"
+    visual: bool = True
+    negative_tags: list[str] = Field(default_factory=list)
+    overrides: list[str] = Field(default_factory=list)
 
 
 class FidelityCheckResult(BaseModel):
@@ -1190,6 +1217,12 @@ class FidelityLoopStartRequest(BaseModel):
     outfit_variant: str = Field(min_length=1)
     max_rounds: int = Field(default=4, ge=1, le=8)
     auto_continue: bool = False
+    # C4 fix (checklist-modes): which render state this loop's checklist
+    # should be scoped to (see FidelityCheck.mode) — threaded through to
+    # core.consultant.fidelity.parse_character_checklist(mode=...) so a
+    # combat-pose render isn't judged against "no weapon visible", and a
+    # default portrait isn't judged against a casting-only hair streak.
+    mode: str = "default"
 
 
 class FidelityRoundPlan(BaseModel):
@@ -1211,6 +1244,12 @@ class FidelityRoundPlan(BaseModel):
     mask_subtract: list[MaskRegion] = Field(default_factory=list)
     instruction: str = ""
     instruction_tags: list[str] = Field(default_factory=list)
+    # C4 fix (checklist-modes): union of chosen+reasserted checks'
+    # FidelityCheck.negative_tags, deduped — build_refine_request appends
+    # these onto the refine round's negative prompt (never a plain
+    # override) so an inherited negative like "extra fingers" from an
+    # earlier round survives alongside a new "weapon" exclusion.
+    negative_tags: list[str] = Field(default_factory=list)
     strategy: RefineStrategy | None = None
     reason: str = ""
 
@@ -1229,6 +1268,12 @@ class FidelityLoop(BaseModel):
     best_asset_id: str
     best_pass_count: int = 0
     auto_continue: bool = False
+    # C4 gap-fix (fidelity-modes, 2026-09-06): persists the render-state
+    # scope this loop's checklist was started with (see
+    # FidelityLoopStartRequest.mode) so a LATER advance()/get() call re-derives
+    # the SAME checklist instead of silently falling back to "default"
+    # (core.consultant.fidelity_service._load_checks now reads this field).
+    mode: str = "default"
     last_error: str | None = None
     created_at: datetime
     updated_at: datetime
