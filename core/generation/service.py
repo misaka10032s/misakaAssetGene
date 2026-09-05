@@ -232,6 +232,18 @@ class GenerationService:
         now = datetime.now(timezone.utc)
         title = request.title or f"{parent.title} (refine)"
 
+        # Compose the child's effective prompt/negative from the parent's own
+        # effective prompt (BP-REFINE-1 / spec §5.11 lineage) instead of the
+        # pre-existing "instruction replaces the whole prompt" behaviour,
+        # which silently dropped an earlier round's element whenever a later
+        # round's mask covered the same region without repeating it (measured
+        # 2026-09-05, misakaAssetGene-gen-test-260904/H-report.md §3).
+        parent_effective_prompt = self._resolve_effective_prompt(parent, jobs)
+        composed_prompt = refine_planner.compose_prompt(
+            parent_effective_prompt, request.instruction, request.prompt_mode
+        )
+        inherited_negative = self._resolve_effective_negative(parent, jobs)
+
         # Cheapest rung: metadata-only edits mutate the parent record's lineage
         # markers without re-rendering anything (spec §6.2 first rung).
         if plan.recipe is None:
@@ -283,6 +295,17 @@ class GenerationService:
             for step in plan.decomposition
         ]
 
+        # Inherit the parent's negative prompt unless this refine's own
+        # ``params.negative`` explicitly overrides it (BP-REFINE-1). An
+        # explicit override already survives ``plan.params`` via
+        # refine_planner.TUNABLE_PARAMS, so only backfill when the key is
+        # absent -- presence, not truthiness: an explicit ``negative=""``
+        # ("no negative this round") is a real override and must survive
+        # untouched, not be silently replaced by the inherited value.
+        resolved_params = dict(plan.params)
+        if "negative" not in resolved_params and inherited_negative is not None:
+            resolved_params["negative"] = inherited_negative
+
         refine_job = GenerationJob(
             id=uuid.uuid4().hex,
             project_id=project_id,
@@ -290,7 +313,7 @@ class GenerationService:
             modality=Modality.IMAGE,
             asset_type="image",
             status=GenerationJobStatus.BLOCKED if blocking_reason else GenerationJobStatus.READY,
-            prompt=request.instruction,
+            prompt=composed_prompt,
             summary=plan.reason,
             worker="comfyui",
             recipe=plan.recipe,
@@ -301,7 +324,7 @@ class GenerationService:
             refine_reason=plan.reason,
             prompt_delta=plan.prompt_delta,
             param_delta=plan.param_delta,
-            params=plan.params,
+            params=resolved_params,
             blocking_reason=blocking_reason,
             steps=decomposition_steps,
             created_at=now,
@@ -642,6 +665,37 @@ class GenerationService:
             )
         )
 
+    def _resolve_effective_prompt(self, parent: AssetRecord, jobs: list[GenerationJob]) -> str:
+        """Resolve the parent version's effective prompt for refine composition
+        (BP-REFINE-1). Assets persisted before ``effective_prompt`` existed
+        fall back to their originating job's ``prompt`` (never a migration
+        script); an asset with no known job (e.g. imported directly) falls
+        back to an empty string, which ``compose_prompt`` treats as "no known
+        parent prompt" and returns the instruction alone."""
+        if parent.effective_prompt:
+            return parent.effective_prompt
+        if parent.job_id:
+            job = next((item for item in jobs if item.id == parent.job_id), None)
+            if job is not None and job.prompt:
+                return job.prompt
+        return ""
+
+    def _resolve_effective_negative(self, parent: AssetRecord, jobs: list[GenerationJob]) -> str | None:
+        """Resolve the parent version's effective negative prompt for refine
+        inheritance (BP-REFINE-1). Same legacy fallback shape as
+        ``_resolve_effective_prompt``: fall back to the originating job's
+        ``params.negative``, else None (the adapter's own configured default
+        applies at generation time, spec §6.2)."""
+        if parent.effective_negative:
+            return parent.effective_negative
+        if parent.job_id:
+            job = next((item for item in jobs if item.id == parent.job_id), None)
+            if job is not None:
+                negative = job.params.get("negative")
+                if negative:
+                    return str(negative)
+        return None
+
     def _persist_generated_artifact(self, project_dir: Path, job: GenerationJob | None, artifact) -> AssetRecord:
         modality_dirs = {
             Modality.IMAGE: Path("assets") / "images",
@@ -659,6 +713,24 @@ class GenerationService:
             target_path.write_bytes(artifact.source_path.read_bytes())
         else:
             raise RuntimeError("Generated artifact has no content.")
+
+        # Effective prompt/negative (BP-REFINE-1 / spec §5.11): the prompt that
+        # actually produced this asset. ``job.prompt`` is already the composed
+        # prompt for a refine child (see refine_asset) or the original
+        # consultant prompt for a root txt2img job -- either way it IS the
+        # effective prompt, no further resolution needed here. Negative prompt
+        # is only meaningful for IMAGE jobs going through the ComfyUI adapter
+        # (spec §6.2 / BP-COMFY); other modalities never carry one.
+        effective_negative: str | None = None
+        if job is not None and artifact.modality is Modality.IMAGE:
+            # Presence, not truthiness: an explicit ``negative=""`` (no
+            # negative this round) must persist as "" here, not be read as
+            # "unset" and silently replaced by the configured default.
+            if "negative" in job.params:
+                effective_negative = str(job.params["negative"])
+            else:
+                effective_negative = get_settings().misaka_comfyui_default_negative_prompt
+
         return AssetRecord(
             id=uuid.uuid4().hex,
             job_id=job.id if job else None,
@@ -678,6 +750,8 @@ class GenerationService:
             backend=job.worker if job else None,
             params=dict(job.params) if job else {},
             prompt_hash=_prompt_hash(job.prompt) if job else None,
+            effective_prompt=job.prompt if job else None,
+            effective_negative=effective_negative,
             created_at=datetime.now(timezone.utc),
         )
 

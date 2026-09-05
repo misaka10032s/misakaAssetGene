@@ -41,6 +41,21 @@ class Settings(BaseSettings):
         default="novaAnimeXL_ilV180.safetensors",
         alias="MISAKA_COMFYUI_DEFAULT_CHECKPOINT",
     )
+    # Default negative prompt for every ComfyUI recipe (txt2img/img2img/inpaint)
+    # when a job/refine's own ``params.negative`` is absent (spec §6.2 /
+    # BP-REFINE-1). Was previously a module constant hardcoded in
+    # core/generation/adapters/comfyui.py with no override path at all — moved
+    # here so it is configurable like every other ComfyUI default and so a
+    # job/refine can override it via the same params vocabulary. A general,
+    # non-NSFW-specific quality negative; not tuned to any one checkpoint.
+    misaka_comfyui_default_negative_prompt: str = Field(
+        default=(
+            "low quality, worst quality, blurry, jpeg artifacts, bad anatomy, "
+            "extra limbs, missing limbs, extra fingers, fused fingers, mutated hands, "
+            "poorly drawn face, poorly drawn hands, watermark, signature, text, logo"
+        ),
+        alias="MISAKA_COMFYUI_DEFAULT_NEGATIVE",
+    )
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     anthropic_api_base_url: str = Field(default="https://api.anthropic.com", alias="ANTHROPIC_API_BASE_URL")
     anthropic_model: str = Field(default="claude-3-5-sonnet-latest", alias="ANTHROPIC_MODEL")

@@ -361,6 +361,24 @@ class RefineStrategy(str, Enum):
     FULL_REGEN = "full_regen"
 
 
+class RefinePromptMode(str, Enum):  # noqa: UP042 -- matches every sibling enum in this file (Modality, GenerationRecipe, RefineStrategy, ...); not switching to enum.StrEnum for one class only.
+    """How a refine's ``instruction`` combines with the parent version's own
+    effective prompt (spec §5.11 lineage / BP-REFINE-1).
+
+    ``append`` (default) carries the parent's effective prompt forward and
+    appends the instruction, so an element established in an earlier round
+    (e.g. "twin daggers") is not silently dropped when a later round's mask
+    happens to cover the same region and its instruction does not repeat it
+    (measured 2026-09-05, misakaAssetGene-gen-test-260904/H-report.md).
+    ``replace`` is the pre-existing behaviour: the instruction alone becomes
+    the whole prompt, an explicit opt-in for when the caller really does want
+    a from-scratch prompt. A future ``remove:<tags>`` mode is out of scope.
+    """
+
+    APPEND = "append"
+    REPLACE = "replace"
+
+
 class PromptDecompositionPass(str, Enum):
     """Multi-stage refine passes for image generation (spec §5.11)."""
 
@@ -422,6 +440,13 @@ class AssetRecord(BaseModel):
     prompt_hash: str | None = None
     backend: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+    # The prompt / negative prompt that ACTUALLY produced this asset (spec
+    # §5.11 / BP-REFINE-1) — set for txt2img jobs and refine children alike.
+    # Absent on assets persisted before this field existed; callers fall back
+    # to the originating job's ``prompt`` / ``params.negative`` (see
+    # GenerationService._resolve_effective_prompt/_negative), never a migration.
+    effective_prompt: str | None = None
+    effective_negative: str | None = None
     # Metadata fields (spec §6.2 metadata-only tier). All optional / backward-compatible.
     tags: list[str] = Field(default_factory=list)
     user_note: str | None = None
@@ -487,6 +512,10 @@ class RefineRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     mask_asset_id: str | None = None
     title: str | None = None
+    # How ``instruction`` combines with the parent's effective prompt
+    # (BP-REFINE-1). Defaults to ``append`` so an earlier round's element is
+    # not silently dropped by a later round's mask (spec §5.11 lineage).
+    prompt_mode: RefinePromptMode = RefinePromptMode.APPEND
 
 
 class PromptDecompositionStep(BaseModel):

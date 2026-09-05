@@ -22,6 +22,7 @@ from core.models.schemas import (
     PromptDecompositionPass,
     PromptDecompositionStep,
     RefinePlan,
+    RefinePromptMode,
     RefineRequest,
     RefineStrategy,
 )
@@ -34,6 +35,9 @@ DEFAULT_INPAINT_DENOISE = 0.7
 
 # Sampler/recipe params the §6.2 planner is allowed to tune. Anything else in
 # the request params is ignored to keep the workflow graph well-formed.
+# ``negative`` (BP-REFINE-1) is a workflow-graph param exactly like the
+# sampler ones: it reaches the same CLIPTextEncode node the adapter builds,
+# so it belongs in this allow-list rather than being silently filtered out.
 TUNABLE_PARAMS = {
     "sampler",
     "sampler_name",
@@ -46,6 +50,7 @@ TUNABLE_PARAMS = {
     "width",
     "height",
     "upscaler",
+    "negative",
 }
 
 # Keyword signals (zh-TW + en) used by the decision tree. Kept here so the
@@ -192,6 +197,52 @@ def decompose_prompt(instruction: str) -> list[PromptDecompositionStep]:
     ]
 
     return _dedup_decomposition_steps(segments, stage_markers)
+
+
+def _dedupe_comma_tags(text: str) -> str:
+    """Order-preserving de-dup of comma-separated prompt tags.
+
+    The equality key is case-insensitive and whitespace-normalised
+    (``"Brown Hair"`` and ``"brown  hair"`` are the same tag), so a later
+    round re-stating an existing tag in different casing/spacing doesn't
+    leave a redundant near-duplicate in the composed prompt. The **first**
+    occurrence's original text (casing and spacing) is what survives in the
+    output -- only later duplicates are dropped, matching the reused
+    ``dict.fromkeys`` first-occurrence-wins idiom ``GenerationService.refine_asset``
+    already uses for ``#tag`` lists on metadata-only edits
+    (``list(dict.fromkeys(parent.tags + metadata_delta.get("tags", [])))``).
+    ``decompose_prompt``'s stage-assignment dedup (spec §5.11 / M5.5) operates
+    on a different granularity (whole ``；;。\\n``-delimited segments assigned
+    to one of four staged passes) and does not fit a flat comma-separated tag
+    list, so it is not reused here.
+    """
+    tags = [tag.strip() for tag in text.split(",") if tag.strip()]
+    first_seen: dict[str, str] = {}
+    for tag in tags:
+        key = " ".join(tag.split()).casefold()
+        if key not in first_seen:
+            first_seen[key] = tag
+    return ", ".join(first_seen.values())
+
+
+def compose_prompt(parent_prompt: str | None, instruction: str, mode: RefinePromptMode) -> str:
+    """Compose a refine child's effective prompt (spec §5.11 lineage / BP-REFINE-1).
+
+    ``replace`` (or no known parent prompt) is the pre-existing behaviour:
+    the instruction alone becomes the whole prompt. ``append`` (default)
+    carries the parent's own effective prompt forward and appends the
+    instruction, deduping identical tags, so an element established in an
+    earlier refine round is not silently dropped when a later round's mask
+    happens to cover the same region without the instruction repeating it
+    (measured 2026-09-05, misakaAssetGene-gen-test-260904/H-report.md §3).
+    """
+    instruction = (instruction or "").strip()
+    if mode is RefinePromptMode.REPLACE or not parent_prompt:
+        return instruction
+    if not instruction:
+        return parent_prompt.strip()
+    combined = f"{parent_prompt.strip()}, {instruction}"
+    return _dedupe_comma_tags(combined)
 
 
 def plan_refine(request: RefineRequest) -> RefinePlan:

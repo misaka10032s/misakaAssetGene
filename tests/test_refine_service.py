@@ -4,11 +4,12 @@ decision tree and parent-child lineage recording on produced assets (§5.11)."""
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from core.config import get_settings
 from core.generation.adapters.common import AdapterExecutionResult, GeneratedArtifact
 from core.generation.service import GenerationService
 from core.models.schemas import (
@@ -17,6 +18,7 @@ from core.models.schemas import (
     GenerationRecipe,
     Modality,
     ProjectCreateRequest,
+    RefinePromptMode,
     RefineRequest,
     RefineStrategy,
 )
@@ -173,6 +175,134 @@ def test_long_multiaspect_instruction_decomposition_path(service) -> None:
     assert len(job.steps) >= 2, (
         f"Expected >=2 decomposition steps from multi-aspect instruction, got {len(job.steps)}"
     )
+
+
+def _seed_asset_with_effective_prompt(
+    svc: GenerationService, manager: ProjectManager, project_id: str, *, effective_prompt: str, effective_negative: str | None
+) -> str:
+    """Seed a parent AssetRecord that already carries an ``effective_prompt`` /
+    ``effective_negative`` (BP-REFINE-1) -- ``import_asset`` never sets these
+    (no originating job), so a refine's composition/inheritance behaviour
+    against a real parent value needs a directly-written fixture asset."""
+    _, project_dir = manager.get_project(project_id)
+    asset = AssetRecord(
+        id="parent-with-prompt",
+        job_id=None,
+        modality=Modality.IMAGE,
+        asset_type="image",
+        title="Base portrait",
+        path="assets/images/base.png",
+        effective_prompt=effective_prompt,
+        effective_negative=effective_negative,
+        created_at=datetime.now(UTC),
+    )
+    svc._write_assets(project_dir, [asset])
+    return asset.id
+
+
+def _execute_with_fake_artifact(svc: GenerationService, project_id: str, job_id: str, monkeypatch) -> AssetRecord:
+    def fake_run(self, project_dir, job_arg, report_progress):
+        return AdapterExecutionResult(
+            artifacts=[
+                GeneratedArtifact(
+                    modality=Modality.IMAGE,
+                    asset_type="image",
+                    title="Refined",
+                    filename=f"{job_id}.png",
+                    content=b"NEW",
+                )
+            ]
+        )
+
+    monkeypatch.setattr(GenerationService, "_run_job_with_progress", fake_run)
+    result = svc.execute_job(project_id, job_id)
+    return next(a for a in result.assets if a.title == "Refined")
+
+
+def test_refine_append_mode_composes_effective_prompt_and_inherits_negative(service, monkeypatch) -> None:
+    svc, manager, project_id = service
+    parent_id = _seed_asset_with_effective_prompt(
+        svc, manager, project_id, effective_prompt="brown hair, maid outfit", effective_negative="worst quality"
+    )
+
+    workspace = svc.refine_asset(project_id, parent_id, RefineRequest(instruction="twin daggers"))
+    job = next(j for j in workspace.jobs if j.parent_asset_id == parent_id)
+    assert job.prompt == "brown hair, maid outfit, twin daggers"
+
+    refined = _execute_with_fake_artifact(svc, project_id, job.id, monkeypatch)
+    assert refined.effective_prompt == "brown hair, maid outfit, twin daggers"
+    # No params.negative override -> inherits the parent's effective_negative.
+    assert refined.effective_negative == "worst quality"
+
+
+def test_refine_negative_override_beats_inherited(service, monkeypatch) -> None:
+    svc, manager, project_id = service
+    parent_id = _seed_asset_with_effective_prompt(
+        svc, manager, project_id, effective_prompt="brown hair", effective_negative="worst quality"
+    )
+
+    workspace = svc.refine_asset(
+        project_id, parent_id, RefineRequest(instruction="long hair", params={"negative": "extra fingers"})
+    )
+    job = next(j for j in workspace.jobs if j.parent_asset_id == parent_id)
+    assert job.params["negative"] == "extra fingers"
+
+    refined = _execute_with_fake_artifact(svc, project_id, job.id, monkeypatch)
+    assert refined.effective_negative == "extra fingers"
+
+
+def test_refine_explicit_empty_negative_is_respected_not_inherited(service, monkeypatch) -> None:
+    """BP-REFINE-1 fix: ``params={"negative": ""}`` ("no negative this round")
+    must be respected, not silently replaced by the parent's inherited
+    ``effective_negative`` -- presence, not truthiness, decides."""
+    svc, manager, project_id = service
+    parent_id = _seed_asset_with_effective_prompt(
+        svc, manager, project_id, effective_prompt="brown hair", effective_negative="worst quality"
+    )
+
+    workspace = svc.refine_asset(
+        project_id, parent_id, RefineRequest(instruction="long hair", params={"negative": ""})
+    )
+    job = next(j for j in workspace.jobs if j.parent_asset_id == parent_id)
+    assert job.params["negative"] == ""
+
+    refined = _execute_with_fake_artifact(svc, project_id, job.id, monkeypatch)
+    assert refined.effective_negative == ""
+
+
+def test_refine_replace_mode_ignores_parent_prompt(service, monkeypatch) -> None:
+    svc, manager, project_id = service
+    parent_id = _seed_asset_with_effective_prompt(
+        svc, manager, project_id, effective_prompt="brown hair, maid outfit", effective_negative=None
+    )
+
+    workspace = svc.refine_asset(
+        project_id,
+        parent_id,
+        RefineRequest(instruction="only this prompt", prompt_mode=RefinePromptMode.REPLACE),
+    )
+    job = next(j for j in workspace.jobs if j.parent_asset_id == parent_id)
+    assert job.prompt == "only this prompt"
+
+    refined = _execute_with_fake_artifact(svc, project_id, job.id, monkeypatch)
+    assert refined.effective_prompt == "only this prompt"
+    # No parent effective_negative and no override -> the adapter's own
+    # configured default applies (verified separately at the adapter level);
+    # here we only assert nothing was inherited from a parent that has none.
+    assert refined.effective_negative == get_settings().misaka_comfyui_default_negative_prompt
+
+
+def test_legacy_asset_without_effective_prompt_still_refines(service) -> None:
+    """A parent persisted before ``effective_prompt`` existed (e.g. a plain
+    ``import_asset`` with no originating job) must still refine successfully
+    -- the composer falls back to the instruction alone (BP-REFINE-1 backward
+    compatibility, no migration script)."""
+    svc, _, project_id = service
+    parent_id = _seed_image_asset(svc, project_id)
+
+    workspace = svc.refine_asset(project_id, parent_id, RefineRequest(instruction="twin daggers"))
+    job = next(j for j in workspace.jobs if j.parent_asset_id == parent_id)
+    assert job.prompt == "twin daggers"
 
 
 def test_metadata_only_refine_mutates_parent_on_disk(service, tmp_path) -> None:

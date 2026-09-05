@@ -31,6 +31,7 @@ import httpx
 # Allow running as a standalone script from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from core.config import get_settings  # noqa: E402
 from core.generation.adapters import comfyui  # noqa: E402
 from core.models.schemas import GenerationRecipe  # noqa: E402
 
@@ -113,7 +114,7 @@ def _run_recipe(
         base_url=base_url,
         checkpoint_name=checkpoint,
         positive_prompt="a simple anime character portrait, soft lighting",
-        negative_prompt=comfyui.DEFAULT_NEGATIVE_PROMPT,
+        negative_prompt=get_settings().misaka_comfyui_default_negative_prompt,
         filename_prefix=filename_prefix,
         seed=12345,
         params={"steps": 12, "width": 768, "height": 768},
