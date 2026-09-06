@@ -909,7 +909,8 @@ def stream_fidelity_loop(project_id: str, loop_id: str) -> StreamingResponse:
     """Server-Sent Events stream of a fidelity loop's progress (spec §4.4,
     mirrors ``stream_training_job`` below). Each frame's ``event`` name is
     ``done`` once the loop reaches a terminal status (PASSED /
-    STOPPED_MAX_ROUNDS / FAILED), ``progress`` otherwise."""
+    STOPPED_MAX_ROUNDS / STOPPED_UNVERIFIED / FAILED), ``progress``
+    otherwise."""
     if IS_DEV:
         logger.info("GET /api/v1/projects/%s/fidelity-loop/%s/stream", project_id, loop_id)
     try:
@@ -925,6 +926,7 @@ def stream_fidelity_loop(project_id: str, loop_id: str) -> StreamingResponse:
             is_terminal = loop.status in {
                 FidelityLoopStatus.PASSED,
                 FidelityLoopStatus.STOPPED_MAX_ROUNDS,
+                FidelityLoopStatus.STOPPED_UNVERIFIED,
                 FidelityLoopStatus.FAILED,
             }
             event_name = "done" if is_terminal else "progress"

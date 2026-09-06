@@ -97,8 +97,23 @@ OUTFITS_MD_COMBAT = """# 服裝與形態變體：測試花二
 """
 
 
-def _result(id: str, passed: bool, confidence: float = 0.9, bbox: tuple[int, int, int, int] | None = None) -> FidelityCheckResult:
-    return FidelityCheckResult(id=id, passed=passed, confidence=confidence, region_bbox=bbox, note="")
+def _result(
+    id: str,
+    passed: bool,
+    confidence: float = 0.9,
+    bbox: tuple[int, int, int, int] | None = None,
+    verdict: str | None = None,
+) -> FidelityCheckResult:
+    """``verdict`` (C5 fix, 2026-09-06) lets a test construct an
+    ``unverified`` result directly, bypassing ``core.llm.vision``'s real
+    gates (already covered by ``tests/test_vision_critic.py``) — this file's
+    ``critique_fn`` fake replaces ``vision.critique`` entirely, so it is
+    this file's job to prove ``FidelityService``/the API react correctly to
+    an ALREADY-unverified verdict, not to re-derive one."""
+    kwargs: dict[str, object] = {"id": id, "passed": passed, "confidence": confidence, "region_bbox": bbox, "note": ""}
+    if verdict is not None:
+        kwargs["verdict"] = verdict
+    return FidelityCheckResult(**kwargs)
 
 
 class _FakeIO:
@@ -240,6 +255,41 @@ class TestStartLoop:
         assert set(data["unresolved_check_ids"]) == {"setting-1", "outfits-1"}
         assert data["next_round_plan"] is not None
         assert set(data["next_round_plan"]["chosen_check_ids"]) <= {"setting-1", "outfits-1"}
+
+    def test_start_reaches_stopped_unverified_when_only_unverified_remain(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C5 fix (2026-09-06): zero CONFIRMED fails but one ``unverified``
+        check means the planner has nothing left it can repair — the loop
+        must stop with ``stopped_unverified``, never silently ``passed``."""
+        project_id = _create_project(client)
+        sheet_id = _create_character_sheet(client, project_id, tmp_path)
+        asset_id = _import_root_asset(client, project_id)
+        _install_fake_service(
+            monkeypatch,
+            project_id,
+            critic_sequence=[
+                [
+                    _result("setting-1", True, confidence=0.95, bbox=(0, 0, 20, 20)),
+                    _result("outfits-1", True, confidence=0.95, bbox=(30, 30, 50, 50), verdict="unverified"),
+                ]
+            ],
+        )
+
+        resp = client.post(
+            f"/api/v1/projects/{project_id}/assets/{asset_id}/fidelity-loop",
+            json={"character_sheet_id": sheet_id, "outfit_variant": "TestA"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()["data"]
+        assert data["loop"]["status"] == "stopped_unverified"
+        assert data["loop"]["current_round"] == 0
+        # Only the unverified check is unresolved — the genuinely confirmed
+        # pass ("setting-1") is excluded.
+        assert data["unresolved_check_ids"] == ["outfits-1"]
+        # STOPPED_UNVERIFIED is terminal, not an awaiting-round status — no
+        # next round is ever previewed for it.
+        assert data["next_round_plan"] is None
 
     def test_unknown_character_sheet_returns_400(self, client: TestClient, tmp_path: Path) -> None:
         project_id = _create_project(client)

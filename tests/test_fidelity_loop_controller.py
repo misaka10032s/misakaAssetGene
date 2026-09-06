@@ -15,6 +15,7 @@ from core.consultant.fidelity_loop import (
     select_strategy_for_round,
     select_top_k_failed,
     summarize_pass_fail,
+    summarize_verdicts,
 )
 from core.models.schemas import (
     BodyRegion,
@@ -36,9 +37,19 @@ def _check(
 
 
 def _result(
-    id: str, passed: bool, confidence: float = 0.9, bbox: tuple[int, int, int, int] | None = None
+    id: str,
+    passed: bool,
+    confidence: float = 0.9,
+    bbox: tuple[int, int, int, int] | None = None,
+    verdict: str | None = None,
 ) -> FidelityCheckResult:
-    return FidelityCheckResult(id=id, passed=passed, confidence=confidence, region_bbox=bbox, note="")
+    """``verdict`` (C5 fix, 2026-09-06) lets a test construct an
+    ``unverified`` result directly — every OTHER caller in this file omits
+    it and gets the pre-C5 default (``verdict`` derived from ``passed``)."""
+    kwargs: dict[str, object] = {"id": id, "passed": passed, "confidence": confidence, "region_bbox": bbox, "note": ""}
+    if verdict is not None:
+        kwargs["verdict"] = verdict
+    return FidelityCheckResult(**kwargs)
 
 
 def _bbox_overlaps(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
@@ -58,6 +69,26 @@ class TestSummarizePassFail:
     def test_all_pass(self) -> None:
         results = [_result("a", True), _result("b", True)]
         assert summarize_pass_fail(results) == (2, 0)
+
+
+class TestSummarizeVerdicts:
+    """C5 fix (2026-09-06) — the tri-state split ``summarize_pass_fail``
+    cannot express (it lumps ``unverified`` in with ``fail``)."""
+
+    def test_splits_pass_fail_unverified(self) -> None:
+        results = [
+            _result("a", True),
+            _result("b", False),
+            _result("c", False, verdict="unverified"),
+        ]
+        assert summarize_verdicts(results) == (1, 1, 1)
+        # summarize_pass_fail's fail_count (2) lumps "b" (real fail) and "c"
+        # (unverified) together — that IS its documented compat behavior.
+        assert summarize_pass_fail(results) == (1, 2)
+
+    def test_all_unverified(self) -> None:
+        results = [_result("a", True, verdict="unverified"), _result("b", True, verdict="unverified")]
+        assert summarize_verdicts(results) == (0, 0, 2)
 
 
 class TestSelectTopKFailed:
@@ -101,6 +132,17 @@ class TestSelectTopKFailed:
         ]
         chosen = select_top_k_failed(results, k=2)
         assert {r.id for r in chosen} == {"has-bbox", "no-bbox"}
+
+    def test_ignores_unverified_results(self) -> None:
+        """C5 fix (2026-09-06): the planner only ever repairs a CONFIRMED
+        fail — an ``unverified`` result (even with a high-confidence, bbox
+        shape indistinguishable from a real fail's) is never chosen."""
+        results = [
+            _result("unverified-high-conf", True, confidence=0.99, bbox=(0, 0, 100, 100), verdict="unverified"),
+            _result("failed", False, confidence=0.1),
+        ]
+        chosen = select_top_k_failed(results, k=2)
+        assert [r.id for r in chosen] == ["failed"]
 
 
 class TestBuildMaskRegions:
@@ -329,6 +371,22 @@ class TestPlanRound:
         )
         assert plan is None
 
+    def test_returns_none_when_only_unverified_remains(self) -> None:
+        """C5 fix (2026-09-06): an ``unverified`` result is not a CONFIRMED
+        fail — the planner has nothing localized/trustworthy to repair, so
+        this returns ``None`` exactly like an all-pass round (the caller,
+        ``fidelity_service._run_refine_round``, is what tells the two apart
+        and reports ``STOPPED_UNVERIFIED`` instead of ``PASSED``)."""
+        plan = plan_round(
+            round_index=1,
+            target_asset_id="asset-1",
+            checks=[_check("c1", BodyRegion.HEAD, ["hair"])],
+            critic_results=[_result("c1", True, verdict="unverified")],
+            image_width=1000,
+            image_height=1000,
+        )
+        assert plan is None
+
     def test_full_plan_shape(self) -> None:
         checks = [
             _check("waist-belt", BodyRegion.WAIST, ["dagger", "belt"], negative_tags=["weapon"]),
@@ -497,3 +555,75 @@ class TestDecideRoundOutcome:
         assert outcome.status is FidelityLoopStatus.STOPPED_MAX_ROUNDS
         assert outcome.next_target_asset_id == "asset-3"  # still reverts to best, just terminal
         assert outcome.regressed is True
+
+    def test_no_fails_but_unverified_remaining_stops_unverified(self) -> None:
+        """C5 fix (2026-09-06): PASSED now genuinely requires EVERY check to
+        be a confirmed pass — zero fails but 2 unverified checks means the
+        planner has nothing left it can repair, so the loop stops with
+        STOPPED_UNVERIFIED rather than silently reporting PASSED."""
+        outcome = decide_round_outcome(
+            new_asset_id="asset-2",
+            new_pass_count=15,
+            new_fail_count=0,
+            new_unverified_count=2,
+            completed_round_index=1,
+            max_rounds=4,
+            best_asset_id="asset-1",
+            best_pass_count=14,
+        )
+        assert outcome.status is FidelityLoopStatus.STOPPED_UNVERIFIED
+        assert outcome.next_target_asset_id == "asset-2"
+        assert outcome.best_asset_id == "asset-2"
+        assert outcome.best_pass_count == 15
+        assert outcome.regressed is False
+
+    def test_unverified_stop_wins_regardless_of_round_count(self) -> None:
+        """Nothing left to repair -> stop even on round 1 of a 4-round
+        budget (never wait for more rounds that cannot help)."""
+        outcome = decide_round_outcome(
+            new_asset_id="asset-2",
+            new_pass_count=16,
+            new_fail_count=0,
+            new_unverified_count=1,
+            completed_round_index=1,
+            max_rounds=4,
+            best_asset_id="asset-1",
+            best_pass_count=INITIAL_BEST_PASS_COUNT,
+        )
+        assert outcome.status is FidelityLoopStatus.STOPPED_UNVERIFIED
+
+    def test_unverified_stop_still_reverts_to_best_on_regression(self) -> None:
+        """A round with zero fails but some unverified checks, whose
+        pass_count nonetheless REGRESSED below the recorded best, still
+        reverts to ``best_asset_id`` — same "never keep the worse asset"
+        rule as STOPPED_MAX_ROUNDS/STOPPED_REGRESSION_RECOVERED."""
+        outcome = decide_round_outcome(
+            new_asset_id="asset-2",
+            new_pass_count=10,
+            new_fail_count=0,
+            new_unverified_count=3,
+            completed_round_index=1,
+            max_rounds=4,
+            best_asset_id="asset-1",
+            best_pass_count=17,
+        )
+        assert outcome.status is FidelityLoopStatus.STOPPED_UNVERIFIED
+        assert outcome.next_target_asset_id == "asset-1"
+        assert outcome.best_asset_id == "asset-1"
+        assert outcome.best_pass_count == 17
+        assert outcome.regressed is True
+
+    def test_default_unverified_count_preserves_pre_c5_behavior(self) -> None:
+        """``new_unverified_count`` defaults to 0 — every caller written
+        before C5 (2026-09-06) that never passes it keeps getting PASSED
+        whenever ``new_fail_count == 0``, unchanged."""
+        outcome = decide_round_outcome(
+            new_asset_id="asset-2",
+            new_pass_count=19,
+            new_fail_count=0,
+            completed_round_index=1,
+            max_rounds=4,
+            best_asset_id="asset-1",
+            best_pass_count=17,
+        )
+        assert outcome.status is FidelityLoopStatus.PASSED

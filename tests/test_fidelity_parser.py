@@ -247,6 +247,62 @@ class TestWaistVsTorsoPriority:
         assert checks["頸部"].region_hint == BodyRegion.TORSO
 
 
+class TestFineDetail:
+    """C5 fix (2026-09-06, fidelity-critic-second-opinion) —
+    ``FidelityCheck.fine_detail`` keyword table. Synthetic fixture only
+    (never copies the real 夏目茶依子 character's text — see
+    ``core.consultant.fidelity._FINE_DETAIL_KEYWORDS`` for the real-file
+    evidence run, quoted in the dispatch report instead of committed here)."""
+
+    OUTFITS_MD_FINE_DETAIL = """# 服裝與形態變體：測試花
+
+## 👗 常駐服裝 (Static Outfits)
+1. **[TestE] 測試細節服裝 (Test Fine Detail Outfit)**:
+    - **整體描述**：簡單洋裝。
+    - **身體服裝**：連身式無袖洋裝，圓領口，雙臂完全裸露。
+        - **袖孔邊緣**：飾棉質蕾絲荷葉邊，向外翻折。
+    - **頭部**：深色貝蕾帽，側面別著細小的兔子胸針。
+    - **裙子/下部**：百褶裙長度適中。
+    - **鞋子**：白色便鞋。
+    - **生成提示詞**：
+        - **ComfyUI**: `test hana, sleeveless dress, beret, brooch`
+"""
+
+    def test_sleeve_lace_collar_keywords_mark_fine_detail(self) -> None:
+        checks = {
+            c.label_zh: c
+            for c in parse_character_checklist(SETTING_MD, self.OUTFITS_MD_FINE_DETAIL, "TestE")
+            if c.source == "outfits"
+        }
+        # "連身式無袖洋裝，圓領口...袖孔邊緣：飾棉質蕾絲荷葉邊" — 袖/領口/蕾絲.
+        assert checks["身體服裝"].fine_detail is True
+
+    def test_brooch_keyword_marks_fine_detail(self) -> None:
+        checks = {
+            c.label_zh: c
+            for c in parse_character_checklist(SETTING_MD, self.OUTFITS_MD_FINE_DETAIL, "TestE")
+            if c.source == "outfits"
+        }
+        assert checks["頭部"].fine_detail is True  # "兔子胸針"
+
+    def test_ordinary_bullet_stays_not_fine_detail(self) -> None:
+        checks = {
+            c.label_zh: c
+            for c in parse_character_checklist(SETTING_MD, self.OUTFITS_MD_FINE_DETAIL, "TestE")
+            if c.source == "outfits"
+        }
+        assert checks["整體描述"].fine_detail is False
+        assert checks["裙子/下部"].fine_detail is False
+        assert checks["鞋子"].fine_detail is False
+
+    def test_default_fine_detail_is_false_for_pre_c5_fixtures(self) -> None:
+        # The shared SETTING_MD/OUTFITS_MD fixtures above (TestA) predate C5
+        # and contain none of the fine-detail keywords — every check stays
+        # fine_detail=False, so this is a non-breaking additive field.
+        checks = parse_character_checklist(SETTING_MD, OUTFITS_MD, "TestA")
+        assert all(c.fine_detail is False for c in checks)
+
+
 class TestMissingSettingSection:
     def test_missing_visual_identity_section_raises(self) -> None:
         broken_setting = "# 角色設定：無外型段落\n\n## 📋 基礎資料\n- **姓名**：無\n"

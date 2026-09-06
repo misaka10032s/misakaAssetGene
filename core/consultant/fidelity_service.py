@@ -47,7 +47,15 @@ from core.network.state import NetworkState
 from core.project.manager import ProjectManager
 
 _TERMINAL_LOOP_STATUSES = frozenset(
-    {FidelityLoopStatus.PASSED, FidelityLoopStatus.STOPPED_MAX_ROUNDS, FidelityLoopStatus.FAILED}
+    {
+        FidelityLoopStatus.PASSED,
+        FidelityLoopStatus.STOPPED_MAX_ROUNDS,
+        # C5 fix (2026-09-06): nothing left the planner can repair (only
+        # unverified checks remain) — same "no more rounds will help"
+        # terminal shape as STOPPED_MAX_ROUNDS.
+        FidelityLoopStatus.STOPPED_UNVERIFIED,
+        FidelityLoopStatus.FAILED,
+    }
 )
 # A loop paused here is still awaiting exactly one more round (either a
 # user's explicit advance() click, or auto_continue picking it back up).
@@ -265,6 +273,7 @@ class FidelityService:
             store.save_loop(loop)
             raise
         pass_count, fail_count = fidelity_loop.summarize_pass_fail(critic_results)
+        _, confirmed_fail_count, unverified_count = fidelity_loop.summarize_verdicts(critic_results)
         store.append_round(
             loop_id=loop.id,
             round_index=0,
@@ -276,7 +285,8 @@ class FidelityService:
         outcome = fidelity_loop.decide_round_outcome(
             new_asset_id=loop.root_asset_id,
             new_pass_count=pass_count,
-            new_fail_count=fail_count,
+            new_fail_count=confirmed_fail_count,
+            new_unverified_count=unverified_count,
             completed_round_index=0,
             max_rounds=loop.max_rounds,
             best_asset_id=loop.best_asset_id,
@@ -311,10 +321,18 @@ class FidelityService:
             image_height=height,
         )
         if plan is None:
-            # No fails recorded to plan from — treat as already passed
-            # rather than raising (should not normally be reachable, since
-            # AWAITING_USER/STOPPED_REGRESSION_RECOVERED implies fails).
-            loop.status = FidelityLoopStatus.PASSED
+            # No CONFIRMED fails recorded to plan from. Should not normally
+            # be reachable, since AWAITING_USER/STOPPED_REGRESSION_RECOVERED
+            # implies fails — defensive fallback only. C5 fix (2026-09-06):
+            # distinguish "genuinely all passed" from "only unverified
+            # checks remain" (the planner still can't act on those) rather
+            # than blindly reporting PASSED either way.
+            unverified_present = any(
+                result.verdict == "unverified" for result in source_round.critic_results
+            )
+            loop.status = (
+                FidelityLoopStatus.STOPPED_UNVERIFIED if unverified_present else FidelityLoopStatus.PASSED
+            )
             store.save_loop(loop)
             return
 
@@ -342,6 +360,7 @@ class FidelityService:
             raise
 
         pass_count, fail_count = fidelity_loop.summarize_pass_fail(critic_results)
+        _, confirmed_fail_count, unverified_count = fidelity_loop.summarize_verdicts(critic_results)
         store.append_round(
             loop_id=loop.id,
             round_index=round_index,
@@ -355,7 +374,8 @@ class FidelityService:
         outcome = fidelity_loop.decide_round_outcome(
             new_asset_id=new_asset_id,
             new_pass_count=pass_count,
-            new_fail_count=fail_count,
+            new_fail_count=confirmed_fail_count,
+            new_unverified_count=unverified_count,
             completed_round_index=round_index,
             max_rounds=loop.max_rounds,
             best_asset_id=loop.best_asset_id,

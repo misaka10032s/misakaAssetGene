@@ -275,6 +275,42 @@ def _is_non_visual(full_text: str) -> bool:
     return any(keyword in full_text for keyword in _NON_VISUAL_KEYWORDS)
 
 
+# ---------------------------------------------------------------------------
+# C5 fix (2026-09-06, fidelity-critic-second-opinion) —
+# FidelityCheck.fine_detail keyword table
+# ---------------------------------------------------------------------------
+
+# Keyword-driven, same idiom as ``_NON_VISUAL_KEYWORDS`` above: any of these
+# substrings appearing anywhere in a check's own text (label + body) marks it
+# a "fine detail" — a small/easy-to-miss visual feature a local VLM critic
+# has been measured (twice, live) confidently PASSING even when the render
+# clearly disagrees (DEMO2-report.md: ``outfits-7``'s "連身式無袖洋裝" passed
+# at confidence 1.0 while the image showed long sleeves with white cuffs).
+# ``core.llm.vision`` gate #5 routes a ``fine_detail`` check's local ``pass``
+# through a second-opinion cloud provider instead of trusting it outright.
+# Deliberately broad substrings (same trade-off documented for
+# ``_NON_VISUAL_KEYWORDS``): a false-positive risk is accepted rather than
+# hidden — an over-flagged check just costs one extra second-opinion call,
+# it is never silently dropped or mis-scored.
+_FINE_DETAIL_KEYWORDS: tuple[str, ...] = (
+    "袖",       # sleeves / cuffs / armholes (袖子、袖口、袖孔、袖籠、無袖)
+    "蕾絲",     # lace
+    "胸針",     # brooch
+    "領口", "領子", "衣領",  # collar
+    # "下擺" (hem EDGE finish/trim), deliberately NOT the broader "裙擺"
+    # (plain "skirt length/hem" — that substring also matches an ordinary
+    # length description like "及膝裙擺", which is not a fine/small detail
+    # at all; a synthetic parser test caught this exact false positive).
+    "下擺",
+    "內襯", "內層", "夾層",  # inner layers
+    "高光",                  # highlights
+)
+
+
+def _is_fine_detail(full_text: str) -> bool:
+    return any(keyword in full_text for keyword in _FINE_DETAIL_KEYWORDS)
+
+
 # A token counts as "measurement-like" if it carries a digit (covers "20
 # 褶", "4cm", "142cm", "2000Hz", "15 度", "1mm" ...) or is a hex colour
 # ("#FF85A1"). Tokens are cut on whitespace/Chinese punctuation, which is
@@ -481,6 +517,7 @@ def _make_check(
         mode=mode,
         visual=visual,
         overrides=overrides or [],
+        fine_detail=_is_fine_detail(text),
     )
 
 
@@ -595,6 +632,7 @@ def _parse_weapons_checks(setting_md_text: str) -> list[FidelityCheck]:
                 mode="combat",
                 visual=True,
                 overrides=["weapons-hidden"],
+                fine_detail=_is_fine_detail(bullet.text()),
             )
         )
     if not checks:

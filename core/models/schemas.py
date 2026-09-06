@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from core.network.state import NetworkMode, NetworkState
 from core.scheduler.vram import RuntimeState
@@ -1178,6 +1178,16 @@ class FidelityCheck(BaseModel):
       combat-mode "dual daggers drawn" check overrides the default-mode
       "no weapon visible" check) — the overridden default check is dropped
       from that mode's checklist instead of coexisting contradictorily.
+    - ``fine_detail``: C5 fix (2026-09-06, fidelity-critic-second-opinion) —
+      ``True`` when the check's own text concerns a small/easy-to-miss visual
+      detail (sleeve/armhole/lace/brooch/collar/cuff/hem/inner-layer/
+      highlight — see ``core.consultant.fidelity._FINE_DETAIL_KEYWORDS``),
+      computed by the parser. A local VLM critic's confident ``pass`` on this
+      class of check is exactly what a real demo measured as unreliable
+      (DEMO2-report.md: ``outfits-7`` "連身式無袖洋裝" passed while the image
+      showed long sleeves) — ``core.llm.vision`` gate #5 routes a
+      ``fine_detail`` check's ``pass`` verdict through a second-opinion cloud
+      provider before trusting it.
     """
 
     id: str
@@ -1190,6 +1200,7 @@ class FidelityCheck(BaseModel):
     visual: bool = True
     negative_tags: list[str] = Field(default_factory=list)
     overrides: list[str] = Field(default_factory=list)
+    fine_detail: bool = False
 
 
 class FidelityCheckResult(BaseModel):
@@ -1201,6 +1212,26 @@ class FidelityCheckResult(BaseModel):
     verdict to ``True`` when the critic could not localize the failure
     convincingly — that downgrade happens in ``core.llm.vision``, not here;
     this model only carries the final, already-gated verdict.
+
+    ``verdict`` (C5 fix, 2026-09-06, fidelity-critic-second-opinion) is the
+    tri-state form: ``"pass" | "fail" | "unverified"``. ``"unverified"`` means
+    the critic said ``pass`` but ``core.llm.vision``'s gates could not trust
+    that pass (no/too-large ``region_bbox``, low ``confidence``, or a
+    ``fine_detail`` check whose second opinion was unavailable) — it is
+    neither a confirmed pass nor a confirmed fail, and counts as NOT passed
+    for the fidelity-loop's stop condition (``core.consultant.fidelity_loop``)
+    while never being selected for repair (the planner only repairs ``fail``).
+    ``passed`` is kept for backward compatibility and is ALWAYS
+    ``verdict == "pass"`` — every caller that only ever read ``.passed``
+    (fidelity_loop's pass/fail bookkeeping, the store, the API) keeps working
+    unchanged; a caller wanting to distinguish "confirmed fail" from
+    "unverified" must read ``.verdict``. Constructing with only ``passed``
+    (the pre-C5 call shape used throughout this codebase and its tests)
+    defaults ``verdict`` to ``"pass"``/``"fail"`` accordingly, so this is a
+    non-breaking addition. Because ``model_copy(update=...)`` does NOT
+    re-run validators, every in-place gate downgrade in ``core.llm.vision``
+    sets BOTH ``verdict`` and ``passed`` explicitly in its own update dict
+    rather than relying on this validator to re-sync them.
     """
 
     id: str
@@ -1208,6 +1239,14 @@ class FidelityCheckResult(BaseModel):
     confidence: float = Field(ge=0, le=1)
     region_bbox: tuple[int, int, int, int] | None = None
     note: str = ""
+    verdict: Literal["pass", "fail", "unverified"] = "fail"
+
+    @model_validator(mode="after")
+    def _sync_verdict_and_passed(self) -> "FidelityCheckResult":
+        if "verdict" not in self.model_fields_set:
+            object.__setattr__(self, "verdict", "pass" if self.passed else "fail")
+        object.__setattr__(self, "passed", self.verdict == "pass")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -1232,6 +1271,12 @@ class FidelityLoopStatus(str, Enum):  # noqa: UP042 -- matches every sibling enu
     PASSED = "passed"
     STOPPED_MAX_ROUNDS = "stopped_max_rounds"
     STOPPED_REGRESSION_RECOVERED = "stopped_regression_recovered"
+    # C5 fix (2026-09-06, fidelity-critic-second-opinion): every remaining
+    # unresolved check is ``unverified`` (not a confirmed ``fail``) — the
+    # planner has nothing left it can repair (it only ever targets confirmed
+    # fails), so the loop stops here rather than silently reporting PASSED
+    # for checks it never actually confirmed.
+    STOPPED_UNVERIFIED = "stopped_unverified"
     FAILED = "failed"
 
 

@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -72,6 +73,20 @@ class Settings(BaseSettings):
         alias="GEMINI_API_BASE_URL",
     )
     gemini_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_MODEL")
+    # Fidelity critic (core/llm/vision.py) gate config — spec §5.15 / §3.4
+    # gates #4/#5, C5 fix (2026-09-06, fidelity-critic-second-opinion).
+    # ``off`` disables gate #5 entirely (no second-opinion call, ever); a
+    # ``fine_detail``/``unverified`` check then just stays whatever gate #4
+    # left it as.
+    misaka_fidelity_second_opinion: Literal["off", "gemini", "openai"] = Field(
+        default="gemini", alias="MISAKA_FIDELITY_SECOND_OPINION",
+    )
+    # Gate #4: a "pass" verdict below this confidence is downgraded to
+    # "unverified" regardless of bbox — measured default (0.7), not yet
+    # tuned against a live acceptance run.
+    misaka_fidelity_pass_min_confidence: float = Field(
+        default=0.7, ge=0.0, le=1.0, alias="MISAKA_FIDELITY_PASS_MIN_CONFIDENCE",
+    )
 
     @property
     def is_dev(self) -> bool:
