@@ -953,6 +953,11 @@ project workspace 的 conversation history 不可一次完整渲染所有訊息�
 ### 5.15 角色一致性檢查（Fidelity Critic）
 > v0.9.5 (Brief 1/3): checklist 解析器 + VLM 判官新增。控制器/持久化/API 為 Brief 2；
 > 建議卡片 + blueprint 條目為 Brief 3（詳細規格：`@PM/state/runs/misakaAssetGene-refine-loop-260905/C-spec.md`）。
+> v0.9.8 (C5, 2026-09-06)：本機判官（`qwen2.5vl:7b`）實測兩次對「小/不存在細節」
+> 給出高信心度假陽性 pass（demo1：挑染/內衣；demo2 `DEMO2-report.md`：
+> `outfits-7` 「連身式無袖洋裝」給 pass 1.0，畫面實際長袖）。新增 tri-state
+> verdict + gate #4（局部化 pass 門檻）+ gate #5（Gemini 第二意見）+ 終態
+> `STOPPED_UNVERIFIED`——見下方對應段落。
 
 **Checklist 派生**（`core/consultant/fidelity.py`）：從角色 SSOT（`setting.md` 的
 `## 🎨 外型特徵` 逐 bullet、`outfits.md` 指定服裝變體的巢狀子 bullet）動態解析出
@@ -976,11 +981,37 @@ VRAM）為本機首選，新設定 `MISAKA_OLLAMA_VISION_MODEL`（預設 `qwen2.
 `FidelityCheckResult{id, passed, confidence, region_bbox, note}`，JSON 解析失敗
 或缺欄位一律預設該項 `pass` 並記警告，絕不中斷整批判定。
 
-**防幻覺三閘門**（於 `vision.critique` 套用，僅會把 `fail` 降級為 `pass`，
-`pass` 不受影響，每次降級皆記 INFO log 附 check id）：
+**防幻覺五閘門**（於 `vision.critique` 套用；閘門 1-3 只會把 `fail` 降級為
+`pass`，閘門 4-5 只會把 `pass` 降級為 `unverified`/`fail`，每次降級皆記 INFO
+log 附 check id）：
 1. `region_bbox` 為 null，或面積 > 全圖 60% → 判定過於空泛，降級。
 2. 兩輪一致性 AND：同圖跑兩次，僅兩次皆 fail 才算數；一 fail 一 pass 視為 pass。
 3. bbox 中心落在 `region_hint` 預期的頭到腳分區之外（例如 HEAD 卻落在下 20%）→ 降級。
+4. **局部化 pass 必要條件**（C5 新增，2026-09-06）：一個 `pass` 若
+   `region_bbox` 為 null、面積 > 60%（同上限），或
+   `confidence < MISAKA_FIDELITY_PASS_MIN_CONFIDENCE`（設定值，預設 `0.7`），
+   一律降級為第三態 `unverified`（`FidelityCheckResult.verdict:
+   pass|fail|unverified`；`passed: bool` 欄位保留向後相容 =
+   `verdict == "pass"`）——絕不因此誤降到 `fail`：判官從未斷言失敗，只是這次
+   `pass` 不足採信。閘門 1-3 把 `fail` 救回來的 `pass`，若本身仍缺乏可信的
+   bbox/confidence，會被本閘門立刻再判為 `unverified`（本來就沒有可信的定位
+   依據，兩者是同一件事的一體兩面）。
+5. **第二意見（second opinion）**（C5 新增，2026-09-06）：對「仍是
+   `unverified`」的項目，以及「`pass` 且該 check 的 `fine_detail=True`」的項目
+   （小/易忽略的視覺細節——袖/袖孔/袖口/蕾絲/胸針/領口/領子/衣領/下擺/內襯/
+   內層/夾層/高光，parser 關鍵字表見 `core/consultant/fidelity.
+   _FINE_DETAIL_KEYWORDS`，由 `parse_character_checklist` 於每個
+   `FidelityCheck` 上算出），改送一個獨立的第二個 VLM provider 覆核
+   （`MISAKA_FIDELITY_SECOND_OPINION: off|gemini|openai`，預設 `gemini`；
+   `core/llm/providers/gemini.py::critique_image` 走 Gemini `generateContent`，
+   圖片以 `inline_data`（`mime_type`/`data` base64）part 附加、並要求
+   `response_mime_type: application/json`，同樣受 `router.py` 的「非
+   ONLINE 停用 CLOUD provider」離線閘門）：兩邊皆判 `pass` 才維持/確認
+   `pass`；兩邊不同調 → 判定為 `fail`（`note` 併入兩邊判官的理由，可追溯）；
+   第二意見不可用（未設定 key／離線／連不上）→ 維持 `unverified`，記 INFO
+   log，絕不因「查不到第二意見」就默默升級為 `pass`。實測依據：
+   `DEMO2-report.md` §4，`outfits-7`（連身式無袖洋裝）本機判官給 1.0 信心度
+   的假陽性 `pass`，畫面實際為長袖（含白色袖口）。
 
 此 venv 未安裝 Pillow（依派工指示刻意不新增）：§3.3 的降採樣目前恆為原圖直送，
 scale factor 記為 1.0，此落差已記錄於 log，非隱藏缺口。
@@ -989,9 +1020,17 @@ scale factor 記為 1.0，此落差已記錄於 log，非隱藏缺口。
 > 條目仍留 Brief 3。
 
 **迴圈控制器**（`core/consultant/fidelity_loop.py`，純邏輯，I/O 全注入）：狀態機
-`PENDING_CRITIQUE → CRITIQUING →`（全過 `PASSED`；有 fail 且未達上限 `AWAITING_USER`；
-`round==max_rounds` 仍有 fail `STOPPED_MAX_ROUNDS`；`pass_count` 低於歷史最佳
-`STOPPED_REGRESSION_RECOVERED`，下一輪 target 回退 `best_asset_id`）；`FAILED` 只在
+`PENDING_CRITIQUE → CRITIQUING →`（全部 CONFIRMED pass 才算 `PASSED`；有 confirmed
+fail 且未達上限 `AWAITING_USER`；`round==max_rounds` 仍有 fail `STOPPED_MAX_ROUNDS`；
+`pass_count` 低於歷史最佳 `STOPPED_REGRESSION_RECOVERED`，下一輪 target 回退
+`best_asset_id`；**零 confirmed fail 但仍有 `unverified` 項 → `STOPPED_UNVERIFIED`**
+（C5 新增，2026-09-06——`decide_round_outcome` 的 `new_unverified_count` 參數，預設
+`0` 保留舊呼叫端行為；`select_top_k_failed`/`plan_round` 只挑選
+`verdict=="fail"`，`unverified` 從不被規劃器選為修補標的，因此「零 fail 但有
+unverified」代表規劃器已無標的可修，不論還剩幾輪都立即停止，絕不誤報
+`PASSED`——`summarize_verdicts` 提供 `(pass, fail, unverified)` 三態計數，
+`FidelityLoopData.unresolved_check_ids` 沿用既有 `not result.passed`，`fail`
+與 `unverified` 皆自然算入）；`FAILED` 只在
 I/O 例外時由 service 層設定，controller 本身不回傳。每輪組裝（`plan_round`）：
 top-k(k≤2) 失敗項依 confidence 降冪、貪婪跳過 bbox 已重疊(IoU>0)者；遮罩
 `dilate=12/feather=8`，`subtract` = 同批判定中「已過關且 bbox 與（膨脹後）選中區域

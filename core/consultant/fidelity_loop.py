@@ -151,9 +151,29 @@ def _dedupe_casefold(tags: list[str]) -> list[str]:
 
 
 def summarize_pass_fail(results: list[FidelityCheckResult]) -> tuple[int, int]:
-    """Return ``(pass_count, fail_count)`` for a critique result set."""
+    """Return ``(pass_count, fail_count)`` for a critique result set.
+
+    ``fail_count`` here is "everything not a confirmed pass" (kept for
+    backward compatibility with ``FidelityLoopRound.pass_count``/
+    ``fail_count`` display columns) — it lumps a confirmed ``fail`` together
+    with an ``unverified`` result. Use :func:`summarize_verdicts` when the
+    two need to be told apart (C5 fix, 2026-09-06 — the loop-controller's own
+    stop-condition logic needs the split; see ``decide_round_outcome``)."""
     pass_count = sum(1 for result in results if result.passed)
     return pass_count, len(results) - pass_count
+
+
+def summarize_verdicts(results: list[FidelityCheckResult]) -> tuple[int, int, int]:
+    """Return ``(pass_count, fail_count, unverified_count)`` — the tri-state
+    split (C5 fix, 2026-09-06 / ``FidelityCheckResult.verdict``). A confirmed
+    ``fail`` is the only thing the planner ever targets for repair
+    (:func:`select_top_k_failed`, :func:`plan_round`); an ``unverified``
+    result is neither repaired nor silently counted as passed — see
+    :func:`decide_round_outcome`'s ``STOPPED_UNVERIFIED`` branch."""
+    pass_count = sum(1 for result in results if result.verdict == "pass")
+    fail_count = sum(1 for result in results if result.verdict == "fail")
+    unverified_count = sum(1 for result in results if result.verdict == "unverified")
+    return pass_count, fail_count, unverified_count
 
 
 # ---------------------------------------------------------------------------
@@ -169,9 +189,11 @@ def select_top_k_failed(
     one (spec §4.2.1: "top-k(k=1–2)失敗項:confidence 降序,貪婪選 bbox
     IoU=0 者"). A candidate with no bbox never overlaps anything and is
     always eligible. May return FEWER than ``k`` items if not enough
-    non-overlapping fails exist.
-    """
-    fails = [result for result in results if not result.passed]
+    non-overlapping fails exist. Only CONFIRMED fails (``verdict == "fail"``)
+    are eligible — an ``unverified`` result is never repaired (C5 fix,
+    2026-09-06: the planner has no localized, trustworthy defect to target
+    for one; it stays ``unverified`` until a second opinion resolves it)."""
+    fails = [result for result in results if result.verdict == "fail"]
     ordered = sorted(fails, key=lambda result: result.confidence, reverse=True)
     chosen: list[FidelityCheckResult] = []
     for candidate in ordered:
@@ -396,9 +418,11 @@ def plan_round(
     subtract_iou_threshold: float = DEFAULT_SUBTRACT_IOU_THRESHOLD,
 ) -> FidelityRoundPlan | None:
     """Assemble the next round's full decision record (spec §4.2), or
-    ``None`` when ``critic_results`` has no fails (nothing to plan — the
-    caller should treat this as PASSED)."""
-    fails = [result for result in critic_results if not result.passed]
+    ``None`` when ``critic_results`` has no CONFIRMED fails (nothing the
+    planner can repair — the caller decides between PASSED and, when an
+    ``unverified`` check remains, ``STOPPED_UNVERIFIED``; see C5 fix,
+    2026-09-06 and ``fidelity_service._run_refine_round``)."""
+    fails = [result for result in critic_results if result.verdict == "fail"]
     if not fails:
         return None
 
@@ -491,6 +515,7 @@ def decide_round_outcome(
     max_rounds: int,
     best_asset_id: str,
     best_pass_count: int,
+    new_unverified_count: int = 0,
 ) -> RoundOutcome:
     """Decide the loop's next status + best-so-far bookkeeping after ONE
     critique (spec §4.1).
@@ -502,17 +527,49 @@ def decide_round_outcome(
     (round 0 has nothing to regress against) with no special-cased branch
     here — see ``INITIAL_BEST_PASS_COUNT``'s docstring.
 
-    Precedence: all-pass wins outright (PASSED) regardless of round count.
-    Otherwise, a pass_count drop below the recorded best is a regression —
-    the next round's target reverts to ``best_asset_id`` (never the
-    regressed asset) — but STOPPED_MAX_ROUNDS still wins if this was
-    already the last allowed round.
+    ``new_unverified_count`` (C5 fix, 2026-09-06 — default 0, so every
+    pre-C5 caller keeps its old behavior unchanged) is the number of
+    ``FidelityCheckResult.verdict == "unverified"`` checks in this round
+    (``fidelity_loop.summarize_verdicts``). PASSED now genuinely requires
+    EVERY check to be a confirmed pass: ``new_fail_count == 0`` alone is no
+    longer sufficient when unverified checks remain, since the planner
+    (:func:`plan_round`) only ever repairs a confirmed ``fail`` and has
+    nothing left it can act on — the loop stops with ``STOPPED_UNVERIFIED``
+    instead of silently reporting PASSED for checks it never actually
+    confirmed.
+
+    Precedence: all-CONFIRMED-pass wins outright (PASSED) regardless of
+    round count. No fails but some unverified -> STOPPED_UNVERIFIED, also
+    regardless of round count (nothing left to repair, so waiting for
+    another round would not help). Otherwise, a pass_count drop below the
+    recorded best is a regression — the next round's target reverts to
+    ``best_asset_id`` (never the regressed asset) — but STOPPED_MAX_ROUNDS
+    still wins if this was already the last allowed round.
     """
     reached_cap = completed_round_index >= max_rounds
 
-    if new_fail_count == 0:
+    if new_fail_count == 0 and new_unverified_count == 0:
         return RoundOutcome(
             status=FidelityLoopStatus.PASSED,
+            next_target_asset_id=new_asset_id,
+            best_asset_id=new_asset_id,
+            best_pass_count=new_pass_count,
+            regressed=False,
+        )
+
+    if new_fail_count == 0:
+        # Nothing left the planner can repair (only unverified checks
+        # remain) — stop here rather than looping without progress.
+        if new_pass_count < best_pass_count:
+            return RoundOutcome(
+                status=FidelityLoopStatus.STOPPED_UNVERIFIED,
+                next_target_asset_id=best_asset_id,
+                best_asset_id=best_asset_id,
+                best_pass_count=best_pass_count,
+                regressed=True,
+            )
+        return RoundOutcome(
+            status=FidelityLoopStatus.STOPPED_UNVERIFIED,
             next_target_asset_id=new_asset_id,
             best_asset_id=new_asset_id,
             best_pass_count=new_pass_count,
