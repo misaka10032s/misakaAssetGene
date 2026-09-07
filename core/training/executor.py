@@ -3,7 +3,7 @@
 Design
 ------
 TrainingExecutor runs queued TrainingJobs ONE AT A TIME (FIFO).  Before launching
-each job it acquires an EXCLUSIVE VRAM lock via ModelScheduler.begin_training()
+each job it acquires an EXCLUSIVE VRAM lock via ModelScheduler.try_begin_training()
 (core/scheduler/vram.py).  While the lock is held:
   * acquire() on any model raises SchedulerError immediately — HARD refusal, not
     eviction-based.  Generation dispatch must consult is_training_locked() before
@@ -13,21 +13,27 @@ each job it acquires an EXCLUSIVE VRAM lock via ModelScheduler.begin_training()
 
 VRAM lock integration with core/scheduler/vram.py
 ---------------------------------------------------
-The scheduler now has a first-class training-lock concept (begin_training /
+The scheduler now has a first-class training-lock concept (try_begin_training /
 end_training / is_training_locked).  While the lock is held:
   - acquire() raises SchedulerError for ANY caller (non-evictable hard lock).
   - Other subsystems query is_training_locked() to gate generation dispatch.
 
-Direction (a) — training refuses to start if a managed model is ACTIVE:
-  Before calling begin_training() the executor checks whether any registered
-  managed model is currently ACTIVE.  If one is found, the job FAILS immediately
-  with a clear reason.  This prevents claiming bidirectional exclusivity that
-  has not been wired end-to-end.
+Direction (a) — training refuses to start if a managed model is ACTIVE, ATOMIC:
+  ModelScheduler.try_begin_training(holder) performs the "is any registered
+  managed model currently ACTIVE?" scan and the exclusive lock-take in ONE call,
+  both inside the scheduler's own lock — there is no separate, unlocked check
+  before the lock is taken.  It returns the list of ACTIVE model names (and does
+  NOT take the lock) when any are found, or an empty list (and DOES take the
+  lock, under `holder`) when none are.  This closes a check-then-lock (TOCTOU)
+  race: a two-step caller pattern — peek scheduler state, decide "nothing is
+  ACTIVE", then call begin_training() as a separate step — left a gap where a
+  concurrent acquire() could land a model in VRAM that the check never saw,
+  letting training and generation both end up holding real VRAM at once.
 
 Scheduler API calls used (all from core/scheduler/vram.py):
-  ModelScheduler.begin_training(holder)  — acquires hard exclusive lock
-  ModelScheduler.end_training()          — releases the lock
-  ModelScheduler.is_training_locked()    — query by generation path
+  ModelScheduler.try_begin_training(holder) — atomic ACTIVE-scan + lock-take
+  ModelScheduler.end_training()             — releases the lock
+  ModelScheduler.is_training_locked()       — query by generation path
 
 CommandRunner protocol
 -----------------------
@@ -83,7 +89,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from core.models.schemas import Modality, TrainingJob, TrainingJobStatus
-from core.scheduler.vram import ModelScheduler, RuntimeState, SchedulerError
+from core.scheduler.vram import ModelScheduler, SchedulerError
 
 logger = logging.getLogger("misaka.training.executor")
 
@@ -404,11 +410,15 @@ class TrainingExecutor:
 
     def _run_job(self, project_id: str, job_id: str) -> None:
         """Execute one training job; drives status queued→running→completed|failed."""
-        # -- Direction (a): refuse to start if a managed model is currently ACTIVE --
-        active_models = [
-            name for name, m in self._scheduler._models.items()
-            if m.state == RuntimeState.ACTIVE
-        ]
+        # -- Direction (a) + hard exclusive VRAM lock, ATOMIC (spec §7.3) --
+        # try_begin_training() checks "is any managed model ACTIVE?" and (only
+        # if none is) takes the lock, in one call under the scheduler's own
+        # lock. This closes a TOCTOU race: peeking scheduler._models directly
+        # here and calling begin_training() as a separate step left a gap
+        # where a concurrent acquire() could put a model into VRAM that this
+        # check would never see, letting training and generation both hold
+        # real VRAM at once.
+        active_models = self._scheduler.try_begin_training(job_id)
         if active_models:
             with self._lock:
                 jobs = self._read_jobs(project_id)
@@ -422,9 +432,6 @@ class TrainingExecutor:
                 )
                 self._write_jobs(project_id, jobs)
             return
-
-        # -- Acquire hard exclusive VRAM lock --
-        self._scheduler.begin_training(job_id)
 
         try:
             # -- Transition to RUNNING --

@@ -631,6 +631,100 @@ class TestHardExclusiveVramLock:
         # The lock must NOT be left held after the refusal.
         assert sched.is_training_locked() is False
 
+    def test_toctou_race_between_active_check_and_training_lock(self) -> None:
+        """Regression for the check-then-lock TOCTOU (spec §7.3).
+
+        A model must not be able to slip into ACTIVE state in the gap
+        between "is any managed model ACTIVE?" and the training lock
+        actually being taken. A hook on ``ModelScheduler._models`` forces a
+        concurrent generation-style ``acquire()`` to land exactly at the end
+        of that scan (the point right after the scan decided "nothing is
+        ACTIVE", mirroring real-world scheduling). The buggy executor read
+        ``scheduler._models`` directly (UNLOCKED) and then called
+        ``begin_training()`` as a completely separate step, so the racer's
+        ``acquire()`` landed cleanly in that gap and BOTH ended up true at
+        once: training running AND the racer's model ACTIVE. The fix must
+        perform the whole decision atomically under the scheduler's own
+        lock, so the racer instead blocks until the decision is finalized
+        and is refused.
+        """
+        from core.scheduler.vram import RuntimeState
+
+        sched = _make_scheduler(vram_mb=8000)
+        sched.register(ManagedModel(name="gen_race", vram_mb=4000, ram_mb=4000))
+
+        racer_done = threading.Event()
+
+        def _racer() -> None:
+            try:
+                sched.acquire("gen_race")
+            except SchedulerError:
+                pass
+            finally:
+                racer_done.set()
+
+        class HookedDict(dict):
+            """Wraps ``ModelScheduler._models`` so that the scan performed by
+            the "is anything ACTIVE?" check triggers a concurrent acquire()
+            exactly once, right as the scan finishes iterating."""
+
+            def items(self):
+                real_items = list(dict.items(self))
+
+                def _iter():
+                    yield from real_items
+                    # Scan just finished deciding based on `real_items`
+                    # (nothing ACTIVE yet) — this is the exact TOCTOU
+                    # instant. Race a concurrent acquire() in right here.
+                    threading.Thread(target=_racer, daemon=True).start()
+                    # Bounded wait: under the OLD unlocked peek this
+                    # completes immediately (no lock held). Under the FIXED
+                    # atomic path this call happens *while* the scheduler's
+                    # own lock is held by the checking thread, so the racer
+                    # blocks and this wait legitimately times out — that
+                    # timeout is the fix working, not a flake.
+                    racer_done.wait(timeout=0.5)
+
+                return _iter()
+
+        sched._models = HookedDict(sched._models)  # type: ignore[assignment]
+
+        observed_conflict: list[bool] = []
+
+        class ObserverRunner:
+            def run(self, args, cwd, *, on_progress=None):
+                observed_conflict.append(
+                    sched.is_training_locked()
+                    and sched.state_of("gen_race") == RuntimeState.ACTIVE
+                )
+                return RunResult(exit_code=0, stderr_tail="")
+
+            def cancel(self) -> None:
+                pass
+
+        job = _make_job("jrace-001")
+        ex, store = _make_executor([job], scheduler=sched, runner=ObserverRunner())  # type: ignore[arg-type]
+        ex.enqueue_with_command(_DEFAULT_PROJECT, "jrace-001", ["echo", "jrace-001"], Path("."))
+
+        final = _wait(store, "jrace-001", TrainingJobStatus.COMPLETED, TrainingJobStatus.FAILED)
+
+        if final.status == TrainingJobStatus.FAILED:
+            # Correctly refused because the racer's model is (by then) ACTIVE.
+            assert "ACTIVE" in (final.note or ""), (
+                f"job failed but not for the ACTIVE-model reason: {final.note!r}"
+            )
+            assert not observed_conflict, "runner must never have executed if refused"
+        else:
+            # The runner DID execute — this must never coincide with the
+            # racer's model being simultaneously ACTIVE (the TOCTOU bug).
+            assert observed_conflict == [False], (
+                "TOCTOU: training ran while a model was simultaneously ACTIVE "
+                "— the check-then-lock race let a concurrent acquire() slip "
+                "through the gap between the ACTIVE-check and the lock."
+            )
+
+        assert sched.is_training_locked() is False
+
     def test_generation_service_blocks_when_training_locked(self) -> None:
         """Generation execute_job must raise ValueError with training-lock reason
         when is_training_locked() is True (spec §7.3 blocking-reason pattern)."""
