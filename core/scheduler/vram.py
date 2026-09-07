@@ -179,6 +179,38 @@ class ModelScheduler:
         with self._lock:
             return self._training_lock_holder is not None
 
+    def try_begin_training(self, holder: str) -> list[str]:
+        """Atomically check for any ACTIVE managed model and, only if none is
+        found, acquire the exclusive training lock (spec §7.3 Direction (a)).
+
+        Both the "is anything ACTIVE?" scan and taking the lock happen inside
+        one call to ``self._lock`` — this replaces a caller pattern that used
+        to read ``scheduler._models`` directly (unlocked), decide "nothing is
+        ACTIVE", and only afterwards call ``begin_training()`` as a separate
+        step. That two-step shape was a check-then-lock (TOCTOU) race: a
+        concurrent ``acquire()`` landing in the gap between the two steps
+        could put a model into VRAM that training would never see, so both
+        training and generation ended up holding real VRAM at once.
+
+        Returns
+        -------
+        list[str]
+            Names of models found ACTIVE. Empty when none were ACTIVE — in
+            that case (and only that case) the training lock WAS taken under
+            ``holder``. A non-empty list means the lock was NOT taken; the
+            caller should fail the job using these names in its message.
+        """
+        if not holder:
+            raise ValueError("Training lock holder must be a non-empty string.")
+        with self._lock:
+            active = [
+                name for name, m in self._models.items() if m.state == RuntimeState.ACTIVE
+            ]
+            if active:
+                return active
+            self._training_lock_holder = holder
+            return []
+
     def register(self, model: ManagedModel) -> ManagedModel:
         if model.vram_mb > self._budget.vram_budget_mb:
             raise SchedulerError(
