@@ -93,6 +93,7 @@ from core.models.schemas import (
     VersionDiffRequest,
     WorkerSmokeResult,
 )
+from core.network.origin_guard import OriginGuardMiddleware, resolve_allowed_origins
 from core.network.service import NetworkStateService
 from core.network.state import NetworkState
 from core.project.cross_project import (
@@ -168,13 +169,22 @@ app = FastAPI(
     version="0.1.0",
     dependencies=[Depends(enforce_valid_project_id)],
 )
+# 待回答 #47 — CORS and the Origin/Host guard below now share ONE allow-list
+# source (`resolve_allowed_origins`) so they can never drift apart. This
+# replaces the previous `allow_origin_regex` (any port on localhost/127.0.0.1)
+# with the exact loopback+Tauri origin set — never `allow_origins=["*"]` on a
+# server that accepts writes.
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=settings.misaka_cors_origin_regex,
+    allow_origins=resolve_allowed_origins(settings),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Server-side guard: CORS alone is a browser-enforced convention (a
+# non-browser or rebinding-style client can ignore it entirely), so
+# state-changing requests are also checked here regardless of what sent them.
+app.add_middleware(OriginGuardMiddleware, settings=settings)
 
 project_manager = ProjectManager(PROJECTS_ROOT)
 
@@ -370,6 +380,7 @@ async def http_exception_handler(_: object, exc: HTTPException) -> JSONResponse:
     message = {
         400: MessageKey.FAIL_400,
         401: MessageKey.FAIL_401,
+        403: MessageKey.FAIL_403,
         404: MessageKey.FAIL_404,
         409: MessageKey.FAIL_409,
     }.get(exc.status_code, MessageKey.FAIL_500)
@@ -393,7 +404,7 @@ def on_startup() -> None:
         logger.info("Loaded %d tool definitions", len(tools_service.list_tools()))
         logger.info("Loaded %d worker definitions", workers_service.worker_definition_count())
         logger.info("Loaded registry categories: %s", ", ".join(model_registry_service.list_categories()))
-        logger.info("CORS origin regex: %s", settings.misaka_cors_origin_regex)
+        logger.info("CORS / Origin guard allow-list: %s", ", ".join(resolve_allowed_origins(settings)))
         logger.info("Local LLM running: %s", llm_status["is_running"])
 
 

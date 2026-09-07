@@ -488,7 +488,7 @@ def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     manager = ProjectManager(tmp_path / "projects")
     monkeypatch.setattr(main, "project_manager", manager)
     monkeypatch.setattr(main, "PROJECTS_ROOT", tmp_path / "projects")
-    return TestClient(main.app)
+    return TestClient(main.app, base_url="http://127.0.0.1:8401")
 
 
 def test_api_import_valid_zip(api_client: TestClient, tmp_path: Path) -> None:

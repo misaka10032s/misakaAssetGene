@@ -14,6 +14,7 @@ class MessageKey(str, Enum):
     SUCCESS_SWITCH0 = "message.success.switch0"
     FAIL_400 = "message.fail.400"
     FAIL_401 = "message.fail.401"
+    FAIL_403 = "message.fail.403"
     FAIL_404 = "message.fail.404"
     FAIL_409 = "message.fail.409"
     FAIL_500 = "message.fail.500"

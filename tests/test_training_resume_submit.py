@@ -161,7 +161,7 @@ def api_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     # SubprocessRunner) — training_service.submit_job with executor=None stops
     # at PLANNED, which is all these validation-boundary tests need.
     monkeypatch.setattr(main, "_get_or_create_executor", lambda: None)
-    return TestClient(main.app)
+    return TestClient(main.app, base_url="http://127.0.0.1:8401")
 
 
 def _create_project(client: TestClient) -> tuple[str, Path]:

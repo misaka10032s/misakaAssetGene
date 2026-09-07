@@ -384,7 +384,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     projects = pm.list_projects()
     assert projects, "project list must not be empty after creation"
 
-    return TestClient(main_module.app)
+    return TestClient(main_module.app, base_url="http://127.0.0.1:8401")
 
 
 def _project_id(client: TestClient) -> str:

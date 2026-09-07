@@ -1,9 +1,13 @@
+import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger("misaka.config")
 
 
 class Settings(BaseSettings):
@@ -19,10 +23,10 @@ class Settings(BaseSettings):
     misaka_api_base: str = Field(default="http://127.0.0.1:8401", alias="MISAKA_API_BASE")
     misaka_frontend_port: int = Field(default=8400, alias="MISAKA_FRONTEND_PORT")
     misaka_network_mode: str = Field(default="auto", alias="MISAKA_NETWORK_MODE")
-    misaka_cors_origin_regex: str = Field(
-        default=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-        alias="MISAKA_CORS_ORIGIN_REGEX",
-    )
+    # 待回答 #47 — extra Origin values accepted by core/network/origin_guard.py
+    # (and mirrored into CORS) beyond the built-in loopback + Tauri defaults.
+    # Comma-separated exact `scheme://host:port` strings; empty by default.
+    misaka_allowed_origins: str = Field(default="", alias="MISAKA_ALLOWED_ORIGINS")
     misaka_default_locale: str = Field(default="zh-TW", alias="MISAKA_DEFAULT_LOCALE")
     misaka_ollama_base_url: str = Field(default="http://127.0.0.1:11434", alias="MISAKA_OLLAMA_BASE_URL")
     misaka_ollama_model: str = Field(default="qwen2.5:7b-instruct", alias="MISAKA_OLLAMA_MODEL")
@@ -114,6 +118,48 @@ class Settings(BaseSettings):
             for provider_name in self.misaka_llm_provider_order.split(",")
             if provider_name.strip()
         ]
+
+    @property
+    def allowed_origins_extra(self) -> list[str]:
+        """Comma-split ``misaka_allowed_origins``, keeping only entries that
+        parse as a concrete ``scheme://host[:port]`` origin (non-empty scheme
+        + hostname, no path/query/fragment, no wildcard) — anything else
+        (bare ``*``, a wildcard subdomain like ``https://*.example``, a
+        scheme-less or path-carrying value) is dropped with a logged WARNING
+        naming the rejected value, never silently forwarded to
+        ``resolve_allowed_origins`` (core/network/origin_guard.py) and from
+        there into ``CORSMiddleware``'s ``allow_origins`` — a literal ``"*"``
+        there combined with this app's ``allow_credentials=True`` (core/
+        main.py) turns into a credentialed CORS wildcard (待回答 #47/#48
+        fresh-review F2)."""
+        valid: list[str] = []
+        for raw in self.misaka_allowed_origins.split(","):
+            origin = raw.strip()
+            if not origin:
+                continue
+            if "*" in origin:
+                logger.warning(
+                    "Dropping MISAKA_ALLOWED_ORIGINS entry %r: wildcards are not allowed.",
+                    origin,
+                )
+                continue
+            parsed = urlsplit(origin)
+            if (
+                not parsed.scheme
+                or not parsed.hostname
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+                or parsed.username
+                or parsed.password
+            ):
+                logger.warning(
+                    "Dropping MISAKA_ALLOWED_ORIGINS entry %r: not a concrete scheme://host[:port] origin.",
+                    origin,
+                )
+                continue
+            valid.append(origin)
+        return valid
 
 
 @lru_cache(maxsize=1)
