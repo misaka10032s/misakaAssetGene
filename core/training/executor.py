@@ -131,6 +131,22 @@ class CommandRunner(Protocol):
         ...
 
 
+@runtime_checkable
+class WorkerPathResolver(Protocol):
+    """Protocol for resolving an installed worker's clone directory from
+    ``workers/manifest.json`` (see ``core.integration.workers.WorkersService``).
+
+    Implementations MUST raise a clear, descriptive exception (e.g.
+    ``SchedulerError``) when the named worker is not installed or its
+    manifest-declared path does not exist on disk — never return a guessed
+    or fabricated path.
+    """
+
+    def resolve_installed_worker_path(self, worker_name: str) -> Path:
+        """Return the worker's install directory, or raise if unavailable."""
+        ...
+
+
 class RunResult:
     """Outcome of a single CommandRunner.run() call."""
 
@@ -290,6 +306,13 @@ class TrainingExecutor:
     project_dir_resolver
         Optional callable ``(project_id: str) -> Path`` used to locate the
         project directory for command building (e.g. models subdir).
+    workers_service
+        Optional ``WorkerPathResolver`` (typically
+        ``core.integration.workers.WorkersService``) used by
+        ``_build_live_command()`` to resolve the kohya_ss install directory
+        from ``workers/manifest.json`` instead of guessing it from the job's
+        dataset path.  When ``None``, a kohya-ss job fails with a clear
+        ``SchedulerError`` rather than falling back to a guess.
     """
 
     def __init__(
@@ -301,6 +324,7 @@ class TrainingExecutor:
         runner: CommandRunner | None = None,
         asset_store_resolver: "Callable[[str], object] | None" = None,
         project_dir_resolver: "Callable[[str], object] | None" = None,
+        workers_service: "WorkerPathResolver | None" = None,
     ) -> None:
         self._read_jobs = read_jobs
         self._write_jobs = write_jobs
@@ -313,6 +337,7 @@ class TrainingExecutor:
         self._stop_event = threading.Event()
         self._asset_store_resolver = asset_store_resolver
         self._project_dir_resolver = project_dir_resolver
+        self._workers_service = workers_service
         # Pre-supplied command vectors (keyed by job_id), populated by enqueue_with_command.
         self._pending_commands: dict[str, tuple[list[str], "Path"]] = {}
 
@@ -593,10 +618,18 @@ class TrainingExecutor:
             sheet = sheets[0]
             recipe = recipes[0]
 
-            # Worker directory from job metadata or a sensible default.
-            kohya_dir = _Path(job.dataset_path).parent / "kohya_ss" if job.dataset_path else _Path("workers/kohya-ss")
-            # In production the worker path comes from the workers manifest; the
-            # asset_store_resolver path is sufficient for contract tests.
+            # Worker directory resolved from workers/manifest.json (via the
+            # injected WorkersService) -- NEVER guessed from the dataset
+            # location.  A dataset can live anywhere; it has no relationship
+            # to where kohya_ss was cloned/installed.
+            if self._workers_service is None:
+                raise SchedulerError(
+                    f"Job {job.id}: no WorkersService configured -- cannot resolve "
+                    "the kohya_ss install directory from workers/manifest.json. "
+                    "Wire TrainingExecutor(workers_service=...) before submitting "
+                    "LoRA training jobs."
+                )
+            kohya_dir = self._workers_service.resolve_installed_worker_path("kohya-ss")
             # Resume-from-checkpoint (spec §7.3): if the job carries a
             # resume_checkpoint_path (set either by a previous failure's
             # _discover_resume_checkpoint() below, or supplied by the caller

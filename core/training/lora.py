@@ -27,6 +27,16 @@ from core.models.schemas import CharacterSheet, DatasetPack, TrainingRecipe
 # Public API
 # ---------------------------------------------------------------------------
 
+# kohya_ss v25.0.3+ moved train_network.py (and the other training entry
+# points) out of the clone root and into the `sd-scripts/` git submodule
+# (https://github.com/kohya-ss/sd-scripts, declared in kohya_ss's own
+# .gitmodules).  Every script path built from `kohya_ss_dir` must go through
+# this constant rather than concatenating the subdir inline, so a future
+# layout change only needs one edit.  Verified against the real install at
+# workers/kohya-ss (workers/manifest.json, tag v25.0.3, 2026-09-07).
+KOHYA_SCRIPTS_SUBDIR = "sd-scripts"
+
+
 class LoraCommandSpec:
     """Fully-resolved kohya_ss CLI invocation (pure data, no I/O).
 
@@ -128,7 +138,7 @@ def build_lora_command(
     args: list[str] = [
         python_bin,
         "-m", "accelerate.commands.launch",
-        str(kohya_ss_dir / "train_network.py"),
+        str(kohya_ss_dir / KOHYA_SCRIPTS_SUBDIR / "train_network.py"),
         # Model
         f"--pretrained_model_name_or_path={recipe.base_model}",
         # Dataset

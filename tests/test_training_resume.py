@@ -104,6 +104,18 @@ def _make_scheduler() -> ModelScheduler:
     return ModelScheduler(SchedulerBudget(vram_budget_mb=12000, ram_budget_mb=32000))
 
 
+class _FakeWorkersService:
+    """Test double for core.integration.workers.WorkersService — the LIVE
+    kohya-ss command path now resolves its working directory through this
+    seam instead of guessing from the job's dataset path."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def resolve_installed_worker_path(self, worker_name: str) -> Path:
+        return self._path
+
+
 def _make_executor(
     jobs: list[TrainingJob],
     *,
@@ -614,6 +626,7 @@ class TestResumeCheckpointWiredThroughExecutor:
             runner=fake_runner,
             asset_store_resolver=lambda pid: FakeAssetStore(),
             project_dir_resolver=lambda pid: project_dir,
+            workers_service=_FakeWorkersService(tmp_path / "workers" / "kohya-ss"),
         )
 
         ex.enqueue(_DEFAULT_PROJECT, "live-resume-job-001")
@@ -673,6 +686,7 @@ class TestResumeCheckpointWiredThroughExecutor:
             runner=fake_runner,
             asset_store_resolver=lambda pid: FakeAssetStore(),
             project_dir_resolver=lambda pid: project_dir,
+            workers_service=_FakeWorkersService(tmp_path / "workers" / "kohya-ss"),
         )
 
         ex.enqueue(_DEFAULT_PROJECT, "live-fresh-job-001")
