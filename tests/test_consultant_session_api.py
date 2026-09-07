@@ -28,7 +28,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         return project_dir
 
     monkeypatch.setattr(main, "consultant_engine", ConsultantEngine(sessions_path_resolver=resolver))
-    return TestClient(main.app)
+    return TestClient(main.app, base_url="http://127.0.0.1:8401")
 
 
 def _create_project(client: TestClient) -> str:

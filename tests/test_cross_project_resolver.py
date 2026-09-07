@@ -762,7 +762,7 @@ def api_client_m5(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient
     manager = ProjectManager(tmp_path / "projects")
     monkeypatch.setattr(main_module, "project_manager", manager)
     monkeypatch.setattr(main_module, "PROJECTS_ROOT", tmp_path / "projects")
-    return TestClient(main_module.app)
+    return TestClient(main_module.app, base_url="http://127.0.0.1:8401")
 
 
 def test_api_list_refs_empty(api_client_m5: TestClient, tmp_path: Path) -> None:

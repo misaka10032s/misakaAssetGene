@@ -29,7 +29,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     manager = ProjectManager(tmp_path / "projects")
     monkeypatch.setattr(main, "project_manager", manager)
     monkeypatch.setattr(main.generation_service, "project_manager", manager)
-    return TestClient(main.app)
+    return TestClient(main.app, base_url="http://127.0.0.1:8401")
 
 
 # ---------------------------------------------------------------------------

@@ -506,7 +506,7 @@ def test_license_report_endpoint_delivers_registry_nsfw(tmp_path: Path, monkeypa
     manager = ProjectManager(tmp_path / "projects")
     monkeypatch.setattr(main, "project_manager", manager)
     monkeypatch.setattr(main.generation_service, "project_manager", manager)
-    client = TestClient(main.app)
+    client = TestClient(main.app, base_url="http://127.0.0.1:8401")
 
     # Create a project
     resp = client.post("/api/v1/projects", json={"name": "WiringTest", "type": "RPG", "synopsis": "s"})
