@@ -339,6 +339,65 @@ class TestKohyaCommandConstruction:
         )
 
 
+# ===========================================================================
+# (h) kohya_ss v25.0.3 moved train_network.py into the sd-scripts/ submodule
+#     (bug fix, 2026-09-07): build_lora_command must reference
+#     <kohya_root>/sd-scripts/train_network.py, not <kohya_root>/train_network.py.
+# ===========================================================================
+
+class TestKohyaScriptPathSdScriptsSubdir:
+    def test_lora_script_arg_is_under_sd_scripts_subdir(self, tmp_path: Path) -> None:
+        kohya_dir = tmp_path / "kohya_ss"
+        spec = build_lora_command(
+            character_sheet=_character_sheet(),
+            dataset_pack=_dataset_pack(),
+            recipe=_training_recipe(),
+            project_models_dir=tmp_path / "models",
+            kohya_ss_dir=kohya_dir,
+        )
+        expected_script = str(kohya_dir / "sd-scripts" / "train_network.py")
+        assert expected_script in spec.args, (
+            f"expected script arg {expected_script!r} (v25.0.3 sd-scripts/ "
+            f"submodule layout) in argv; got {spec.args!r}"
+        )
+        # cwd must stay the kohya_ss clone ROOT (relative config/log paths
+        # resolve against the root, not the sd-scripts subdir) -- only the
+        # script invocation path moves into the submodule.
+        assert spec.cwd == kohya_dir
+
+    def test_lora_script_path_exists_on_real_installed_layout(self) -> None:
+        """Verifies against the ACTUAL kohya_ss v25.0.3 install on this
+        machine (workers/manifest.json 'installed': true, tag v25.0.3).
+        Skipped ONLY when that install is genuinely absent from disk on the
+        machine running the test -- never bent to pass otherwise.
+        """
+        this_repo_root = Path(__file__).resolve().parents[1]
+        # Repo-hygiene rule: `workers/` is untracked (third-party clones are
+        # never committed -- see .claude/CLAUDE.md `repo-hygiene.md`), so a
+        # dispatch running from `<repo>/.claude/worktree/<name>/` (the
+        # cluster's fixed worktree convention) never has its own copy; the
+        # real install lives in the main tree.
+        if this_repo_root.parent.name == "worktree" and this_repo_root.parent.parent.name == ".claude":
+            main_repo_root = this_repo_root.parent.parent.parent
+        else:
+            main_repo_root = this_repo_root
+
+        kohya_dir = main_repo_root / "workers" / "kohya-ss"
+        script_path = kohya_dir / "sd-scripts" / "train_network.py"
+
+        if not kohya_dir.exists():
+            pytest.skip(
+                f"kohya_ss is not installed at {kohya_dir} on this machine -- "
+                "skipping real-installed-layout check."
+            )
+
+        assert script_path.exists(), (
+            f"kohya_ss v25.0.3 is installed at {kohya_dir} but {script_path} "
+            "does not exist -- the sd-scripts submodule may be uninitialized "
+            "(git submodule update --init) or the install layout changed."
+        )
+
+
 class TestGptSovitsCommandConstruction:
     def test_zero_shot_has_no_s1_s2_args(self, tmp_path: Path) -> None:
         spec = build_voice_clone_command(
@@ -955,6 +1014,7 @@ class TestLiveCommandPath:
 
         fake_runner = FakeRunner(exit_code=0)
         sched = _make_scheduler()
+        kohya_install_dir = tmp_path / "workers" / "kohya-ss"
 
         ex = TrainingExecutor(
             read_jobs=read_jobs,
@@ -963,6 +1023,7 @@ class TestLiveCommandPath:
             runner=fake_runner,
             asset_store_resolver=lambda pid: fake_store,
             project_dir_resolver=lambda pid: project_dir,
+            workers_service=_FakeWorkersService(kohya_install_dir),
         )
 
         ex.enqueue(_DEFAULT_PROJECT, "live-job-001")
@@ -987,3 +1048,154 @@ class TestLiveCommandPath:
         assert recipe.base_model in combined, (
             f"Recipe base_model not found in live argv: {combined!r}"
         )
+
+        # cwd must be the WorkersService-resolved install path, not a guess.
+        assert captured_cwd == kohya_install_dir, (
+            f"Expected cwd {kohya_install_dir}; got {captured_cwd}"
+        )
+
+
+# ===========================================================================
+# (g) kohya_ss working directory resolved from workers/manifest.json, not
+#     guessed from the dataset location (MAJOR fix, 2026-09-07).
+# ===========================================================================
+
+class _FakeWorkersService:
+    """Test double standing in for core.integration.workers.WorkersService."""
+
+    def __init__(self, path: Path | None = None, error: Exception | None = None) -> None:
+        self._path = path
+        self._error = error
+        self.requested_worker_names: list[str] = []
+
+    def resolve_installed_worker_path(self, worker_name: str) -> Path:
+        self.requested_worker_names.append(worker_name)
+        if self._error is not None:
+            raise self._error
+        assert self._path is not None
+        return self._path
+
+
+class TestKohyaWorkerDirResolution:
+    def _submit_kohya_job(
+        self,
+        tmp_path: Path,
+        *,
+        workers_service: object | None,
+        dataset_path: str = "/data/kyuoka_dataset",
+    ) -> tuple[dict[str, list[TrainingJob]], FakeRunner]:
+        sheet = _character_sheet()
+        pack = _dataset_pack(source=dataset_path)
+        recipe = _training_recipe()
+
+        class FakeAssetStore:
+            def list_character_sheets(self, pid: str) -> list[CharacterSheet]:
+                return [sheet]
+
+            def list_dataset_packs(self, pid: str) -> list[DatasetPack]:
+                return [pack]
+
+            def list_training_recipes(self, pid: str) -> list[TrainingRecipe]:
+                return [recipe]
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+
+        stores: dict[str, list[TrainingJob]] = {}
+
+        def read_jobs(pid: str) -> list[TrainingJob]:
+            return list(stores.setdefault(pid, []))
+
+        def write_jobs(pid: str, new_jobs: list[TrainingJob]) -> None:
+            stores[pid] = list(new_jobs)
+
+        job = TrainingJob(
+            id="kohya-dir-job-001",
+            project_id=_DEFAULT_PROJECT,
+            title="kohya dir resolution job",
+            modality=Modality.IMAGE,
+            worker="kohya-ss",
+            dataset_path=dataset_path,
+            status=TrainingJobStatus.PLANNED,
+            created_at=_now(),
+            updated_at=_now(),
+        )
+        stores[_DEFAULT_PROJECT] = [job]
+
+        fake_runner = FakeRunner(exit_code=0)
+        ex = TrainingExecutor(
+            read_jobs=read_jobs,
+            write_jobs=write_jobs,
+            scheduler=_make_scheduler(),
+            runner=fake_runner,
+            asset_store_resolver=lambda pid: FakeAssetStore(),
+            project_dir_resolver=lambda pid: project_dir,
+            workers_service=workers_service,
+        )
+
+        ex.enqueue(_DEFAULT_PROJECT, "kohya-dir-job-001")
+        return stores, fake_runner
+
+    def test_kohya_cwd_comes_from_workers_service_not_dataset_location(
+        self, tmp_path: Path
+    ) -> None:
+        """The kohya_ss working directory must be whatever WorkersService
+        resolves from workers/manifest.json — even when that path shares no
+        relationship with the job's dataset_path (the old, wrong guess was
+        ``Path(dataset_path).parent / "kohya_ss"``)."""
+        real_install_dir = tmp_path / "totally" / "unrelated" / "install-location"
+        wrong_guess_dir = Path("/data") / "kohya_ss"  # what the old code guessed
+
+        stores, fake_runner = self._submit_kohya_job(
+            tmp_path,
+            workers_service=_FakeWorkersService(real_install_dir),
+            dataset_path="/data/kyuoka_dataset",
+        )
+        job = _wait_for_status(
+            stores, _DEFAULT_PROJECT, "kohya-dir-job-001", TrainingJobStatus.COMPLETED
+        )
+        assert job.status == TrainingJobStatus.COMPLETED
+
+        assert len(fake_runner.calls) == 1
+        _, captured_cwd = fake_runner.calls[0]
+        assert captured_cwd == real_install_dir, (
+            f"cwd must come from WorkersService, got {captured_cwd!r}"
+        )
+        assert captured_cwd != wrong_guess_dir
+
+    def test_kohya_job_fails_clearly_when_worker_not_installed(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When the manifest marks kohya-ss as not installed (or its path is
+        missing), the job must fail with a clear, named reason — not a silent
+        fallback to a guessed directory."""
+        clear_error = SchedulerError(
+            "Worker 'kohya-ss' is not installed (workers/manifest.json "
+            "'installed': false). Install it before submitting a training job."
+        )
+        stores, fake_runner = self._submit_kohya_job(
+            tmp_path,
+            workers_service=_FakeWorkersService(error=clear_error),
+        )
+        job = _wait_for_status(
+            stores, _DEFAULT_PROJECT, "kohya-dir-job-001", TrainingJobStatus.FAILED
+        )
+        assert job.status == TrainingJobStatus.FAILED
+        # The runner must never have been invoked -- the job must fail before
+        # any subprocess is attempted.
+        assert len(fake_runner.calls) == 0
+        assert "not installed" in caplog.text
+
+    def test_kohya_job_fails_clearly_when_no_workers_service_wired(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A TrainingExecutor built without a workers_service must never fall
+        back to guessing the kohya_ss directory -- it must fail the job with
+        a clear, named reason instead."""
+        stores, fake_runner = self._submit_kohya_job(tmp_path, workers_service=None)
+        job = _wait_for_status(
+            stores, _DEFAULT_PROJECT, "kohya-dir-job-001", TrainingJobStatus.FAILED
+        )
+        assert job.status == TrainingJobStatus.FAILED
+        assert len(fake_runner.calls) == 0
+        assert "no WorkersService configured" in caplog.text

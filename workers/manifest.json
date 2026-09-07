@@ -161,17 +161,22 @@
       "directory": "kohya-ss",
       "repo": "https://github.com/bmaltais/kohya_ss.git",
       "auto_start": false,
-      "installed": false,
+      "installed": true,
       "recommended": {
         "tag": "v25.0.3",
-        "verified_at": "2026-06-13",
-        "note": "LoRA / DreamBooth training via Stable Diffusion scripts (spec §7.1). Not installed; clone separately. CLI entrypoint: accelerate launch train_network.py"
+        "verified_at": "2026-09-07",
+        "note": "LoRA / DreamBooth training via Stable Diffusion scripts (spec §7.1). Installed at workers/kohya-ss (venv-managed). CLI entrypoint: accelerate launch train_network.py"
       },
       "known_good": [
         {
           "tag": "v25.0.3",
           "date": "2026-05-01",
           "note": "Stable tag with SDXL LoRA support."
+        },
+        {
+          "tag": "v25.0.3",
+          "date": "2026-09-07",
+          "note": "Installed on local dev machine (workers/kohya-ss); executor now resolves this path from the manifest instead of guessing it."
         }
       ],
       "python": "3.10",
@@ -181,7 +186,7 @@
       "smoke_test": null,
       "cli_entrypoint": "accelerate launch train_network.py",
       "vram_requirement_mb": 8000,
-      "notes": "kohya_ss is a training-only tool; it does not run a persistent server. The executor launches it as a one-shot subprocess per training job. Repo-hygiene rule 2: only this manifest entry is tracked, not the cloned repo."
+      "notes": "kohya_ss is a training-only tool; it does not run a persistent server. The executor launches it as a one-shot subprocess per training job. Repo-hygiene rule 2: only this manifest entry is tracked, not the cloned repo. Installed at workers/kohya-ss (directory field), same convention as every other worker in this manifest."
     }
   }
 }

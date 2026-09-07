@@ -126,7 +126,6 @@
   "tests/test_executor.py|F401|`core.generation.service._TRAINING_LOCK_REASON` imported but unused",
   "tests/test_executor.py|F401|`unittest.mock.MagicMock` imported but unused",
   "tests/test_executor.py|I001|Import block is un-sorted or un-formatted",
-  "tests/test_executor.py|RUF059|Unpacked variable `captured_cwd` is never used",
   "tests/test_executor.py|UP017|Use `datetime.UTC` alias",
   "tests/test_license_report.py|F401|`core.models.schemas.GenerationJobStatus` imported but unused",
   "tests/test_license_report.py|F401|`core.models.schemas.Modality` imported but unused",

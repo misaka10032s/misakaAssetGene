@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 
 from core.models.schemas import WorkerSmokeResult, WorkerSnapshot
-from core.scheduler.vram import RuntimeState
+from core.scheduler.vram import RuntimeState, SchedulerError
 
 
 class WorkersService:
@@ -204,6 +204,29 @@ class WorkersService:
                     snapshot = self._build_snapshot(worker_name, worker, {})
             snapshots.append(snapshot)
         return snapshots
+
+    def resolve_installed_worker_path(self, worker_name: str) -> Path:
+        """Return the worker's clone directory, reading ``workers/manifest.json``
+        directly rather than letting a caller guess it from unrelated context
+        (e.g. a training job's dataset path -- see core/training/executor.py).
+
+        Raises ``SchedulerError`` with a clear, named reason when the manifest
+        explicitly marks the worker as not installed (``"installed": false``)
+        or when the manifest-declared directory does not exist on disk.
+        """
+        worker = self.get_worker_definition(worker_name)
+        if worker.get("installed") is False:
+            raise SchedulerError(
+                f"Worker '{worker_name}' is not installed (workers/manifest.json "
+                f"'installed': false). Install it before use."
+            )
+        clone_path = self._worker_clone_path(worker_name, worker)
+        if not clone_path.exists():
+            raise SchedulerError(
+                f"Worker '{worker_name}' install path {clone_path} does not exist. "
+                f"Check workers/manifest.json's 'directory' field and re-install if needed."
+            )
+        return clone_path
 
     def _load_manifest(self) -> dict:
         return json.loads(self.manifest_path.read_text(encoding="utf-8"))

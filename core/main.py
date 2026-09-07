@@ -339,6 +339,7 @@ def _get_or_create_executor() -> TrainingExecutor:
             runner=SubprocessRunner(),
             asset_store_resolver=_asset_store,
             project_dir_resolver=_project_dir,
+            workers_service=workers_service,
         )
         training_service.set_executor(_training_executor)
     return _training_executor
