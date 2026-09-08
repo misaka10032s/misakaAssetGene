@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -30,6 +29,7 @@ from core.models.schemas import (
     SkippedJobInfo,
 )
 from core.generation import refine as refine_planner
+from core.project.atomic_io import read_json_tolerant, write_json_atomic
 from core.project.manager import ProjectManager
 from core.integration.workers import WorkersService
 from core.models.schemas import (
@@ -1015,7 +1015,7 @@ class GenerationService:
         path = self._jobs_path(project_dir)
         if not path.exists():
             return []
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_json_tolerant(path)
         jobs: list[GenerationJob] = []
         skipped = 0
         for item in payload.get("jobs", []):
@@ -1033,37 +1033,29 @@ class GenerationService:
         return jobs
 
     def _write_jobs(self, project_dir: Path, jobs: list[GenerationJob]) -> None:
-        self._jobs_path(project_dir).write_text(
-            json.dumps({"jobs": [job.model_dump(mode="json") for job in jobs]}, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        write_json_atomic(self._jobs_path(project_dir), {"jobs": [job.model_dump(mode="json") for job in jobs]})
 
     def _read_assets(self, project_dir: Path) -> list[AssetRecord]:
         path = self._assets_path(project_dir)
         if not path.exists():
             return []
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_json_tolerant(path)
         assets = [AssetRecord(**item) for item in payload.get("assets", [])]
         return [asset for asset in assets if asset.asset_type != "consultant_plan"]
 
     def _write_assets(self, project_dir: Path, assets: list[AssetRecord]) -> None:
         path = self._assets_path(project_dir)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"assets": [asset.model_dump(mode="json") for asset in assets]}, ensure_ascii=False, indent=2)
-            + "\n",
-            encoding="utf-8",
-        )
+        write_json_atomic(path, {"assets": [asset.model_dump(mode="json") for asset in assets]})
 
     def _read_plans(self, project_dir: Path) -> list[ConsultantPlanRecord]:
         plans: list[ConsultantPlanRecord] = []
         path = self._plans_path(project_dir)
         if path.exists():
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = read_json_tolerant(path)
             plans.extend(ConsultantPlanRecord(**item) for item in payload.get("plans", []))
         legacy_assets_path = self._assets_path(project_dir)
         if legacy_assets_path.exists():
-            payload = json.loads(legacy_assets_path.read_text(encoding="utf-8"))
+            payload = read_json_tolerant(legacy_assets_path)
             for item in payload.get("assets", []):
                 if item.get("asset_type") != "consultant_plan":
                     continue
@@ -1082,13 +1074,8 @@ class GenerationService:
 
     def _write_plans(self, project_dir: Path, plans: list[ConsultantPlanRecord]) -> None:
         path = self._plans_path(project_dir)
-        path.parent.mkdir(parents=True, exist_ok=True)
         ordered_plans = sorted(plans, key=lambda plan: plan.created_at, reverse=True)
-        path.write_text(
-            json.dumps({"plans": [plan.model_dump(mode="json") for plan in ordered_plans]}, ensure_ascii=False, indent=2)
-            + "\n",
-            encoding="utf-8",
-        )
+        write_json_atomic(path, {"plans": [plan.model_dump(mode="json") for plan in ordered_plans]})
 
     @staticmethod
     def _extract_metadata_delta(instruction: str) -> dict[str, object]:

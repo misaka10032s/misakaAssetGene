@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 import uuid
@@ -7,6 +6,7 @@ from pathlib import Path
 
 from core.models.schemas import ConversationEntry, ProjectCreateRequest, ProjectSummary, ProjectTypeSuggestion
 from core.models.schemas import ConsultantAnalysis
+from core.project.atomic_io import read_json_tolerant, write_json_atomic
 from core.project.style_guide import build_initial_style_guide
 
 PROJECT_TYPES = [project_type.value for project_type in ProjectTypeSuggestion]
@@ -58,7 +58,7 @@ class ProjectManager:
     def list_projects(self) -> list[ProjectSummary]:
         projects: list[ProjectSummary] = []
         for project_json in self.projects_root.glob("*/project.json"):
-            data = json.loads(project_json.read_text(encoding="utf-8"))
+            data = read_json_tolerant(project_json)
             projects.append(self._normalize_project_summary(project_json.parent, data))
         logger.info("Loaded %d project(s) from disk", len(projects))
         return sorted(projects, key=lambda item: item.name)
@@ -90,15 +90,12 @@ class ProjectManager:
             type=request.type.strip(),
             synopsis=request.synopsis.strip(),
         )
-        (project_dir / "project.json").write_text(
-            json.dumps(project_summary.model_dump(), ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        write_json_atomic(project_dir / "project.json", project_summary.model_dump())
         (project_dir / "style_guide.md").write_text(
             build_initial_style_guide(request),
             encoding="utf-8",
         )
-        self._conversation_path(project_dir).write_text('{"entries":[]}\n', encoding="utf-8")
+        write_json_atomic(self._conversation_path(project_dir), {"entries": []})
         if self.get_current_project_id() is None:
             self.select_project(project_summary.id)
         logger.info("Project %s initialized with project.json and style_guide.md", project_summary.name)
@@ -106,10 +103,7 @@ class ProjectManager:
 
     def select_project(self, project_id: str) -> ProjectSummary:
         summary, _ = self.get_project(project_id)
-        self.selection_path.write_text(
-            json.dumps({"id": summary.id}, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        write_json_atomic(self.selection_path, {"id": summary.id})
         logger.info("Selected project %s", summary.id)
         return summary
 
@@ -120,11 +114,11 @@ class ProjectManager:
         validate_project_id(project_id)
         direct_path = self.projects_root / project_id / "project.json"
         if direct_path.exists():
-            data = json.loads(direct_path.read_text(encoding="utf-8"))
+            data = read_json_tolerant(direct_path)
             return self._normalize_project_summary(direct_path.parent, data), direct_path.parent
 
         for project_json in self.projects_root.glob("*/project.json"):
-            data = json.loads(project_json.read_text(encoding="utf-8"))
+            data = read_json_tolerant(project_json)
             summary = self._normalize_project_summary(project_json.parent, data)
             if summary.id == project_id or summary.name == project_id:
                 return summary, project_json.parent
@@ -134,7 +128,7 @@ class ProjectManager:
     def get_current_project_id(self) -> str | None:
         if not self.selection_path.exists():
             return None
-        payload = json.loads(self.selection_path.read_text(encoding="utf-8"))
+        payload = read_json_tolerant(self.selection_path)
         selected_id = str(payload.get("id") or payload.get("name") or "") or None
         if not selected_id:
             return None
@@ -153,17 +147,16 @@ class ProjectManager:
         conversation_path = self._conversation_path(project_dir)
         if not conversation_path.exists():
             return []
-        payload = json.loads(conversation_path.read_text(encoding="utf-8"))
+        payload = read_json_tolerant(conversation_path)
         return [ConversationEntry(**entry) for entry in payload.get("entries", [])]
 
     def append_conversation_entries(self, project_id: str, entries: list[ConversationEntry]) -> list[ConversationEntry]:
         _, project_dir = self.get_project(project_id)
         existing_entries = self.list_conversation_entries(project_id)
         merged_entries = [*existing_entries, *entries]
-        self._conversation_path(project_dir).write_text(
-            json.dumps({"entries": [entry.model_dump(mode="json") for entry in merged_entries]}, ensure_ascii=False, indent=2)
-            + "\n",
-            encoding="utf-8",
+        write_json_atomic(
+            self._conversation_path(project_dir),
+            {"entries": [entry.model_dump(mode="json") for entry in merged_entries]},
         )
         return merged_entries
 
@@ -215,10 +208,7 @@ class ProjectManager:
             auto_loop_enabled=bool(data.get("auto_loop_enabled", False)),
         )
         if data.get("id") != normalized_id:
-            (project_dir / "project.json").write_text(
-                json.dumps(summary.model_dump(), ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
+            write_json_atomic(project_dir / "project.json", summary.model_dump())
         return summary
 
     def update_settings(self, project_id: str, *, auto_loop_enabled: bool | None) -> ProjectSummary:
@@ -233,10 +223,7 @@ class ProjectManager:
         if auto_loop_enabled is None:
             return summary
         updated = summary.model_copy(update={"auto_loop_enabled": auto_loop_enabled})
-        (project_dir / "project.json").write_text(
-            json.dumps(updated.model_dump(), ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        write_json_atomic(project_dir / "project.json", updated.model_dump())
         logger.info("Updated project %s settings: auto_loop_enabled=%s", project_id, auto_loop_enabled)
         return updated
 

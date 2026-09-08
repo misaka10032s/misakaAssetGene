@@ -321,37 +321,43 @@ class WorkersService:
         return self.runtime_root / f"{worker_name}.json"
 
     def _load_runtime_state(self, worker_name: str) -> dict:
+        # Deferred import (same idiom as _comfyui_has_live_checkpoint below):
+        # keeps this file's line numbers stable above this point so an
+        # unrelated top-of-file import doesn't spuriously shift the mypy
+        # "no-redef" message identity baselined for list_workers() (its
+        # message text embeds a source line number).
+        from core.project.atomic_io import read_json_tolerant
+
         path = self._runtime_state_path(worker_name)
         if not path.exists():
             return {}
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return {}
+        # default={} restores the pre-atomic-io caller contract: a corrupt
+        # file with no prior successful read in this process degrades to an
+        # empty state (logged) instead of raising into a FastAPI route (待回答
+        # #53-2 review finding 2) -- unlike core.training.service._read_jobs,
+        # which must never silently return an empty result.
+        return read_json_tolerant(path, default={})
 
     def _install_state_path(self, worker_name: str) -> Path:
         return self.runtime_root / f"{worker_name}.install.json"
 
     def _load_install_state(self, worker_name: str) -> dict:
+        from core.project.atomic_io import read_json_tolerant
+
         path = self._install_state_path(worker_name)
         if not path.exists():
             return {}
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return {}
+        return read_json_tolerant(path, default={})
 
     def _save_install_state(self, worker_name: str, payload: dict) -> None:
-        self._install_state_path(worker_name).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        from core.project.atomic_io import write_json_atomic
+
+        write_json_atomic(self._install_state_path(worker_name), payload)
 
     def _save_runtime_state(self, worker_name: str, payload: dict) -> None:
-        self._runtime_state_path(worker_name).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        from core.project.atomic_io import write_json_atomic
+
+        write_json_atomic(self._runtime_state_path(worker_name), payload)
 
     def _clear_runtime_state(self, worker_name: str) -> None:
         self._runtime_state_path(worker_name).unlink(missing_ok=True)

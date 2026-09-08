@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 import uuid
 from collections.abc import Iterator
@@ -8,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.models.schemas import Modality, TrainingJob, TrainingJobCreateRequest, TrainingJobStatus, TrainingWorkspaceData
+from core.project.atomic_io import read_json_tolerant, write_json_atomic
 from core.project.manager import ProjectManager
 from core.training.executor import TrainingExecutor
 
@@ -213,13 +213,9 @@ class TrainingService:
         path = self._jobs_path(project_dir)
         if not path.exists():
             return []
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_json_tolerant(path)
         return [TrainingJob(**item) for item in payload.get("jobs", [])]
 
     def _write_jobs(self, project_dir: Path, jobs: list[TrainingJob]) -> None:
         path = self._jobs_path(project_dir)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"jobs": [job.model_dump(mode="json") for job in jobs]}, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        write_json_atomic(path, {"jobs": [job.model_dump(mode="json") for job in jobs]})
