@@ -32,6 +32,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Generator
 
+from core.project.atomic_io import read_json_tolerant, write_json_atomic
+
 
 REFERENCE_PATTERN = re.compile(
     r"^@(?P<project>[a-zA-Z0-9_-]+)/(?P<asset_path>[a-zA-Z0-9_./-]+)(?:#(?P<version>[a-zA-Z0-9_-]+))?$"
@@ -348,11 +350,7 @@ def update_origins_json(
             entries.append(new_entry)
 
         doc["entries"] = entries
-        origins_path.parent.mkdir(parents=True, exist_ok=True)
-        origins_path.write_text(
-            json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        write_json_atomic(origins_path, doc)
 
 
 # ---------------------------------------------------------------------------
@@ -360,17 +358,26 @@ def update_origins_json(
 # ---------------------------------------------------------------------------
 
 def _load_origins(dest_project_dir: Path) -> list[dict]:
-    """Load _external/origins.json entries, returning [] on missing/corrupt."""
+    """Load _external/origins.json entries, returning [] on missing/corrupt.
+
+    ``read_json_tolerant`` already absorbs a writer-mid-replace race (retry
+    once, then the last known-good parse of this path) — the ``except``
+    below is the pre-existing, documented "corrupt/never-read-before" floor
+    for this specific resolver helper, kept as [] (not raised) because an
+    empty cross-project-origin list is itself a legitimate state (no
+    external assets copied in yet), unlike a jobs.json read where an empty
+    list would be mistaken for "all jobs vanished".
+    """
     origins_path = dest_project_dir / "_external" / "origins.json"
     if not origins_path.exists():
         return []
     try:
-        doc = json.loads(origins_path.read_text(encoding="utf-8"))
+        doc = read_json_tolerant(origins_path)
         if not isinstance(doc, dict) or doc.get("schema_version") != 1:
             return []
         entries = doc.get("entries", [])
         return entries if isinstance(entries, list) else []
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return []
 
 
@@ -660,21 +667,21 @@ def collect_project_refs(project_dir: Path) -> list[str]:
     index_path = project_dir / "assets" / "index.json"
     if index_path.is_file():
         try:
-            data = json.loads(index_path.read_text(encoding="utf-8"))
+            data = read_json_tolerant(index_path)
             for asset in data.get("assets", []):
                 _scan_dependencies(asset.get("dependencies", []))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             pass
 
     # jobs.json
     jobs_path = project_dir / "jobs.json"
     if jobs_path.is_file():
         try:
-            data = json.loads(jobs_path.read_text(encoding="utf-8"))
+            data = read_json_tolerant(jobs_path)
             jobs_list = data if isinstance(data, list) else data.get("jobs", [])
             for job in jobs_list:
                 _scan_dependencies(job.get("dependencies", []))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             pass
 
     return sorted(refs)

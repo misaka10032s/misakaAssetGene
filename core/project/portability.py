@@ -16,6 +16,8 @@ import uuid
 from pathlib import Path
 from zipfile import ZipFile
 
+from core.project.atomic_io import read_json_tolerant, write_json_atomic
+
 
 # ---------------------------------------------------------------------------
 # Path helpers
@@ -127,9 +129,18 @@ def import_project_zip(
     2. Enforce an uncompressed-size sanity cap.
     3. Detect collision: if a project with the same id or name already exists,
        generate a new id and record origin_id in the imported project.json.
-    4. Extract all entries (except export.manifest.json / license-report.json)
-       to projects_root/<new_id>/.
-    5. Write / overwrite project.json with the (possibly reassigned) id.
+    4. Extract all entries (except export.manifest.json / license-report.json /
+       the zip's own project.json entry -- see step 5) to projects_root/<new_id>/.
+    5. Write project.json exactly once, atomically, with the (possibly
+       reassigned) id -- the zip's own project.json entry is never extracted
+       verbatim (待回答 #53-2 review finding 1): projects_root/<new_id>/ is
+       glob-visible to list_projects()/get_project() the moment target_dir
+       exists, with no readiness marker, so a raw truncate-then-write copy
+       plus a second overwrite would leave the same torn-read window this
+       whole fix targets. source_project already carries every field the
+       zip's project.json would have (it is the same dict ProjectExportService
+       wrote into export.manifest.json's "project" key), so skipping the raw
+       copy loses nothing.
     6. Return a result dict with project_id, project_name,
        collision_resolved (bool), and origin_id (str | None).
 
@@ -178,7 +189,7 @@ def import_project_zip(
         existing_names: set[str] = set()
         for pjson in projects_root.glob("*/project.json"):
             try:
-                data = json.loads(pjson.read_text(encoding="utf-8"))
+                data = read_json_tolerant(pjson)
                 existing_names.add(str(data.get("name", "")).strip().lower())
             except Exception:
                 pass  # Corrupt existing project -- skip gracefully.
@@ -238,7 +249,12 @@ def import_project_zip(
         # entry in chunks and count actual decompressed bytes, aborting and cleaning up
         # if the running total exceeds max_uncompressed_bytes.
         _CHUNK_SIZE = 256 * 1024  # 256 KiB per read chunk
-        skip_entries = {"export.manifest.json", "license-report.json"}
+        # "project.json" is deliberately excluded from raw extraction (待回答
+        # #53-2 review finding 1): it is written exactly once, atomically,
+        # after new_project_data is computed below -- see step 5's docstring
+        # above for why a raw extracted copy would reopen the torn-read
+        # window this whole fix exists to close.
+        skip_entries = {"export.manifest.json", "license-report.json", "project.json"}
         # Skip consultant cache entries that may appear in legacy zips created
         # before spec §5.14 enforced exclusion (they are private AI working memory,
         # not portable user assets — do NOT restore them on import).
@@ -283,15 +299,16 @@ def import_project_zip(
             shutil.rmtree(target_dir, ignore_errors=True)
             raise
 
-        # 5. Write (updated) project.json with the resolved id
+        # 5. Write project.json exactly once, atomically, with the resolved id.
+        # "project.json" was excluded from the raw-extraction loop above (see
+        # skip_entries), so this is the ONLY write of that file for the
+        # imported project -- no truncate-then-write copy of the zip's own
+        # entry ever touches disk first.
         new_project_data = {**source_project, "id": new_id}
         if origin_id is not None:
             new_project_data["origin_id"] = origin_id
 
-        (target_dir / "project.json").write_text(
-            json.dumps(new_project_data, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        write_json_atomic(target_dir / "project.json", new_project_data)
 
     return {
         "project_id": new_id,

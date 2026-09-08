@@ -23,6 +23,7 @@ import pytest
 from starlette.testclient import TestClient
 
 import core.main as main
+import core.project.portability as portability_module
 from core.project.cross_project import (
     copy_external_asset,
     parse_reference,
@@ -228,6 +229,76 @@ def test_import_basic_project(tmp_path: Path) -> None:
     # style_guide and conversation should be extracted
     assert (projects_root / "my-game" / "style_guide.md").exists()
     assert (projects_root / "my-game" / "conversation.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# 待回答 #53-2 review finding 1: the zip's own project.json entry must never
+# be extracted verbatim -- projects_root/<new_id>/ is glob-visible to
+# list_projects()/get_project() the instant target_dir exists (no readiness
+# marker), so a raw truncate-then-write copy of the zip entry, followed by a
+# second overwrite with new_project_data, reopens the exact torn-read window
+# this whole atomic-io fix targets. project.json must be written exactly
+# once, atomically, from new_project_data.
+# ---------------------------------------------------------------------------
+
+def test_import_malformed_project_json_entry_never_extracted_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A zip whose project.json entry is deliberately malformed/truncated
+    must still import successfully (the manifest's "project" dict, not the
+    raw entry, is what feeds project.json), and the raw entry must never
+    touch disk -- proven by intercepting every binary-write ``open()`` call
+    portability.py's extraction loop makes and asserting "project.json"
+    never appears among them, not merely by checking the final content."""
+    manifest = {
+        "project": {"id": "torn-proj", "name": "Torn Project", "type": "RPG", "synopsis": "s"},
+        "exported_at": "2026-01-01T00:00:00+00:00",
+    }
+    zip_path = tmp_path / "torn.zip"
+    with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zf:
+        zf.writestr("export.manifest.json", json.dumps(manifest))
+        # Deliberately malformed/truncated JSON -- if this were ever
+        # extracted verbatim, a concurrent reader mid-extraction (or the
+        # final imported file, had the raw copy not been overwritten) would
+        # observe garbage.
+        zf.writestr("project.json", b'{"id": "torn-proj", "name": tru')
+        zf.writestr("style_guide.md", "# Style\n")
+
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+
+    opened_binary_write_names: list[str] = []
+    import builtins
+
+    real_open = builtins.open
+
+    def _tracking_open(file, mode="r", *args, **kwargs):
+        if "w" in mode and "b" in mode:
+            opened_binary_write_names.append(Path(file).name)
+        return real_open(file, mode, *args, **kwargs)
+
+    # Shadowing "open" as a module-level global on portability_module makes
+    # every bare `open(...)` call inside functions defined in that module
+    # resolve to this wrapper instead of falling through to builtins (normal
+    # LEGB lookup: local -> enclosing -> module globals -> builtins).
+    monkeypatch.setattr(portability_module, "open", _tracking_open, raising=False)
+
+    result = import_project_zip(zip_path, projects_root)
+
+    assert "project.json" not in opened_binary_write_names, (
+        "the raw zip project.json entry was extracted verbatim via a binary "
+        f"open() call (all binary-write opens: {opened_binary_write_names})"
+    )
+    # style_guide.md (not skipped) must still have gone through the normal
+    # extraction open() call, proving the tracking wrapper actually observed
+    # real extraction writes rather than silently no-op'ing.
+    assert "style_guide.md" in opened_binary_write_names
+
+    project_json_path = projects_root / result["project_id"] / "project.json"
+    assert project_json_path.exists()
+    data = json.loads(project_json_path.read_text(encoding="utf-8"))
+    assert data["id"] == result["project_id"]
+    assert data["name"] == "Torn Project"
 
 
 # ---------------------------------------------------------------------------

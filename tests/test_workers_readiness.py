@@ -78,6 +78,61 @@ def test_not_running_but_installed_reports_not_running(tmp_path: Path, monkeypat
     assert note == "Worker server is not running."
 
 
+# ---------------------------------------------------------------------------
+# 待回答 #53-2 review finding 2: a corrupt runtime/install state file with no
+# prior successful read in this process must degrade to {} (logged), not
+# raise into the caller -- restores the pre-atomic-io caller contract for
+# these two loaders specifically (unlike core.training.service._read_jobs,
+# which must keep raising -- see tests/test_atomic_jobs_io.py).
+# ---------------------------------------------------------------------------
+
+def test_load_runtime_state_corrupt_no_snapshot_returns_empty_and_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    service = _service(tmp_path)
+    runtime_path = service._runtime_state_path("comfyui")
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_path.write_text("{not valid json", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="misaka.atomic_io"):
+        result = service._load_runtime_state("comfyui")
+
+    assert result == {}
+    assert any("failed to parse twice" in record.message for record in caplog.records)
+
+
+def test_load_install_state_corrupt_no_snapshot_returns_empty_and_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    service = _service(tmp_path)
+    install_path = service._install_state_path("comfyui")
+    install_path.parent.mkdir(parents=True, exist_ok=True)
+    install_path.write_text("{not valid json", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="misaka.atomic_io"):
+        result = service._load_install_state("comfyui")
+
+    assert result == {}
+    assert any("failed to parse twice" in record.message for record in caplog.records)
+
+
+def test_list_workers_does_not_raise_on_corrupt_runtime_state(tmp_path: Path) -> None:
+    """This is exactly the call GET /api/v1/integration makes
+    (core/main.py's integration_snapshot route: workers=workers_service.
+    list_workers(refresh=True)) -- proving it does not raise on a corrupt,
+    never-successfully-read runtime state file is proving that route no
+    longer 500s on this condition."""
+    service = _service(tmp_path)
+    runtime_path = service._runtime_state_path("comfyui")
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_path.write_text("{not valid json", encoding="utf-8")
+
+    snapshots = service.list_workers(refresh=True)
+
+    assert len(snapshots) == 1
+    assert snapshots[0].name == "comfyui"
+
+
 def test_not_running_and_not_installed_reports_not_installed(tmp_path: Path) -> None:
     service = _service(tmp_path)
     note = _build_note(service, installed=False, is_running=False, has_local_ckpt=False)
