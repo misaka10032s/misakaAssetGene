@@ -1,8 +1,8 @@
-# 規格優先流程
+# Spec-first workflow
 
-1. 新需求先回到 `docs/superpowers/specs/spec.md`，由 `architect` 角色討論可行性與實現細節。
-2. 討論完成後，再把結論寫回 `docs/superpowers/specs/spec.md`，保持規格為唯一真相來源。
-3. 若需求牽涉角色、流程或 repo 規則，必須同步更新 `CLAUDE.md` 與對應 `.claude/` 文件。
-4. `.plan/RESEARCH_LOG.md` 要留下研究結論與狀態，完成項目標註 **「已完成」**。
-5. 每次開發回報都必須明確說明：目前進度、驗證方式、完成判定、下一步。
-6. 驗證不能只看檔案存在；必須對照 `docs/superpowers/specs/spec.md` 條目做結構驗證、行為驗證或 build/dev 驗證。
+1. A new requirement goes back to `docs/superpowers/specs/spec.md` first, and the `architect` role discusses feasibility and implementation details.
+2. After the discussion, write the conclusion back to `docs/superpowers/specs/spec.md`, keeping the spec the single source of truth.
+3. If a requirement involves roles, workflow or repo rules, `CLAUDE.md` and the matching `.claude/` documents must be updated in step.
+4. `.plan/RESEARCH_LOG.md` must keep the research conclusions and status, and completed items are marked **「已完成」**.
+5. Every subagent report file for a development task must state explicitly: current progress, how to verify, the done assessment, and the next step.
+6. Verification cannot rest on a file merely existing; it must check against the items of `docs/superpowers/specs/spec.md` with structural verification, behavior verification, or build/dev verification.

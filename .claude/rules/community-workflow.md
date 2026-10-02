@@ -1,6 +1,6 @@
-# 開源社群協作規則
+# Open-source community collaboration rules
 
-1. 對外貢獻流程以 `CONTRIBUTING.md` 為準。
-2. 所有重大變更都應先更新或引用 `docs/superpowers/specs/spec.md`，避免口頭需求漂移。
-3. PR 至少說明：問題、方案、影響範圍、驗證方式。
-4. 任何與授權、第三方 repo、模型來源有關的變更，都必須明確標示 license 與使用限制。
+1. The external contribution flow follows `CONTRIBUTING.md`.
+2. Every major change must first update or cite `docs/superpowers/specs/spec.md`, so that requirements do not drift by word of mouth.
+3. A PR must state at least: the problem, the solution, the scope of impact, and how it was verified.
+4. Any change involving a license, a third-party repo, or a model source must state the license and usage restrictions explicitly.

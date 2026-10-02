@@ -1,16 +1,16 @@
 # /project:spec-discuss
 
-以 `architect` 角色主導需求討論。
+Lead the requirement discussion in the `architect` role.
 
-## 目標
-- 先讀 `docs/superpowers/specs/spec.md`
-- 對照 `.plan/DEVELOPMENT_PLAN.md` 與 `.plan/RESEARCH_LOG.md`
-- 分析新需求的可行性、架構衝擊、資料流、風險與實作範圍
-- 產出建議的 spec 變更點，但**先不直接實作**
+## Goals
+- Read `docs/superpowers/specs/spec.md` first
+- Compare against `.plan/DEVELOPMENT_PLAN.md` and `.plan/RESEARCH_LOG.md`
+- Analyze the new requirement's feasibility, architectural impact, data flow, risks and implementation scope
+- Produce the suggested spec change points, but **do not implement directly yet**
 
-## 輸出格式
-1. 需求摘要
-2. 可行性判斷
-3. 架構/流程影響
-4. 建議加入或修改的 spec 段落
-5. 待確認事項
+## Output format
+1. Requirement summary
+2. Feasibility judgment
+3. Architecture / flow impact
+4. Spec sections suggested to add or modify
+5. Items to confirm

@@ -1,6 +1,6 @@
-# Repo 邊界與整潔規則
+# Repo boundary and hygiene rules
 
-1. 第三方 repo 不可被本專案 git 追蹤，不使用 git submodule / subtree。
-2. `workers/` 與 `tools/` 只追蹤 `.gitignore`、`manifest.json` 等控制檔，其餘下載內容忽略。
-3. `projects/`、`.cache/`、模型權重、暫存檔、local overrides 一律放入 `.gitignore`。
-4. 個人化 Claude 設定使用 `CLAUDE.local.md`、`.claude/settings.local.json`，且不可提交。
+1. A third-party repo must not be tracked by this project's git, and git submodule / subtree is not used.
+2. `workers/` and `tools/` track only control files such as `.gitignore` and `manifest.json`; all other downloaded content is ignored.
+3. `projects/`, `.cache/`, model weights, temporary files and local overrides always go into `.gitignore`.
+4. Personal Claude settings use `CLAUDE.local.md` and `.claude/settings.local.json`, and must not be committed.
