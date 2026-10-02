@@ -1,14 +1,14 @@
 # /project:review-plan
 
-檢查目前專案文件是否仍符合 `.plan/DEVELOPMENT_PLAN.md` 的角色分工、工作流與品質要求。
+Check whether the current project documents still meet the role split, workflow and quality requirements of `.plan/DEVELOPMENT_PLAN.md`.
 
-## 檢查重點
-- `CLAUDE.md` 與 `.claude/agents/` 是否涵蓋 Dream Team 全部角色
-- `docs/superpowers/specs/spec.md` 是否反映最新需求與工作流
-- `.gitignore` 是否確保第三方 repo / 下載產物不被追蹤
-- `CONTRIBUTING.md` 與 `LICENSE` 是否齊備
+## Check points
+- Do `CLAUDE.md` and `.claude/agents/` cover all the Dream Team roles?
+- Does `docs/superpowers/specs/spec.md` reflect the latest requirements and workflow?
+- Does `.gitignore` ensure third-party repos / downloaded artifacts are not tracked?
+- Are `CONTRIBUTING.md` and `LICENSE` both present?
 
-## 輸出
-- 缺口清單
-- 建議修補順序
-- 可標註為 **「已完成」** 的項目
+## Output
+- A gap list
+- The suggested order of fixes
+- Items that can be marked **「已完成」**
