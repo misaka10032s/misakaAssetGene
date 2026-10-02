@@ -4,16 +4,9 @@ Desktop-first multimodal asset workbench. Consultant-style dialogue integrates i
 character lines, voice, songs, and video — plus downstream LoRA/GPT-SoVITS training pipelines.
 Stack: Tauri + Vue 3/Vite/UnoCSS (frontend) · Python/FastAPI (core API) · Ollama (local LLM).
 
-> Cluster conventions (git authority, language, i18n, ports, layout) are BINDING and live at
-> D:/backup/CSIA/@PM/.claude/context/cluster-conventions.md — Read it before any work here.
-
-## Delegation & verification
-
-- Orchestration, model tiering, and dispatch rules: D:/backup/CSIA/@PM/.claude/context/model-dispatch-doctrine.md
-- Decision rubrics (escalate / done / ask / change course): D:/backup/CSIA/@PM/.claude/context/judgment-rubrics.md
-- Whoever produced work never certifies it — verification runs in a fresh-context agent.
-- Every done/correct/dead/broken claim carries evidence: file:line, test output, or read-back.
-- Target missing or contradicting the task → STOP and ask; never scaffold around it.
+> Dispatched from @PM: your brief carries a conventions excerpt; follow it, and read a section of the full
+> `D:/backup/CSIA/@PM/.claude/context/cluster-conventions.md` only when your topic is outside the excerpt. Working in
+> this repo without an @PM brief: read the sections of that file your task touches.
 
 ## Context index
 
