@@ -42,6 +42,9 @@ export default defineConfig({
     // untouched tree instead of that being a false-red install defect. The FIRST real test
     // file added flips this back to a normal pass/fail run automatically.
     passWithNoTests: true,
+    // Runtime write guard (G3(c), pattern P9): a test that writes inside the repo outside the
+    // system temp folder fails with the guard's error.
+    setupFiles: [resolve(repoRoot, 'frontend/src/test-utils/noRepoWrites.ts')],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],

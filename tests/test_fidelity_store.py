@@ -9,6 +9,9 @@ from pathlib import Path
 from core.consultant.fidelity_store import FidelityStore
 from core.models.schemas import FidelityCheckResult, FidelityLoopStatus
 
+# Fixed instant for every seeded record: no test here reads the real clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+
 
 def _result(id: str, passed: bool, bbox: tuple[int, int, int, int] | None = None) -> FidelityCheckResult:
     return FidelityCheckResult(id=id, passed=passed, confidence=0.8, region_bbox=bbox, note="n")
@@ -206,7 +209,7 @@ class TestLastError:
         ``FidelityStore`` must migrate the column in without disturbing
         existing rows (same idiom as ``TestMigrationSafety`` below)."""
         db_path = tmp_path / "memory.sqlite"
-        now = datetime.now(UTC).isoformat()
+        now = FIXED_NOW.isoformat()
         conn = sqlite3.connect(db_path)
         conn.execute(
             "CREATE TABLE fidelity_loops ("
@@ -277,7 +280,7 @@ class TestMode:
         without disturbing existing rows, same idiom as
         ``TestLastError.test_opens_against_db_missing_the_last_error_column``."""
         db_path = tmp_path / "memory.sqlite"
-        now = datetime.now(UTC).isoformat()
+        now = FIXED_NOW.isoformat()
         conn = sqlite3.connect(db_path)
         conn.execute(
             "CREATE TABLE fidelity_loops ("

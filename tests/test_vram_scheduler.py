@@ -6,6 +6,8 @@ so idle-based transitions are deterministic without real timing.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from core.scheduler.vram import (
@@ -154,92 +156,156 @@ def test_negative_budget_rejected():
 
 
 # ---------------------------------------------------------------------------
-# Thread safety (RLock) — concurrent access from threadpool + worker thread
+# Thread safety (RLock) — every access to the shared state holds the lock
+#
+# The scheduler is reached concurrently from FastAPI's threadpool and the
+# training executor's worker thread, and its guarantee is "every read and
+# write of ``_models`` / ``_transitions`` / ``_training_lock_holder`` happens
+# while ``_lock`` is held".  The tests observe that guarantee directly on one
+# thread: the lock is replaced by a lock that knows whether it is held, and
+# the three shared structures record the lock state at each access.  No
+# second thread, no timing.
 # ---------------------------------------------------------------------------
 
+class _HeldLock:
+    """Re-entrant lock that knows whether it is currently held (``depth``)."""
+
+    def __init__(self) -> None:
+        self._inner = threading.RLock()
+        self.depth = 0
+
+    def acquire(self, blocking: bool = True) -> bool:
+        got = self._inner.acquire(blocking)
+        if got:
+            self.depth += 1
+        return got
+
+    def release(self) -> None:
+        self.depth -= 1
+        self._inner.release()
+
+    def __enter__(self) -> _HeldLock:
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.release()
+
+
+def _observed_scheduler(
+    vram_mb: int = 12000, ram_mb: int = 32000
+) -> tuple[ModelScheduler, list[tuple[str, int]]]:
+    """A scheduler whose lock and shared state record ``(what, lock depth)`` at
+    every access into the returned log."""
+    held = _HeldLock()
+    log: list[tuple[str, int]] = []
+
+    class _Observed(ModelScheduler):
+        def __setattr__(self, name: str, value: object) -> None:
+            if name == "_training_lock_holder":
+                log.append(("holder_write", held.depth))
+            super().__setattr__(name, value)
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "_training_lock_holder":
+                log.append(("holder_read", held.depth))
+            return super().__getattribute__(name)
+
+    class _ObservedDict(dict):
+        def __getitem__(self, key):
+            log.append(("models_get", held.depth))
+            return super().__getitem__(key)
+
+        def __setitem__(self, key, value):
+            log.append(("models_set", held.depth))
+            super().__setitem__(key, value)
+
+        def items(self):
+            log.append(("models_items", held.depth))
+            return super().items()
+
+        def values(self):
+            log.append(("models_values", held.depth))
+            return super().values()
+
+    class _ObservedList(list):
+        def append(self, item):
+            log.append(("transitions_append", held.depth))
+            super().append(item)
+
+        def __len__(self):
+            log.append(("transitions_len", held.depth))
+            return super().__len__()
+
+        def __getitem__(self, index):
+            log.append(("transitions_get", held.depth))
+            return super().__getitem__(index)
+
+    sched = _Observed(SchedulerBudget(vram_budget_mb=vram_mb, ram_budget_mb=ram_mb), clock=FakeClock())
+    sched._lock = held  # type: ignore[assignment]
+    sched._models = _ObservedDict(sched._models)  # type: ignore[assignment]
+    sched._transitions = _ObservedList(sched._transitions)  # type: ignore[assignment]
+    log.clear()  # drop what construction itself touched (no lock exists yet to hold)
+    return sched, log
+
+
 def test_concurrent_acquire_demote_tick_is_consistent():
-    """Hammer the scheduler from many threads; the RLock must keep the
-    transition log internally consistent and never raise from a state race.
+    """Every acquire / demote / tick keeps the transition log internally
+    consistent and touches ``_models`` and ``_transitions`` only while the lock
+    is held.
 
     Without the lock, ``_transitions.append`` from one thread interleaving with
     ``tick``'s ``self._transitions[before:]`` slice (and the read of
-    ``len(self._transitions)``) can drop events or read torn state.
+    ``len(self._transitions)``) can drop events or read torn state; the log
+    shows an access with the lock NOT held exactly when that protection is
+    missing.
     """
-    import threading
-
-    sched, _ = _scheduler(vram_mb=100000, ram_mb=100000)
+    sched, log = _observed_scheduler(vram_mb=100000, ram_mb=100000)
     # Each model fits comfortably so acquire never has to evict — we are
     # exercising the lock around state + transition bookkeeping, not eviction.
     names = [f"m{i}" for i in range(8)]
     for n in names:
         sched.register(ManagedModel(name=n, vram_mb=1000, ram_mb=1000))
 
-    errors: list[BaseException] = []
-    barrier = threading.Barrier(len(names) * 3)
+    for _ in range(3):
+        for name in names:
+            sched.acquire(name)
+            sched.tick(now=999999.0)  # idle ACTIVE -> WARM
+            sched.acquire(name)  # warm_restore
+            sched.demote(name)  # ACTIVE -> WARM
+            sched.tick(now=999999.0)  # idle WARM -> COLD
 
-    def worker(name: str, op: str) -> None:
-        try:
-            barrier.wait()
-            for _ in range(200):
-                if op == "acquire":
-                    sched.acquire(name)
-                elif op == "demote":
-                    sched.demote(name)
-                else:
-                    sched.tick(now=999999.0)
-        except BaseException as exc:  # noqa: BLE001 - surface any race-induced error
-            errors.append(exc)
-
-    threads = []
-    for name in names:
-        for op in ("acquire", "demote", "tick"):
-            threads.append(threading.Thread(target=worker, args=(name, op)))
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert not errors, f"Concurrent access raised: {errors[:3]}"
+    touched = {what for what, _depth in log}
+    assert {"models_get", "models_set", "models_values", "transitions_append",
+            "transitions_len", "transitions_get"} <= touched, f"accesses not observed: {touched}"
+    unlocked = [entry for entry in log if entry[1] == 0]
+    assert not unlocked, f"shared state touched WITHOUT the lock held: {unlocked[:5]}"
     # Every recorded transition must reference a registered model and be a real
     # state change (from != to) — proves no torn/partial event was appended.
+    assert sched.transitions, "no transition was recorded"
     for ev in sched.transitions:
         assert ev.name in names
         assert ev.from_state != ev.to_state
 
 
 def test_begin_end_training_under_concurrency():
-    """begin/end training toggling concurrently with acquire never corrupts the
-    lock-holder flag: acquire either succeeds or raises SchedulerError cleanly."""
-    import threading
-
-    sched, _ = _scheduler()
+    """begin/end training toggling together with acquire never touches the
+    lock-holder flag without the lock held: acquire either succeeds or raises
+    SchedulerError cleanly."""
+    sched, log = _observed_scheduler()
     sched.register(ManagedModel(name="qwen", vram_mb=7000, ram_mb=7000))
-    errors: list[BaseException] = []
 
-    def toggler() -> None:
-        try:
-            for _ in range(500):
-                sched.begin_training("job-x")
-                sched.end_training()
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
+    for _ in range(3):
+        sched.begin_training("job-x")
+        with pytest.raises(SchedulerError):
+            sched.acquire("qwen")  # expected while the lock is held
+        sched.end_training()
+        assert sched.acquire("qwen") == RuntimeState.ACTIVE
+        sched.demote("qwen")
 
-    def acquirer() -> None:
-        try:
-            for _ in range(500):
-                try:
-                    sched.acquire("qwen")
-                except SchedulerError:
-                    pass  # expected when the lock is held
-        except BaseException as exc:  # noqa: BLE001
-            errors.append(exc)
-
-    threads = [threading.Thread(target=toggler), threading.Thread(target=acquirer)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert not errors, f"Concurrent training-lock toggling raised: {errors[:3]}"
-    # After all toggling, the lock must be released (last op in toggler is end).
+    touched = {what for what, _depth in log}
+    assert {"holder_write", "holder_read"} <= touched, f"accesses not observed: {touched}"
+    unlocked = [entry for entry in log if entry[1] == 0]
+    assert not unlocked, f"holder flag or shared state touched WITHOUT the lock held: {unlocked[:5]}"
+    # After all toggling, the lock must be released (last op in the loop is end).
     assert sched.is_training_locked() is False

@@ -15,8 +15,11 @@ cd "$repo_root"
 
 status=0
 
-if git diff --cached --name-only --diff-filter=ACMR -- 'frontend/*' | grep -q .; then
-  echo "[pre-commit] frontend/ changes staged - running JS/TS gate:l0 (G1 lint-diff, G2 typecheck baseline, G3 tests+assertions, G4 import cycles)..."
+# The determinism check (G3(c)) runs inside l0, so its own files (quality-gates/*, canaries included),
+# this hook and the test config also trigger the block (conftest.py, pytest.ini, pyproject.toml,
+# vite/vitest config, package.json).
+if git diff --cached --name-only --diff-filter=ACMR -- 'frontend/*' 'quality-gates/*' '.githooks/*' '*conftest.py' 'pytest.ini' 'pyproject.toml' 'vite.config.*' 'vitest.config.*' 'package.json' | grep -q .; then
+  echo "[pre-commit] frontend/ or determinism-scope changes staged - running JS/TS gate:l0 (G1 lint-diff, G2 typecheck baseline, G3 tests+assertions, G4 import cycles)..."
   npm run gate:l0
   status=$?
   if [ "$status" -ne 0 ]; then
@@ -25,11 +28,12 @@ if git diff --cached --name-only --diff-filter=ACMR -- 'frontend/*' | grep -q .;
   fi
   echo "[pre-commit] JS/TS gate:l0 PASSED."
 else
-  echo "[pre-commit] no frontend/ changes staged - skipping JS/TS gate:l0."
+  echo "[pre-commit] no frontend/ or determinism-scope changes staged - skipping JS/TS gate:l0."
 fi
 
-if git diff --cached --name-only --diff-filter=ACMR -- 'core/*' 'tests/*' 'scripts/*' 'pyproject.toml' | grep -q .; then
-  echo "[pre-commit] core/tests/scripts/pyproject.toml changes staged - running Python quality-gates l0 (G1 ruff, G2 mypy, G3 pytest+assertions, G4 import-linter)..."
+# Same trigger additions as the JS/TS block above (the Python determinism check runs inside l0).
+if git diff --cached --name-only --diff-filter=ACMR -- 'core/*' 'tests/*' 'scripts/*' 'quality-gates/*' '.githooks/*' '*conftest.py' 'pytest.ini' 'pyproject.toml' 'vite.config.*' 'vitest.config.*' 'package.json' | grep -q .; then
+  echo "[pre-commit] core/tests/scripts/determinism-scope changes staged - running Python quality-gates l0 (G1 ruff, G2 mypy, G3 pytest+assertions, G4 import-linter)..."
   .venv/Scripts/python.exe quality-gates/python/run.py l0
   status=$?
   if [ "$status" -ne 0 ]; then
@@ -38,7 +42,7 @@ if git diff --cached --name-only --diff-filter=ACMR -- 'core/*' 'tests/*' 'scrip
   fi
   echo "[pre-commit] Python gate l0 PASSED."
 else
-  echo "[pre-commit] no core/tests/scripts/pyproject.toml changes staged - skipping Python gate l0."
+  echo "[pre-commit] no core/tests/scripts/determinism-scope changes staged - skipping Python gate l0."
 fi
 
 exit 0

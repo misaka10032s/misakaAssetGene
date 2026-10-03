@@ -29,7 +29,7 @@ function makeClarifyResult(overrides: Partial<ClarifyResult> = {}): ClarifyResul
 }
 
 function makeSession(overrides: Partial<ConsultantSession> = {}): ConsultantSession {
-  const now = new Date().toISOString();
+  const now = "2026-01-15T12:00:00.000Z";
   return {
     session_id: "session-1",
     project_id: "p1",

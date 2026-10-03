@@ -18,7 +18,6 @@
   "core/generation/service.py|operator|No overload variant of \"__add__\" of \"list\" matches argument type \"object\"",
   "core/generation/service.py|type-arg|Missing type arguments for generic type \"dict\"",
   "core/integration/workers.py|no-any-return|Returning Any from function declared to return \"dict[Any, Any]\"",
-  "core/integration/workers.py|no-redef|Name \"snapshots\" already defined on line 29",
   "core/integration/workers.py|type-arg|Missing type arguments for generic type \"dict\"",
   "core/main.py|arg-type|Argument 1 to \"LocalLlmStatus\" has incompatible type \"**dict[str, object]\"; expected \"bool\"",
   "core/main.py|arg-type|Argument 1 to \"LocalLlmStatus\" has incompatible type \"**dict[str, object]\"; expected \"list[str]\"",

@@ -313,6 +313,12 @@ class TrainingExecutor:
         from ``workers/manifest.json`` instead of guessing it from the job's
         dataset path.  When ``None``, a kohya-ss job fails with a clear
         ``SchedulerError`` rather than falling back to a guess.
+    thread_factory
+        Callable with the ``threading.Thread`` keyword signature
+        (``target``, ``name``, ``daemon``) that creates the worker thread.
+        Defaults to ``threading.Thread``; tests inject a recording factory
+        and drive the queue with ``run_until_idle()`` instead of waiting on
+        a real worker thread.
     """
 
     def __init__(
@@ -325,7 +331,9 @@ class TrainingExecutor:
         asset_store_resolver: "Callable[[str], object] | None" = None,
         project_dir_resolver: "Callable[[str], object] | None" = None,
         workers_service: "WorkerPathResolver | None" = None,
+        thread_factory: Callable[..., threading.Thread] = threading.Thread,
     ) -> None:
+        self._thread_factory = thread_factory
         self._read_jobs = read_jobs
         self._write_jobs = write_jobs
         self._scheduler = scheduler
@@ -407,7 +415,7 @@ class TrainingExecutor:
 
     def _ensure_worker_running(self) -> None:
         if self._worker_thread is None or not self._worker_thread.is_alive():
-            self._worker_thread = threading.Thread(
+            self._worker_thread = self._thread_factory(
                 target=self._worker_loop, name="TrainingWorker", daemon=True
             )
             self._worker_thread.start()
@@ -418,20 +426,40 @@ class TrainingExecutor:
                 project_id, job_id = self._queue.get(timeout=1.0)
             except queue.Empty:
                 continue
+            self._process_item(project_id, job_id)
+            self.run_until_idle()
+
+    def run_until_idle(self) -> None:
+        """Run queued jobs, one at a time in FIFO order, until the queue is empty.
+
+        Takes items with ``get_nowait()`` and never blocks; returns as soon as
+        the queue is empty (or the stop signal is set).  The worker thread
+        calls it between its blocking ``get(timeout=1.0)`` waits; tests call it
+        directly in place of waiting for the worker thread.
+        """
+        while not self._stop_event.is_set():
             try:
-                self._run_job(project_id, job_id)
-            except Exception:
-                logger.exception("Unhandled error in training worker for job %s", job_id)
-                with self._lock:
-                    jobs = self._read_jobs(project_id)
-                    jobs = _update_job(
-                        jobs, job_id,
-                        status=TrainingJobStatus.FAILED,
-                        note="Internal executor error; see logs.",
-                    )
-                    self._write_jobs(project_id, jobs)
-            finally:
-                self._queue.task_done()
+                project_id, job_id = self._queue.get_nowait()
+            except queue.Empty:
+                return
+            self._process_item(project_id, job_id)
+
+    def _process_item(self, project_id: str, job_id: str) -> None:
+        """Run one dequeued job with the worker's exception handling."""
+        try:
+            self._run_job(project_id, job_id)
+        except Exception:
+            logger.exception("Unhandled error in training worker for job %s", job_id)
+            with self._lock:
+                jobs = self._read_jobs(project_id)
+                jobs = _update_job(
+                    jobs, job_id,
+                    status=TrainingJobStatus.FAILED,
+                    note="Internal executor error; see logs.",
+                )
+                self._write_jobs(project_id, jobs)
+        finally:
+            self._queue.task_done()
 
     def _run_job(self, project_id: str, job_id: str) -> None:
         """Execute one training job; drives status queued→running→completed|failed."""

@@ -12,8 +12,6 @@ All tests run without a real kohya_ss install or GPU.  They exercise:
 
 from __future__ import annotations
 
-import time
-import threading
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -38,9 +36,30 @@ from core.training.lora import build_lora_command
 
 _DEFAULT_PROJECT = "proj-resume-001"
 
+# Fixed instant for every seeded record: no test here reads the real clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return FIXED_NOW
+
+
+class _RecordedThread:
+    """Stands in for the executor's worker thread: records the creation and
+    ``start()`` but never runs ``target``.  Tests drain the queue on the test
+    thread with ``TrainingExecutor.run_until_idle()`` instead."""
+
+    def __init__(self, *, target, name: str, daemon: bool) -> None:
+        self.target = target
+        self.name = name
+        self.daemon = daemon
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def is_alive(self) -> bool:
+        return self.started
 
 
 def _character_sheet() -> CharacterSheet:
@@ -100,6 +119,11 @@ def _make_job(job_id: str = "job-r001") -> TrainingJob:
     )
 
 
+def _recorded_thread_factory(**kwargs) -> _RecordedThread:
+    """``thread_factory`` for ``TrainingExecutor``: a thread that never runs."""
+    return _RecordedThread(**kwargs)
+
+
 def _make_scheduler() -> ModelScheduler:
     return ModelScheduler(SchedulerBudget(vram_budget_mb=12000, ram_budget_mb=32000))
 
@@ -136,26 +160,26 @@ def _make_executor(
         write_jobs=write_jobs,
         scheduler=sched,
         runner=fake,
+        thread_factory=_recorded_thread_factory,
     )
     return ex, stores
 
 
-def _wait(
+def _job(
     stores: dict[str, list[TrainingJob]],
     job_id: str,
     *statuses: TrainingJobStatus,
-    timeout: float = 5.0,
 ) -> TrainingJob:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        for j in stores.get(_DEFAULT_PROJECT, []):
-            if j.id == job_id and j.status in statuses:
-                return j
-        time.sleep(0.02)
-    found = [j.status for j in stores.get(_DEFAULT_PROJECT, []) if j.id == job_id]
-    raise TimeoutError(
-        f"Job {job_id} did not reach {statuses} within {timeout}s; current: {found}"
-    )
+    """Return the job from the store; fail when it is not in one of ``statuses`` now.
+
+    Nothing waits: the caller has already driven the executor with
+    ``run_until_idle()``, so the stored status is final for that step.
+    """
+    found = [j for j in stores.get(_DEFAULT_PROJECT, []) if j.id == job_id]
+    assert found, f"Job {job_id} is not in the store"
+    job = found[0]
+    assert job.status in statuses, f"Job {job_id} is {job.status}; expected one of {statuses}"
+    return job
 
 
 # ===========================================================================
@@ -454,6 +478,7 @@ class TestExecutorSetsResumePathOnFailure:
             write_jobs=write_jobs,
             scheduler=sched,
             runner=runner,
+            thread_factory=_recorded_thread_factory,
         )
 
         # Use enqueue_with_command; supply args that encode the output_dir so the
@@ -466,7 +491,8 @@ class TestExecutorSetsResumePathOnFailure:
         ]
         ex.enqueue_with_command(_DEFAULT_PROJECT, "job-resume-fail-001", args, Path("."))
 
-        failed = _wait(stores, "job-resume-fail-001", TrainingJobStatus.FAILED)
+        ex.run_until_idle()
+        failed = _job(stores, "job-resume-fail-001", TrainingJobStatus.FAILED)
         assert failed.status == TrainingJobStatus.FAILED
         assert failed.resume_checkpoint_path is not None, (
             "resume_checkpoint_path must be set when a state dir exists in the output_dir"
@@ -499,6 +525,7 @@ class TestExecutorSetsResumePathOnFailure:
             write_jobs=write_jobs,
             scheduler=sched,
             runner=runner,
+            thread_factory=_recorded_thread_factory,
         )
 
         args = [
@@ -508,7 +535,8 @@ class TestExecutorSetsResumePathOnFailure:
         ]
         ex.enqueue_with_command(_DEFAULT_PROJECT, "job-resume-fail-002", args, Path("."))
 
-        failed = _wait(stores, "job-resume-fail-002", TrainingJobStatus.FAILED)
+        ex.run_until_idle()
+        failed = _job(stores, "job-resume-fail-002", TrainingJobStatus.FAILED)
         assert failed.status == TrainingJobStatus.FAILED
         assert failed.resume_checkpoint_path is None, (
             "resume_checkpoint_path must remain None when no state dirs were found"
@@ -538,6 +566,7 @@ class TestExecutorSetsResumePathOnFailure:
             write_jobs=write_jobs,
             scheduler=sched,
             runner=runner,
+            thread_factory=_recorded_thread_factory,
         )
 
         args = [
@@ -547,7 +576,8 @@ class TestExecutorSetsResumePathOnFailure:
         ]
         ex.enqueue_with_command(_DEFAULT_PROJECT, "job-resume-success-001", args, Path("."))
 
-        completed = _wait(stores, "job-resume-success-001", TrainingJobStatus.COMPLETED)
+        ex.run_until_idle()
+        completed = _job(stores, "job-resume-success-001", TrainingJobStatus.COMPLETED)
         assert completed.status == TrainingJobStatus.COMPLETED
         assert completed.resume_checkpoint_path is None, (
             "resume_checkpoint_path must be None on a successfully completed job"
@@ -627,10 +657,12 @@ class TestResumeCheckpointWiredThroughExecutor:
             asset_store_resolver=lambda pid: FakeAssetStore(),
             project_dir_resolver=lambda pid: project_dir,
             workers_service=_FakeWorkersService(tmp_path / "workers" / "kohya-ss"),
+            thread_factory=_recorded_thread_factory,
         )
 
         ex.enqueue(_DEFAULT_PROJECT, "live-resume-job-001")
-        _wait(stores, "live-resume-job-001", TrainingJobStatus.COMPLETED)
+        ex.run_until_idle()
+        _job(stores, "live-resume-job-001", TrainingJobStatus.COMPLETED)
 
         assert len(fake_runner.calls) == 1
         captured_args, _captured_cwd = fake_runner.calls[0]
@@ -687,10 +719,12 @@ class TestResumeCheckpointWiredThroughExecutor:
             asset_store_resolver=lambda pid: FakeAssetStore(),
             project_dir_resolver=lambda pid: project_dir,
             workers_service=_FakeWorkersService(tmp_path / "workers" / "kohya-ss"),
+            thread_factory=_recorded_thread_factory,
         )
 
         ex.enqueue(_DEFAULT_PROJECT, "live-fresh-job-001")
-        _wait(stores, "live-fresh-job-001", TrainingJobStatus.COMPLETED)
+        ex.run_until_idle()
+        _job(stores, "live-fresh-job-001", TrainingJobStatus.COMPLETED)
 
         captured_args, _ = fake_runner.calls[0]
         assert "--resume" not in captured_args, (

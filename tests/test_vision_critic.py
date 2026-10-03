@@ -17,6 +17,7 @@ import pytest
 from fastapi import HTTPException
 
 from core.config import Settings
+from core.consultant.fidelity import parse_character_checklist
 from core.llm import vision
 from core.llm.providers import ollama, openai
 from core.models.schemas import BodyRegion, FidelityCheck
@@ -590,3 +591,65 @@ class TestGate5SecondOpinion:
         )
         head_result = next(r for r in results if r.id == "head-1")
         assert head_result.verdict == "unverified"
+
+
+# 100% synthetic minimal SSOT pair — never a real character's text (repo
+# convention, see tests/test_fidelity_parser.py's own fixture docstring).
+_FORMAT_SETTING_MD = """# 角色設定：測試花
+
+## 🎨 外型特徵
+- **髮型**：銀色長髮。
+- **瞳色**：紫色瞳孔。
+"""
+
+_FORMAT_OUTFITS_MD = """# 服裝與形態變體：測試花
+
+## 👗 常駐服裝
+1. **[Default] 常駐服裝**:
+    - **身體服裝**：白色連身裙。
+    - **生成提示詞**：
+        - **ComfyUI**: `white dress`
+"""
+
+
+class TestCritiqueResultFormat:
+    """The data-format claims of the former live check
+    (``scripts/check_fidelity_loop_live.py``, which ran a real Ollama call),
+    asserted here against FIXED fake Ollama responses on the same product
+    path: ``parse_character_checklist`` -> ``vision.critique``."""
+
+    def test_round0_critique_returns_one_gated_result_per_check_with_well_formed_fields(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        checks = parse_character_checklist(_FORMAT_SETTING_MD, _FORMAT_OUTFITS_MD, "Default")
+        assert len(checks) >= 2, "the fixture must yield several checks or the claims below are vacuous"
+
+        # Fixed answers for every check id: a mix of pass/fail, a missing bbox,
+        # and confidences across the range.
+        answers = [
+            (True, [400, 400, 500, 500], 0.9),
+            (False, [10, 10, 100, 100], 0.8),
+            (True, None, 0.55),
+            (False, [200, 300, 400, 500], 1.0),
+        ]
+        results_json = []
+        for index, check in enumerate(checks):
+            passed, bbox, confidence = answers[index % len(answers)]
+            results_json.append(_result_json(check.id, passed, bbox, confidence))
+        _stub_ollama_tags(monkeypatch)
+        _stub_ollama_chat_sequence(monkeypatch, [json.dumps({"results": results_json})])
+
+        results = vision.critique(
+            _settings(second_opinion="off"), b"fake-image-bytes", checks, 1000, 1000, NetworkState.OFFLINE
+        )
+
+        # One gated result per check, covering exactly the check ids.
+        assert len(results) == len(checks)
+        assert {result.id for result in results} == {check.id for check in checks}
+        for result in results:
+            assert isinstance(result.passed, bool)
+            assert 0.0 <= result.confidence <= 1.0
+            if result.region_bbox is not None:
+                x0, y0, x1, y1 = result.region_bbox
+                assert x0 < x1
+                assert y0 < y1

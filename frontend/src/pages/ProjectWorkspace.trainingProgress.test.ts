@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 
+import { apiClient } from "@/api/client";
 import ProjectWorkspace from "@/pages/ProjectWorkspace.vue";
 import { i18n } from "@/i18n";
 import type { TrainingJob } from "@/types/api";
@@ -110,7 +111,7 @@ function instanceForJob(jobId: string): MockEventSource {
 }
 
 function makeJob(overrides: Partial<TrainingJob> = {}): TrainingJob {
-  const now = new Date().toISOString();
+  const now = "2026-01-15T12:00:00.000Z";
   return {
     id: "job-1",
     project_id: PROJECT_ID,
@@ -146,7 +147,6 @@ afterEach(() => {
 });
 
 async function mountWorkspace(initialJobs: TrainingJob[]): Promise<VueWrapper> {
-  const { apiClient } = await import("@/api/client");
   vi.mocked(apiClient.projectTrainingWorkspace).mockResolvedValue({ jobs: initialJobs });
 
   const instance = mount(ProjectWorkspace, {

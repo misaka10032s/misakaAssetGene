@@ -17,7 +17,18 @@ const TEST_FILE_RE = /\.(test|spec)\.[cm]?[jt]sx?$/
 const CONFIG_FILE_RE = /\.config\.[cm]?[jt]s$/
 const SCOPE_PREFIX = 'frontend/src/'
 const REPORT_PATH = path.join(cwd, 'reports', 'mutation', 'mutation.json')
-const NOT_KILLED = new Set(['Survived', 'NoCoverage'])
+// Never counted as killed (D:/backup/CSIA/@PM/.claude/context/cluster-conventions.md, G6): a surviving or
+// uncovered mutant, a mutant stopped only by a wall-clock limit (`Timeout`, unless Stryker's own
+// deterministic loop counter stopped it: statusReason starts with 'Hit limit reached'), and a crash.
+const NOT_KILLED = new Set(['Survived', 'NoCoverage', 'Timeout', 'RuntimeError'])
+const HIT_LIMIT_REASON_PREFIX = 'Hit limit reached'
+
+function isNotKilled(mutant) {
+  const stoppedByLoopCounter = mutant.status === 'Timeout'
+    && String(mutant.statusReason ?? '').startsWith(HIT_LIMIT_REASON_PREFIX)
+  if (stoppedByLoopCounter) return false
+  return NOT_KILLED.has(mutant.status)
+}
 
 function toRanges(lineSet) {
   const lines = [...lineSet].sort((a, b) => a - b)
@@ -83,21 +94,22 @@ async function main() {
     if (!changedFileSet.has(normalizedFile)) continue
     const lineSet = changedLines.get(normalizedFile) ?? new Set()
     for (const mutant of data.mutants) {
-      if (!NOT_KILLED.has(mutant.status)) continue
+      if (!isNotKilled(mutant)) continue
       if (!lineSet.has(mutant.location.start.line)) continue
       survivors.push({ file: normalizedFile, ...mutant })
     }
   }
 
   if (survivors.length > 0) {
-    console.error(`\n[G6] FAIL — ${survivors.length} surviving/uncovered mutant(s) in the diff:`)
+    console.error(`\n[G6] FAIL — ${survivors.length} not-killed mutant(s) in the diff (surviving, uncovered, timed out or crashed):`)
     for (const s of survivors) {
-      console.error(`  - ${s.file}:${s.location.start.line} [${s.status}] ${s.mutatorName} -> \`${s.replacement}\``)
+      const reason = s.statusReason ? ` (${s.statusReason})` : ''
+      console.error(`  - ${s.file}:${s.location.start.line} [${s.status}]${reason} ${s.mutatorName} -> \`${s.replacement}\``)
     }
     return 1
   }
 
-  console.log(`\n[G6] PASS — 0 surviving mutants in the diff.`)
+  console.log(`\n[G6] PASS — 0 not-killed mutants in the diff.`)
   return 0
 }
 

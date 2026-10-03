@@ -6,16 +6,16 @@ Coverage:
 - Zip-slip rejection (security)
 - Manifest schema validation
 - Size sanity check
-- RW lock: concurrent thread access to _external/ without corruption
+- RW lock: every read-modify-write of _external/ runs inside the held lock
 - API endpoint: POST /api/v1/projects/import
 """
 from __future__ import annotations
 
 import io
 import json
-import threading
+import shutil
 import time
-import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -23,6 +23,7 @@ import pytest
 from starlette.testclient import TestClient
 
 import core.main as main
+import core.project.cross_project as cross_project_module
 import core.project.portability as portability_module
 from core.project.cross_project import (
     copy_external_asset,
@@ -488,23 +489,72 @@ def test_update_origins_json_creates_and_merges(tmp_path: Path) -> None:
     assert "copied_at" in alpha_entry
 
 
-def test_rw_lock_concurrent_copy_no_corruption(tmp_path: Path) -> None:
-    """Concurrent threads calling copy_external_asset should not corrupt files.
+def test_rw_lock_concurrent_copy_no_corruption(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """12 writers calling copy_external_asset + update_origins_json leave every
+    file intact and origins.json valid with all 12 entries, AND every copy,
+    every origins.json read and every origins.json write happens while the
+    exclusive lock is held (the read and the write of one update inside the
+    SAME hold).
 
-    Each thread writes a unique source file and a shared origins.json entry.
-    After all threads finish, every file must exist with the correct content
-    and origins.json must be valid JSON containing all entries.
+    No threads: the 12 writers run in sequence on the test thread.  What the
+    lock guarantees is observed directly instead of provoked by a race: the
+    lock, ``shutil.copy2``, ``json.loads`` and ``write_json_atomic`` of
+    ``core.project.cross_project`` are wrapped by recorders that note whether
+    the lock is held (and which hold, a "span") at each call.
     """
+    state = {"held": False, "span": 0}
+    # (kind, held, span) in call order.
+    records: list[tuple[str, bool, int]] = []
+
+    real_acquire_file_lock = cross_project_module._acquire_file_lock
+
+    @contextmanager
+    def recording_acquire_file_lock(*args: object, **kwargs: object):
+        with real_acquire_file_lock(*args, **kwargs):
+            state["span"] += 1
+            state["held"] = True
+            try:
+                yield
+            finally:
+                state["held"] = False
+
+    class _RecordingShutil:
+        def copy2(self, *args: object, **kwargs: object) -> object:
+            records.append(("copy2", state["held"], state["span"]))
+            return shutil.copy2(*args, **kwargs)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(shutil, name)
+
+    class _RecordingJson:
+        def loads(self, *args: object, **kwargs: object) -> object:
+            records.append(("loads", state["held"], state["span"]))
+            return json.loads(*args, **kwargs)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(json, name)
+
+    real_write_json_atomic = cross_project_module.write_json_atomic
+
+    def recording_write_json_atomic(*args: object, **kwargs: object) -> None:
+        records.append(("write_json_atomic", state["held"], state["span"]))
+        real_write_json_atomic(*args, **kwargs)
+
+    monkeypatch.setattr(cross_project_module, "_acquire_file_lock", recording_acquire_file_lock)
+    monkeypatch.setattr(cross_project_module, "shutil", _RecordingShutil())
+    monkeypatch.setattr(cross_project_module, "json", _RecordingJson())
+    monkeypatch.setattr(cross_project_module, "write_json_atomic", recording_write_json_atomic)
+
     dest_project_dir = tmp_path / "dest"
     (dest_project_dir / "_external").mkdir(parents=True, exist_ok=True)
 
-    N = 12  # number of concurrent writers
+    N = 12  # number of writers
     errors: list[Exception] = []
     written: list[tuple[str, bytes]] = []
 
     def worker(i: int) -> None:
         src = tmp_path / f"src_{i}.bin"
-        content = f"content-{i}-{uuid.uuid4().hex}".encode()
+        content = f"content-{i}-{i:032x}".encode()
         src.write_bytes(content)
         written.append((f"images/asset_{i}.bin", content))
         try:
@@ -523,11 +573,8 @@ def test_rw_lock_concurrent_copy_no_corruption(tmp_path: Path) -> None:
         except Exception as exc:
             errors.append(exc)
 
-    threads = [threading.Thread(target=worker, args=(i,)) for i in range(N)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=30)
+    for i in range(N):
+        worker(i)
 
     assert not errors, f"Errors during concurrent access: {errors}"
 
@@ -548,6 +595,25 @@ def test_rw_lock_concurrent_copy_no_corruption(tmp_path: Path) -> None:
     for i in range(N):
         expected = f"_external/src-proj/images/asset_{i}.bin"
         assert expected in local_paths, f"Missing origin entry {i}: {expected}"
+
+    # The lock discipline itself: every copy / read / write ran with the lock held.
+    copies = [r for r in records if r[0] == "copy2"]
+    loads = [r for r in records if r[0] == "loads"]
+    writes = [r for r in records if r[0] == "write_json_atomic"]
+    assert len(copies) == N
+    assert len(writes) == N
+    assert len(loads) == N - 1, "origins.json is read by every update except the first (no file yet)"
+    assert all(held for _kind, held, _span in records), (
+        f"a copy, read or write ran WITHOUT the lock held: {records}"
+    )
+    # Read and write of one update_origins_json call are inside ONE hold:
+    # call k (k >= 2) reads with the same span in which it writes.
+    write_spans = [span for _kind, _held, span in writes]
+    load_spans = [span for _kind, _held, span in loads]
+    assert len(set(write_spans)) == N, "each update must write inside its own lock hold"
+    assert load_spans == write_spans[1:], (
+        "the origins.json read must be in the same lock hold as the write of that update"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -131,20 +131,31 @@ class TestSubmitJobResumePathContainment:
     ) -> None:
         """A symlink planted inside models/ pointing outside the project must
         not be usable to escape containment — resolve() must follow it before
-        the relative_to() check runs."""
-        service, project_id, project_dir = service_with_project
+        the relative_to() check runs.
+
+        The operating system's symlink resolution is replaced by the
+        ``resolve_path`` parameter: the injected resolver answers that
+        ``models/sneaky-state`` resolves to a directory outside the project,
+        exactly what ``Path.resolve`` answers for a real symlink, so no
+        symlink (and no symlink privilege) is needed."""
+        _service, _project_id, project_dir = service_with_project
         models_dir = project_dir / "models"
         models_dir.mkdir(parents=True)
         real_outside = project_dir.parent / "outside-target"
         real_outside.mkdir(parents=True)
-        symlink_path = models_dir / "sneaky-state"
-        try:
-            symlink_path.symlink_to(real_outside, target_is_directory=True)
-        except (OSError, NotImplementedError):
-            pytest.skip("symlink creation not permitted in this environment")
+        sneaky_path = models_dir / "sneaky-state"
+        sneaky_path.mkdir()
+
+        def resolve_with_symlink(path: Path) -> Path:
+            # "sneaky-state" behaves as a symlink pointing at real_outside.
+            if path == sneaky_path:
+                return real_outside
+            return path.resolve()
 
         with pytest.raises(TrainingValidationError):
-            service.submit_job(project_id, _payload(resume_checkpoint_path=str(symlink_path)))
+            TrainingService._validate_resume_checkpoint_path(
+                project_dir, str(sneaky_path), resolve_path=resolve_with_symlink
+            )
 
 
 # ---------------------------------------------------------------------------

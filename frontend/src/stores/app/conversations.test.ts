@@ -28,7 +28,7 @@ function makeEntry(overrides: Partial<ConversationEntry> = {}): ConversationEntr
     id: "entry-1",
     role: "user",
     content: "hello",
-    created_at: new Date().toISOString(),
+    created_at: "2026-01-15T12:00:00.000Z",
     modality: null,
     questions: [],
     analysis: null,

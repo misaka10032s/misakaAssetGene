@@ -417,45 +417,52 @@ class TestAdvanceConcurrency:
 
         service = main.fidelity_service
         store = main._fidelity_store(project_id)
-        entered = threading.Event()
-        release = threading.Event()
         original_claim_round = store.claim_round
 
-        def blocking_claim_round(*args: object, **kwargs: object) -> bool:
-            # Block BEFORE the atomic DB claim actually runs, so the loop's
-            # DB status is STILL "awaiting_user" while the first advance()
-            # holds this window — exercising the exact race the fix targets
-            # (both callers observe the same awaiting status before either
-            # writes back). The SECOND advance() must then be rejected by
-            # the in-process lock (acquired earlier in advance(), before
+        class _NonBlockingGuardLock:
+            """Real ``threading.Lock`` whose ``acquire`` refuses to block on a
+            held lock: a "blocking acquire" mutant fails with an
+            AssertionError instead of hanging on the same thread."""
+
+            def __init__(self) -> None:
+                self._inner = threading.Lock()
+
+            def acquire(self, blocking: bool = True) -> bool:
+                if blocking and self._inner.locked():
+                    raise AssertionError("blocking acquire on a held guard")
+                return self._inner.acquire(blocking)
+
+            def release(self) -> None:
+                self._inner.release()
+
+        service._loop_locks[loop_id] = _NonBlockingGuardLock()  # type: ignore[assignment]
+
+        entries: list[int] = []
+
+        def nested_second_advance_claim_round(*args: object, **kwargs: object) -> bool:
+            # The first advance() is INSIDE the round body here, holding the
+            # in-process per-loop lock, BEFORE the atomic DB claim actually
+            # runs — so the loop's DB status is STILL "awaiting_user" (the
+            # exact window of the race the fix targets: both callers observe
+            # the same awaiting status before either writes back). A SECOND
+            # advance() issued right now, on the same thread, must be rejected
+            # by the in-process lock (acquired earlier in advance(), before
             # this point), never by falling through to a stale re-read.
-            entered.set()
-            release.wait(timeout=5)
+            entries.append(1)
+            if len(entries) == 1:
+                with pytest.raises(FidelityLoopConflictError):
+                    service.advance(project_id, loop_id)
             return original_claim_round(*args, **kwargs)
 
-        monkeypatch.setattr(store, "claim_round", blocking_claim_round)
+        monkeypatch.setattr(store, "claim_round", nested_second_advance_claim_round)
 
-        results: dict[str, object] = {}
+        first = service.advance(project_id, loop_id)
 
-        def run_first_advance() -> None:
-            try:
-                results["first"] = service.advance(project_id, loop_id)
-            except Exception as error:
-                results["first"] = error
-
-        first_thread = threading.Thread(target=run_first_advance)
-        first_thread.start()
-        assert entered.wait(timeout=5), "first advance() never entered the round body"
-
-        with pytest.raises(FidelityLoopConflictError):
-            service.advance(project_id, loop_id)
-
-        release.set()
-        first_thread.join(timeout=5)
-        assert not first_thread.is_alive()
-
-        assert isinstance(results.get("first"), FidelityLoopData)
-        assert results["first"].loop.status is FidelityLoopStatus.PASSED
+        assert isinstance(first, FidelityLoopData)
+        assert first.loop.status is FidelityLoopStatus.PASSED
+        # The conflicting second call never reached the DB claim: the claim ran
+        # once, for the first call only.
+        assert len(entries) == 1
         # Exactly one round ran end-to-end (mask + refine each called once) —
         # the conflicting second call never entered the round body at all.
         assert len(fake.mask_calls) == 1

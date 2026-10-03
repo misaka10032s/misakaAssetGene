@@ -109,7 +109,6 @@
   "tests/test_asset_file_route.py|I001|Import block is un-sorted or un-formatted",
   "tests/test_asset_store.py|F401|`core.project.manager.ProjectCreateRequest` imported but unused",
   "tests/test_asset_store.py|I001|Import block is un-sorted or un-formatted",
-  "tests/test_batch_execute.py|I001|Import block is un-sorted or un-formatted",
   "tests/test_batch_execute.py|UP017|Use `datetime.UTC` alias",
   "tests/test_comfyui_adapter.py|UP017|Use `datetime.UTC` alias",
   "tests/test_cross_project_resolver.py|F401|`core.project.cross_project._sha256_file` imported but unused",
@@ -131,7 +130,6 @@
   "tests/test_license_report.py|F401|`core.models.schemas.Modality` imported but unused",
   "tests/test_license_report.py|F811|Redefinition of unused `GenerationJobStatus` from line 24: `GenerationJobStatus` redefined here",
   "tests/test_license_report.py|F811|Redefinition of unused `Modality` from line 27: `Modality` redefined here",
-  "tests/test_license_report.py|I001|Import block is un-sorted or un-formatted",
   "tests/test_license_report.py|RUF059|Unpacked variable `note` is never used",
   "tests/test_license_report.py|UP017|Use `datetime.UTC` alias",
   "tests/test_live_worker_readiness.py|F401|`unittest.mock.MagicMock` imported but unused",
@@ -149,9 +147,7 @@
   "tests/test_project_id_validation.py|F401|`core.project.manager.ProjectNotFoundError` imported but unused",
   "tests/test_read_jobs_compat.py|F401|`core.models.schemas.GenerationJobStatus` imported but unused",
   "tests/test_read_jobs_compat.py|F401|`core.models.schemas.GenerationJob` imported but unused",
-  "tests/test_read_jobs_compat.py|I001|Import block is un-sorted or un-formatted",
   "tests/test_read_jobs_compat.py|UP017|Use `datetime.UTC` alias",
-  "tests/test_refine_service.py|F401|`datetime.timezone` imported but unused",
   "tests/test_setup_diagnostics.py|F401|`pytest` imported but unused",
   "tests/test_setup_diagnostics.py|F401|`re` imported but unused",
   "tests/test_setup_diagnostics.py|F401|`scripts.lib.setup_ai_explain.NO_KEY_GUIDANCE` imported but unused",
@@ -161,7 +157,6 @@
   "tests/test_training_flow.py|I001|Import block is un-sorted or un-formatted",
   "tests/test_training_flow.py|UP037|Remove quotes from type annotation",
   "tests/test_training_resume.py|F401|`core.training.executor.RunResult` imported but unused",
-  "tests/test_training_resume.py|F401|`threading` imported but unused",
   "tests/test_training_resume.py|I001|Import block is un-sorted or un-formatted",
   "tests/test_training_resume.py|UP017|Use `datetime.UTC` alias",
   "tests/test_training_stream.py|UP017|Use `datetime.UTC` alias",
@@ -174,6 +169,5 @@
   "tests/test_version_tree.py|I001|Import block is un-sorted or un-formatted",
   "tests/test_version_tree.py|UP017|Use `datetime.UTC` alias",
   "tests/test_vram_scheduler.py|F841|Local variable `model` is assigned to but never used",
-  "tests/test_vram_scheduler.py|RUF059|Unpacked variable `clock` is never used",
-  "tests/test_vram_scheduler.py|RUF100|Unused `noqa` directive (non-enabled: `BLE001`)"
+  "tests/test_vram_scheduler.py|RUF059|Unpacked variable `clock` is never used"
 ]

@@ -28,6 +28,9 @@ from core.models.schemas import (
 )
 from core.project.manager import ProjectManager
 
+# Fixed instant for every seeded record: no test here reads the real clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+
 
 # ---------------------------------------------------------------------------
 # Minimal fakes
@@ -55,7 +58,7 @@ class _FakeWorkers:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return FIXED_NOW
 
 
 def _make_job(**kwargs) -> GenerationJob:
