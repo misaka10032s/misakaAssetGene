@@ -1,23 +1,17 @@
 # misakaAssetGene — Claude collaboration guide
 
-Desktop-first multimodal asset workbench.
-
-Consultant-style dialogue integrates image generation, character lines, voice, songs, and video — plus downstream LoRA/GPT-SoVITS training pipelines.
-
-Stack: Tauri + Vue 3/Vite/UnoCSS (frontend) · Python/FastAPI (core API) · Ollama (local LLM).
+Desktop-first multimodal asset workbench; consultant-style dialogue integrates image generation, character lines, voice, songs, and video — plus downstream LoRA/GPT-SoVITS training pipelines; stack: Tauri + Vue 3/Vite/UnoCSS (frontend) · Python/FastAPI (core API) · Ollama (local LLM).
 
 > Cluster rules: `D:/backup/CSIA/@PM/.claude/CLAUDE.md` `## Before doing X, read Y`.
 
 ## Context index
 
-- `docs/superpowers/specs/spec.md` — **SINGLE SOURCE OF TRUTH (spec-first).**
-  - **MUST read before ANY change; update spec here FIRST, then code.**
+- `docs/superpowers/specs/spec.md` — **SINGLE SOURCE OF TRUTH (spec-first).** **MUST read before ANY change; update spec here FIRST, then code.**
 
 ## Core principles
 
 1. **Spec-first:** When a new requirement arrives, discuss feasibility, architectural impact, risks, and implementation approach with the `architect` role using `docs/superpowers/specs/spec.md`, then update `docs/superpowers/specs/spec.md` only after confirmation (spec lives at `docs/superpowers/specs/spec.md`).
-2. **Plan-aware:** `.plan/DEVELOPMENT_PLAN.md` defines development roles and workflows; `.plan/RESEARCH_LOG.md` records research conclusions and spec amendments.
-   - Completed items must be marked as **Done** in the research log.
+2. **Plan-aware:** `.plan/DEVELOPMENT_PLAN.md` defines development roles and workflows; `.plan/RESEARCH_LOG.md` records research conclusions and spec amendments; completed items must be marked as **Done** in the research log.
 3. **Repo boundary:** Always treat third-party repos as external dependencies — use an independent clone or download artifacts; they must not be tracked by this project's git; no submodule / subtree.
 4. **Multimodal by default:** Feature designs must not assume a single asset output type; must be able to handle composite deliverables including images, character lines, character voices, songs, videos, and animated stills.
 5. **Open-source friendly:** Any workflow, spec, and documentation should consider readability, executability, and license clarity for external contributors.
@@ -66,34 +60,30 @@ uv sync --extra dev              # install/refresh the Python dev toolchain (.ve
 
 ## Code quality gates
 
-Hybrid repo — Vue/TS frontend (`frontend/`) and Python core (`core/`, `tests/`) each get their own gate family.
-
-Config/thresholds/baselines live in normal tool locations (`package.json`, `pyproject.toml`, `quality-gates/`), never under `.claude/`.
-
-Test layers: at commit (the hook) only the **commit** level runs: lint of the staged files, the determinism scan, the assertion check and only the tests related to the staged files, within 10 seconds; at the end of the task (before merge, once) the task's one full run: **L1** (L0 + diff coverage [+ mutation on the JS/TS side]), where **L0** is its whole-project first part (type-check, whole suite, import cycles).
+Hybrid repo — Vue/TS frontend (`frontend/`) and Python core (`core/`, `tests/`) each get their own gate family; config/thresholds/baselines live in normal tool locations (`package.json`, `pyproject.toml`, `quality-gates/`), never under `.claude/`; test layers: at commit (the hook) only the **commit** level runs, within 10 seconds: each touched stack classes its staged files by path and runs lint on the staged files, the determinism check on the staged test, setup and gate files and the assertion check, with no test run; at the end of the task (before merge, once) the task's one full run: **L1** (`npm run gate:l1` and `.venv/Scripts/python.exe quality-gates/python/run.py l1`: L0 + diff coverage [+ mutation on the JS/TS side]), where **L0** is its whole-project first part (type-check, whole suite, import cycles).
 
 ```bash
 # JS/TS (frontend/) — from repo root
 npm run gate:g1   # eslint, diff-LINE-scoped (880 pre-existing warnings on the whole tree —
                    # see below; this gate only fails on NEW warnings/errors on changed lines)
 npm run gate:g2   # vue-tsc --project frontend/tsconfig.json --noEmit, baselined (0 pre-existing)
-npm run gate:g3   # vitest run + assertion-presence on new/changed test files
+npm run gate:g3   # vitest run + assertion-presence on new/changed test files + same-result check (whole test scope)
 npm run gate:g4   # madge import-cycle check, baselined (0 pre-existing cycles)
 npm run gate:g5   # vitest run --coverage + diff-coverage.mjs (>=60% of changed lines)
 npm run gate:g6   # Stryker mutation testing, scoped to the diff's changed line ranges
-npm run gate:commit # commit level: eslint on the STAGED files' changed lines + determinism scan + assertion check on staged
-                   # test files + `vitest related` on the staged files; no type-check, no whole vitest
+npm run gate:commit # commit level, by the staged files' classes: eslint on the STAGED files' changed lines + determinism
+                   # on staged test, setup and gate files + assertion check on staged test files, at the same time; no test run, no type-check
 npm run gate:l0   # g1+g2+g3+g4 — exits 0 on the untouched tree (~11s)
-npm run gate:l1   # l0+g5+g6   — exits 0 on the untouched tree (14 test files)
+npm run gate:l1   # l0+g5+g6   — exits 0 on the untouched tree (15 test files)
 
 # Python (core/, tests/) — from repo root, using the repo's own uv-managed .venv
 .venv/Scripts/python quality-gates/python/run.py g1   # ruff check ., baselined (count: `quality-gates/python/ruff-baseline.json`)
 .venv/Scripts/python quality-gates/python/run.py g2   # mypy core --strict, baselined (count: `quality-gates/python/mypy-baseline.json`)
-.venv/Scripts/python quality-gates/python/run.py g3   # pytest -q + AST assertion-presence on new/changed tests
+.venv/Scripts/python quality-gates/python/run.py g3   # pytest -q + AST assertion-presence on new/changed tests + same-result check (whole test scope)
 .venv/Scripts/python quality-gates/python/run.py g4   # import-linter acyclic_siblings, baselined (2 pre-existing edges)
 .venv/Scripts/python quality-gates/python/run.py g5   # pytest --cov=core --cov-report=xml + diff-cover (>=60%)
-.venv/Scripts/python quality-gates/python/run.py commit # commit level: ruff on the STAGED files + determinism scan + assertion check
-                   # on staged test files + pytest on `related_tests.py`'s files; no mypy, no whole pytest
+.venv/Scripts/python quality-gates/python/run.py commit # commit level, by the staged files' classes: ruff on the STAGED .py files + determinism
+                   # on staged test, setup and gate files + assertion check on staged test files; no test run, no mypy
 .venv/Scripts/python quality-gates/python/run.py l0   # g1+g2+g3+g4 — exits 0 on the untouched tree (~16s)
 .venv/Scripts/python quality-gates/python/run.py l1   # l0+g5        — exits 0 on the untouched tree (~33s)
 
@@ -106,46 +96,30 @@ npm run gate:g4:update-baseline
 .venv/Scripts/python quality-gates/python/run.py g4 --update-baseline
 ```
 
-- **Pre-commit hook** (`.githooks/pre-commit`) runs ONLY the commit level of whichever stack(s) the commit actually touches (staged-file-list based: `frontend/*` -> JS/TS `gate:commit`; `core/*`/`tests/*`/`scripts/*` -> Python `quality-gates/python/run.py commit`; a staged `quality-gates/` file, determinism canary, `requirements*.txt`, the hook or a test config also triggers it).
-  - Hook path: `git config core.hooksPath .githooks`, run once per clone; it is not self-installing, and a detached HEAD or `git commit --no-verify` skips it (`D:/backup/CSIA/@PM/.claude/context/cluster-conventions.md` `### Hook carrier (L0 enforcement)`).
+- **Pre-commit hook** (`.githooks/pre-commit`) runs ONLY the commit level of whichever stack(s) the commit actually touches, the touched stacks at the same time (staged-file-list based, deletes included: `frontend/*` -> JS/TS `gate:commit`; `core/*`/`tests/*`/`scripts/*` -> Python `quality-gates/python/run.py commit`; a staged `quality-gates/` file, determinism canary, `requirements*.txt`, the hook, any `conftest.py`, `pytest.ini`, `pyproject.toml`, `vite.config.*`, `vitest.config.*` or `package.json` triggers both); hook path: `git config core.hooksPath .githooks`, run once per clone; it is not self-installing, and a detached HEAD or `git commit --no-verify` skips it (`D:/backup/CSIA/@PM/.claude/context/cluster-conventions.md` `### Hook carrier (commit-level enforcement)`).
 
 **Repo-specific gate rules (evidence-based; full incident history: `docs/superpowers/decisions/2026-09-09-quality-gate-history.md`):**
 
-- **G1 lints only diff-changed lines**, never repo-wide `--max-warnings=0` — `frontend/src/**` carries 880 pre-existing ESLint warnings (almost all Vue formatting rules: `vue/singleline-html-element-content-newline`, `vue/max-attributes-per-line`, `vue/html-*`).
-  - ESLint config: `eslint.config.mjs` (repo root — this repo has no `frontend/package.json` of its own, so it lives beside the root `package.json`; scoped to `frontend/src/**` only via `files`/`ignores`).
-- **G2 typecheck is NOT vacuous here** — `frontend/tsconfig.json` is a normal leaf config (`include: [...]`, no `files: []`/project-reference shape).
-  - Baseline is EMPTY (0 pre-existing errors).
+- **G1 (ESLint) lints only diff-changed lines**, never repo-wide `--max-warnings=0` — `frontend/src/**` carries 880 pre-existing ESLint warnings (almost all Vue formatting rules: `vue/singleline-html-element-content-newline`, `vue/max-attributes-per-line`, `vue/html-*`); ESLint config: `eslint.config.mjs` (repo root — this repo has no `frontend/package.json` of its own, so it lives beside the root `package.json`; scoped to `frontend/src/**` only via `files`/`ignores`).
+- **G2 typecheck is NOT vacuous here** — `frontend/tsconfig.json` is a normal leaf config (`include: [...]`, no `files: []`/project-reference shape); baseline is EMPTY (0 pre-existing errors).
 - **G3(b) assertion-presence requires the TS-capable parser** (`languageOptions.parser: tseslint.parser`) — without it, a typed `.test.ts` file parse-errors under the default `espree` parser and a zero-assertion block silently passes.
-- **G4 (Python) uses import-linter's `acyclic_siblings` contract** (`[tool.importlinter]` in `pyproject.toml`, `ancestors=["core"]`), NOT a hand-authored `layers` contract — `core/` is ~13 peer subsystems with no single strict dependency order across them.
-  - `quality-gates/python/check_import_cycles.py` calls `grimp.build_graph('core').nominate_cycle_breakers('core')` directly.
-  - Baseline: 2 pre-existing edges (`core.integration.workers -> core.generation.adapters.comfyui`, `core.network.service -> core.models.schemas`).
-- **G5 (Python) diff-coverage requires `[tool.coverage.run] source = ["core"]` AND every `core/**` subdirectory to carry `__init__.py`** (`core/reporting/__init__.py`) — coverage.py's unexecuted-file discovery is a `pkgutil`-style package walk that silently skips a directory with no `__init__.py`.
-  - `diff_coverage.py` additionally carries its own fail-safe (`_find_unmeasured_changed_files`): any changed `core/**/*.py` file with 1+ changed lines and ZERO entries in `coverage.xml` is a hard FAIL naming the file.
-- **G4 (Python) shares the same namespace-package requirement as G5** — `grimp.build_graph('core')` is the same kind of package walk; `check_import_cycles.py` carries the matching fail-safe (`_find_undiscovered_files`): every `core/**/*.py` file on disk must have a matching entry in grimp's module list, or the gate FAILs naming the undiscovered file(s).
-- **Every gate checks the tool's own exit code before trusting its output** (`quality-gates/python/lib/tool_run.py`'s `run_and_check` for Python, an equivalent inline check for JS): ruff/mypy `0`=clean, `1`=findings, anything else=crash; vue-tsc on this repo `0`=clean, `2`=diagnostics found, `1`=crash.
-  - **Prohibited:** parsing a subprocess's stdout/stderr as a finding list without first checking its exit code against this table.
+- **G4 (Python) uses import-linter's `acyclic_siblings` contract** (`[tool.importlinter]` in `pyproject.toml`, `ancestors=["core"]`), NOT a hand-authored `layers` contract — `core/` is ~13 peer subsystems with no single strict dependency order across them; `quality-gates/python/check_import_cycles.py` calls `grimp.build_graph('core').nominate_cycle_breakers('core')` directly; baseline: 2 pre-existing edges (`core.integration.workers -> core.generation.adapters.comfyui`, `core.network.service -> core.models.schemas`).
+- **G5 (Python) diff-coverage requires `[tool.coverage.run] source = ["core"]` AND every `core/**` subdirectory to carry `__init__.py`** (`core/reporting/__init__.py`) — coverage.py's unexecuted-file discovery is a `pkgutil`-style package walk that silently skips a directory with no `__init__.py`; `diff_coverage.py` additionally carries its own fail-safe (`_find_unmeasured_changed_files`): any changed `core/**/*.py` file with 1+ changed lines and ZERO entries in `coverage.xml` is a hard FAIL naming the file.
+- **G4 (Python import-linter) shares the same namespace-package requirement as G5 diff coverage** — `grimp.build_graph('core')` is the same kind of package walk; `check_import_cycles.py` carries the matching fail-safe (`_find_undiscovered_files`): every `core/**/*.py` file on disk must have a matching entry in grimp's module list, or the gate FAILs naming the undiscovered file(s).
+- **Every gate checks the tool's own exit code before trusting its output** (`quality-gates/python/lib/tool_run.py`'s `run_and_check` for Python, an equivalent inline check for JS): ruff/mypy `0`=clean, `1`=findings, anything else=crash; vue-tsc on this repo `0`=clean, `2`=diagnostics found, `1`=crash; **Prohibited:** parsing a subprocess's stdout/stderr as a finding list without first checking its exit code against this table.
 - **G2 (Python/mypy) validates its own config before trusting any output** — `check_mypy_baseline.py`'s `_validate_mypy_config` confirms `pyproject.toml` parses and its `[tool.mypy]` table carries `strict` + `disallow_untyped_defs`; mypy is invoked with `--config-file pyproject.toml` (bare relative name — required so mypy's own config-error lines on stderr are prefixed with that exact string for a substring check).
-  - **A vanished baseline finding is a FAILURE, not an informational note** — applies to G1 (ruff), G2 (mypy), AND G4 (import-linter).
-  - Legitimately shrinking a baseline requires an explicit `--update-baseline` step after confirming the improvement is real; a baseline cannot shrink silently while the gate still prints PASS.
-- **`--update-baseline` REFUSES to write (exit 1, baseline file unchanged) whenever a run has BOTH new AND resolved findings at once** — for G1, G2, and G4 alike, via the shared `quality-gates/python/lib/baseline.py`'s `report_and_decide()`.
-  - A new-only run (deliberately accepting debt) or a resolved-only run (a pure shrink) both proceed normally, naming every finding accepted or removed.
-  - A corrupt (non-JSON, or JSON-but-not-an-array) baseline file raises `baseline_lib.BaselineCorruptError` with a named `[G_] FAIL`, never a silent bypass.
-- **G6: none for Python — @PM cluster-conventions G6.**
-  - The JS/TS side DOES carry G6 (Stryker, `stryker.config.mjs` at repo root) — scoped to `frontend/src/**/*.ts` only (no maintained Vue-SFC mutator, so `.vue` component script blocks are a real, reported scope gap, not an oversight).
+- **A vanished baseline finding is a FAILURE, not an informational note** — applies to G1 (ruff), G2 (mypy), AND G4 (import-linter); legitimately shrinking a baseline requires an explicit `--update-baseline` step after confirming the improvement is real; a baseline cannot shrink silently while the gate still prints PASS.
+- **`--update-baseline` REFUSES to write (exit 1, baseline file unchanged) whenever a run has BOTH new AND resolved findings at once** — for G1 ruff, G2 mypy, and G4 import-linter alike, via the shared `quality-gates/python/lib/baseline.py`'s `report_and_decide()`; a new-only run (deliberately accepting debt) or a resolved-only run (a pure shrink) both proceed normally, naming every finding accepted or removed; a corrupt (non-JSON, or JSON-but-not-an-array) baseline file raises `baseline_lib.BaselineCorruptError` with a named `[G_] FAIL`, never a silent bypass.
+- **G6 diff mutation: none for Python — @PM cluster-conventions `## Code quality gates (ADR-030)`, "Python family: no G6 diff mutation".** The JS/TS side DOES carry G6 (Stryker, `stryker.config.mjs` at repo root) — scoped to `frontend/src/**/*.ts` only (no maintained Vue-SFC mutator, so `.vue` component script blocks are a real, reported scope gap, not an oversight).
 - **Scratch/generated dirs are explicitly excluded from every gate's scope**, never relying on a tool's default scan: `[tool.ruff] extend-exclude` and `[tool.mypy] exclude` in `pyproject.toml`; `vitest.config.ts`'s `test.exclude`; `eslint.config.mjs`'s `ignores`.
-- **G3/G5 on the JS/TS side exercise real tests** — 14 `.test.ts` files / 98 tests exist under `frontend/src/`.
-  - `vitest.config.ts` still sets `test.passWithNoTests: true` so an empty diff never false-reds, but `gate:g3`/`g5`/`g6` are exercising real pass/fail behavior.
-- Identity keys for every baseline (never a bare count): JS `file:line:col:code` (G2) or `file|ruleId|message` (G1, diff-scoped so this rarely matters); Python `relative/file.py|CODE|message` (G1/G2, line number excluded so unrelated edits don't shift identities) and `importer -> imported` module pairs (G4).
+- **G3 tests / G5 diff coverage on the JS/TS side exercise real tests** — 15 `.test.ts` files exist under `frontend/src/` (the write guard's own `src/test-utils/repoWriteGuard.test.ts` included); `vitest.config.ts` still sets `test.passWithNoTests: true` so an empty diff never false-reds, but `gate:g3`/`g5`/`g6` are exercising real pass/fail behavior.
+- Identity keys for every baseline (never a bare count): JS `file:line:col:code` (G2 typecheck) or `file|ruleId|message` (G1 lint, diff-scoped so this rarely matters); Python `relative/file.py|CODE|message` (G1 ruff / G2 mypy, line number excluded so unrelated edits don't shift identities) and `importer -> imported` module pairs (G4 import-linter).
+- **`scripts/check_fidelity_loop_live.py`** is a manual check of the live Ollama + ComfyUI round trip, run by hand from the repo root only while both services run (`py -3.11 scripts/check_fidelity_loop_live.py`, its header); it is outside `tests/`, so pytest never collects it and no gate runs it.
 
 ## Dev mode and diagnostic standards
 
-1. **Diagnostic output during development must be controlled by mode / env.**
-   - Python backend uses `MISAKA_ENV=dev`
-   - Frontend / Vite uses `VITE_MISAKA_ENV=dev` and `--mode development`
-   - Production builds must not output development debug messages by default
-2. **Build and dev must be isolated.**
-   - dev server, typecheck, build, doctor, and manager must each have a clearly defined command entry point
-   - When verifying, state whether it is a dev verification, build verification, or API/behavior verification
+1. **Diagnostic output during development must be controlled by mode / env.** Python backend uses `MISAKA_ENV=dev`; frontend / Vite uses `VITE_MISAKA_ENV=dev` and `--mode development`; production builds must not output development debug messages by default
+2. **Build and dev must be isolated.** dev server, typecheck, build, doctor, and manager must each have a clearly defined command entry point; when verifying, state whether it is a dev verification, build verification, or API/behavior verification
 3. **Development messages serve only verification purposes and must not pollute the end-user experience.**
 4. **When adding diagnostic output, simultaneously document the launch method, expected output, and disable condition.**
 5. **Env naming segregation:** backend reads `MISAKA_*` and provider secrets; frontend reads only `VITE_MISAKA_*`.
