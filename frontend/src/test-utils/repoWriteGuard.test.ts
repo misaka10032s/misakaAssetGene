@@ -523,3 +523,67 @@ describe('installing', () => {
         expect(guardedWrite(fixture.repoFile)).toBe(STAND_IN_RESULT);
     });
 });
+
+describe('boundary cases of the inside-the-repo test, the temp folder, the flags and the install loop', () => {
+    it('the folder that holds the repo (relative path "..") is outside the repo and allowed', () => {
+        useStandIns();
+        installRepoWriteGuard(options());
+        const parentFolder = path.dirname(fixture.repoRoot);
+        expect(guardedWrite(parentFolder)).toBe(STAND_IN_RESULT);
+        expect(standInOf('fs', 'writeFileSync').mock.calls).toEqual([[parentFolder, 'data']]);
+    });
+
+    it('a repo path whose relative path comes back absolute counts as outside the repo and is allowed', () => {
+        useStandIns();
+        const absoluteRelative = path.resolve(fixture.tmpDir, 'absolute-relative-probe');
+        const realRelative = path.relative.bind(path);
+        vi.spyOn(path, 'relative').mockImplementation((from: string, to: string) =>
+            (from === fixture.repoRoot && to === fixture.repoFile ? absoluteRelative : realRelative(from, to)));
+        installRepoWriteGuard(options());
+        expect(guardedWrite(fixture.repoFile)).toBe(STAND_IN_RESULT);
+        expect(standInOf('fs', 'writeFileSync').mock.calls).toEqual([[fixture.repoFile, 'data']]);
+    });
+
+    it('a temp folder that lies inside the repo is still allowed, a repo path next to it is refused', () => {
+        useStandIns();
+        const insideRepoTmp = path.join(fixture.repoRoot, 'guard-tmp-inside-repo');
+        vi.spyOn(os, 'tmpdir').mockReturnValue(insideRepoTmp);
+        installRepoWriteGuard(options());
+        const underTmp = path.join(insideRepoTmp, 'out.txt');
+        expect(guardedWrite(underTmp)).toBe(STAND_IN_RESULT);
+        expect(standInOf('fs', 'writeFileSync').mock.calls).toEqual([[underTmp, 'data']]);
+        expect(() => guardedWrite(fixture.repoFile)).toThrow(new Error(refusal('testGuard', 'writeFileSync', fixture.repoFile)));
+    });
+
+    it('open with flags that are neither a string nor a number (a bigint) is not a write and passes through', () => {
+        useStandIns();
+        installRepoWriteGuard(options());
+        expect(call(fsTable, 'openSync', [fixture.repoFile, 1n])).toBe(STAND_IN_RESULT);
+        expect(standInOf('fs', 'openSync').mock.calls).toEqual([[fixture.repoFile, 1n]]);
+    });
+
+    it('a function name that has no target positions is left unwrapped', () => {
+        useStandIns();
+        const untouched = fsTable.readFileSync;
+        saved.push({ table: fsTable, name: 'readFileSync', descriptor: Object.getOwnPropertyDescriptor(fsTable, 'readFileSync') });
+        const realKeys = Object.keys;
+        vi.spyOn(Object, 'keys').mockImplementation((target: object) => {
+            const keys = realKeys(target);
+            const isTargetTable = Array.isArray((target as Table).rename) && Array.isArray((target as Table).createWriteStream);
+            return isTargetTable ? [...keys, 'readFileSync'] : keys;
+        });
+        installRepoWriteGuard(options());
+        expect(fsTable.readFileSync).toBe(untouched);
+    });
+
+    it('a name outside the synchronous list gets no Sync wrapper', () => {
+        useStandIns();
+        const extra = vi.fn(() => STAND_IN_RESULT);
+        saved.push({ table: fsTable, name: 'createWriteStreamSync', descriptor: undefined });
+        fsTable.createWriteStreamSync = extra;
+        installRepoWriteGuard(options());
+        expect(fsTable.createWriteStreamSync).toBe(extra);
+        expect(call(fsTable, 'createWriteStreamSync', [fixture.repoFile])).toBe(STAND_IN_RESULT);
+        expect(extra.mock.calls).toEqual([[fixture.repoFile]]);
+    });
+});
