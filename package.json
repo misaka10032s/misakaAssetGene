@@ -27,6 +27,7 @@
     "gate:g4:update-baseline": "node quality-gates/frontend/check-import-cycles.mjs --update-baseline",
     "gate:g5": "vitest run --coverage && node quality-gates/frontend/diff-coverage.mjs",
     "gate:g6": "node quality-gates/frontend/mutation-diff.mjs",
+    "gate:commit": "node quality-gates/frontend/check-lint-diff.mjs --staged && node quality-gates/frontend/check-test-determinism.mjs && node quality-gates/frontend/check-test-assertions.mjs --staged && node quality-gates/frontend/run-related-tests.mjs",
     "gate:l0": "npm run gate:g1 && npm run gate:g2 && npm run gate:g3 && npm run gate:g4",
     "gate:l1": "npm run gate:l0 && npm run gate:g5 && npm run gate:g6"
   },

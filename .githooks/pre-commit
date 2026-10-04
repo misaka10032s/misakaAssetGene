@@ -1,12 +1,15 @@
 #!/bin/sh
-# L0 quality gate — runs ONLY the L0 of whichever stack(s) the commit actually touches
-# (frontend/ -> JS/TS gate:l0, core/|tests/|scripts/|pyproject.toml -> Python quality-gates/python
-# l0), derived from the staged file list. Adapted from misaka_site2.0's/mapleStoryAPI's single-
-# stack .githooks/pre-commit (verified recipe), extended to a hybrid repo.
+# Pre-commit gate - runs the COMMIT level of whichever stack(s) the commit actually touches
+# (frontend/ -> JS/TS `npm run gate:commit`, core/|tests/|scripts/|pyproject.toml -> Python
+# `quality-gates/python/run.py commit`), derived from the staged file list. Commit = staged-file lint +
+# determinism + related tests, within 10 seconds; end of the task (before merge) = the task's one full run
+# (JS/TS `npm run gate:l1`, Python `quality-gates/python/run.py l1`; `gate:l0` / `run.py l0` are its first part).
+# Adapted from misaka_site2.0's/mapleStoryAPI's single-stack .githooks/pre-commit (verified recipe), extended to a
+# hybrid repo.
 #
 # Enable once per clone/machine:
 #   git config core.hooksPath .githooks
-# (core.hooksPath is local, per-clone config — it does NOT travel with the repo, so a fresh
+# (core.hooksPath is local, per-clone config - it does NOT travel with the repo, so a fresh
 # clone or a new machine has this hook silently absent until the command above is run again.)
 set -e
 
@@ -15,34 +18,38 @@ cd "$repo_root"
 
 status=0
 
-# The determinism check (G3(c)) runs inside l0, so its own files (quality-gates/*, canaries included),
-# this hook and the test config also trigger the block (conftest.py, pytest.ini, pyproject.toml,
-# vite/vitest config, package.json).
-if git diff --cached --name-only --diff-filter=ACMR -- 'frontend/*' 'quality-gates/*' '.githooks/*' '*conftest.py' 'pytest.ini' 'pyproject.toml' 'vite.config.*' 'vitest.config.*' 'package.json' | grep -q .; then
-  echo "[pre-commit] frontend/ or determinism-scope changes staged - running JS/TS gate:l0 (G1 lint-diff, G2 typecheck baseline, G3 tests+assertions, G4 import cycles)..."
-  npm run gate:l0
-  status=$?
+# True when a staged path matches one of the given pathspecs, or one of the paths that every block also watches: any
+# requirements*.txt, any file under any quality-gates/ folder (every extension), any determinism canary file, this hook
+# itself, and the test config (conftest.py, pytest.ini, pyproject.toml, vite/vitest config, package.json) - so a change
+# to a checker, its canaries, a dependency pin, the hook or a test config cannot drop a check unseen.
+staged_matches() {
+  git diff --cached --name-only --diff-filter=ACMRD -- "$@" '*requirements*.txt' '*quality-gates/*' '*determinism-canaries/*' '.githooks/*' '*conftest.py' 'pytest.ini' 'pyproject.toml' 'vite.config.*' 'vitest.config.*' 'package.json' | grep -q .
+}
+
+if staged_matches 'frontend/*'; then
+  echo "[pre-commit] frontend/ or determinism-scope changes staged - running JS/TS gate:commit (staged-file lint, determinism, assertions, related tests)..."
+  status=0
+  npm run gate:commit || status=$?
   if [ "$status" -ne 0 ]; then
-    echo "[pre-commit] JS/TS gate:l0 FAILED - commit blocked. Fix the above and retry, or --no-verify to bypass (discouraged, logged as a rule violation)."
+    echo "[pre-commit] JS/TS gate:commit FAILED - commit blocked. Fix the above and retry, or --no-verify to bypass (discouraged, logged as a rule violation)."
     exit "$status"
   fi
-  echo "[pre-commit] JS/TS gate:l0 PASSED."
+  echo "[pre-commit] JS/TS gate:commit PASSED."
 else
-  echo "[pre-commit] no frontend/ or determinism-scope changes staged - skipping JS/TS gate:l0."
+  echo "[pre-commit] no frontend/ or determinism-scope changes staged - skipping JS/TS gate:commit."
 fi
 
-# Same trigger additions as the JS/TS block above (the Python determinism check runs inside l0).
-if git diff --cached --name-only --diff-filter=ACMR -- 'core/*' 'tests/*' 'scripts/*' 'quality-gates/*' '.githooks/*' '*conftest.py' 'pytest.ini' 'pyproject.toml' 'vite.config.*' 'vitest.config.*' 'package.json' | grep -q .; then
-  echo "[pre-commit] core/tests/scripts/determinism-scope changes staged - running Python quality-gates l0 (G1 ruff, G2 mypy, G3 pytest+assertions, G4 import-linter)..."
-  .venv/Scripts/python.exe quality-gates/python/run.py l0
-  status=$?
+if staged_matches 'core/*' 'tests/*' 'scripts/*'; then
+  echo "[pre-commit] core/tests/scripts/determinism-scope changes staged - running Python quality-gates commit (staged-file ruff, determinism, assertions, related tests)..."
+  status=0
+  .venv/Scripts/python.exe quality-gates/python/run.py commit || status=$?
   if [ "$status" -ne 0 ]; then
-    echo "[pre-commit] Python gate l0 FAILED - commit blocked. Fix the above and retry, or --no-verify to bypass (discouraged, logged as a rule violation)."
+    echo "[pre-commit] Python gate commit FAILED - commit blocked. Fix the above and retry, or --no-verify to bypass (discouraged, logged as a rule violation)."
     exit "$status"
   fi
-  echo "[pre-commit] Python gate l0 PASSED."
+  echo "[pre-commit] Python gate commit PASSED."
 else
-  echo "[pre-commit] no core/tests/scripts/determinism-scope changes staged - skipping Python gate l0."
+  echo "[pre-commit] no core/tests/scripts/determinism-scope changes staged - skipping Python gate commit."
 fi
 
 exit 0

@@ -19,16 +19,25 @@
 // dir's own .mjs scripts) from ever being fed to ESLint by this gate.
 import { ESLint } from 'eslint'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
-import { getChangedFiles, getChangedLineRanges, resolveBaseRef, repoPrefix, assertRepoRoot } from './lib/git-diff.mjs'
+import {
+  getChangedFiles,
+  getChangedLineRanges,
+  getStagedFiles,
+  git,
+  resolveBaseRef,
+  repoPrefix,
+  assertRepoRoot,
+} from './lib/git-diff.mjs'
 
 const cwd = process.cwd()
 assertRepoRoot(cwd)
 const SCOPE_PREFIX = 'frontend/src/'
+// `--staged` (the commit-time step): only the files staged for the next commit, only their lines the commit adds.
+const staged = process.argv.slice(2).includes('--staged')
 
 function fileExistsAtRef(file, baseRef, prefix) {
   try {
-    execFileSync('git', ['cat-file', '-e', `${baseRef}:${prefix}${file}`], { cwd, stdio: 'ignore' })
+    git(['cat-file', '-e', `${baseRef}:${prefix}${file}`], cwd)
     return true
   } catch {
     return false
@@ -36,10 +45,10 @@ function fileExistsAtRef(file, baseRef, prefix) {
 }
 
 async function main() {
-  const baseRef = resolveBaseRef(cwd)
-  const changed = getChangedFiles(cwd, baseRef, ['ts', 'tsx', 'vue', 'js', 'mjs', 'cjs']).filter((f) =>
-    f.startsWith(SCOPE_PREFIX),
-  )
+  const baseRef = staged ? 'HEAD' : resolveBaseRef(cwd)
+  const extensions = ['ts', 'tsx', 'vue', 'js', 'mjs', 'cjs']
+  const listed = staged ? getStagedFiles(cwd, extensions) : getChangedFiles(cwd, baseRef, extensions)
+  const changed = listed.filter((f) => f.startsWith(SCOPE_PREFIX))
 
   if (changed.length === 0) {
     console.log(`[G1] no new/changed lintable files under ${SCOPE_PREFIX} vs ${baseRef} — nothing to check.`)
@@ -47,7 +56,7 @@ async function main() {
   }
 
   const prefix = repoPrefix(cwd)
-  const changedLines = getChangedLineRanges(cwd, baseRef, changed)
+  const changedLines = getChangedLineRanges(cwd, baseRef, changed, staged)
   const eslint = new ESLint({ cwd }) // uses this repo's own eslint.config.mjs (repo root)
   const absFiles = changed.map((f) => path.resolve(cwd, f))
   const results = await eslint.lintFiles(absFiles)

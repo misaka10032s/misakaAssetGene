@@ -70,7 +70,7 @@ Hybrid repo — Vue/TS frontend (`frontend/`) and Python core (`core/`, `tests/`
 
 Config/thresholds/baselines live in normal tool locations (`package.json`, `pyproject.toml`, `quality-gates/`), never under `.claude/`.
 
-Two tiers per stack: **L0** (seconds-level, hook-enforced) and **L1** (L0 + diff coverage [+ mutation on the JS/TS side]).
+Test layers: at commit (the hook) only the **commit** level runs: lint of the staged files, the determinism scan, the assertion check and only the tests related to the staged files, within 10 seconds; at the end of the task (before merge, once) the task's one full run: **L1** (L0 + diff coverage [+ mutation on the JS/TS side]), where **L0** is its whole-project first part (type-check, whole suite, import cycles).
 
 ```bash
 # JS/TS (frontend/) — from repo root
@@ -81,15 +81,19 @@ npm run gate:g3   # vitest run + assertion-presence on new/changed test files
 npm run gate:g4   # madge import-cycle check, baselined (0 pre-existing cycles)
 npm run gate:g5   # vitest run --coverage + diff-coverage.mjs (>=60% of changed lines)
 npm run gate:g6   # Stryker mutation testing, scoped to the diff's changed line ranges
+npm run gate:commit # commit level: eslint on the STAGED files' changed lines + determinism scan + assertion check on staged
+                   # test files + `vitest related` on the staged files; no type-check, no whole vitest
 npm run gate:l0   # g1+g2+g3+g4 — exits 0 on the untouched tree (~11s)
 npm run gate:l1   # l0+g5+g6   — exits 0 on the untouched tree (14 test files)
 
 # Python (core/, tests/) — from repo root, using the repo's own uv-managed .venv
-.venv/Scripts/python quality-gates/python/run.py g1   # ruff check ., baselined (177 identities, 278 raw)
-.venv/Scripts/python quality-gates/python/run.py g2   # mypy core --strict, baselined (50 identities, 124 raw)
+.venv/Scripts/python quality-gates/python/run.py g1   # ruff check ., baselined (count: `quality-gates/python/ruff-baseline.json`)
+.venv/Scripts/python quality-gates/python/run.py g2   # mypy core --strict, baselined (count: `quality-gates/python/mypy-baseline.json`)
 .venv/Scripts/python quality-gates/python/run.py g3   # pytest -q + AST assertion-presence on new/changed tests
 .venv/Scripts/python quality-gates/python/run.py g4   # import-linter acyclic_siblings, baselined (2 pre-existing edges)
 .venv/Scripts/python quality-gates/python/run.py g5   # pytest --cov=core --cov-report=xml + diff-cover (>=60%)
+.venv/Scripts/python quality-gates/python/run.py commit # commit level: ruff on the STAGED files + determinism scan + assertion check
+                   # on staged test files + pytest on `related_tests.py`'s files; no mypy, no whole pytest
 .venv/Scripts/python quality-gates/python/run.py l0   # g1+g2+g3+g4 — exits 0 on the untouched tree (~16s)
 .venv/Scripts/python quality-gates/python/run.py l1   # l0+g5        — exits 0 on the untouched tree (~33s)
 
@@ -102,7 +106,7 @@ npm run gate:g4:update-baseline
 .venv/Scripts/python quality-gates/python/run.py g4 --update-baseline
 ```
 
-- **Pre-commit hook** (`.githooks/pre-commit`) runs ONLY the L0 of whichever stack(s) the commit actually touches (staged-file-list based: `frontend/*` -> JS/TS `gate:l0`; `core/*`/`tests/*`/`scripts/*`/`pyproject.toml` -> Python `quality-gates/python/run.py l0`).
+- **Pre-commit hook** (`.githooks/pre-commit`) runs ONLY the commit level of whichever stack(s) the commit actually touches (staged-file-list based: `frontend/*` -> JS/TS `gate:commit`; `core/*`/`tests/*`/`scripts/*` -> Python `quality-gates/python/run.py commit`; a staged `quality-gates/` file, determinism canary, `requirements*.txt`, the hook or a test config also triggers it).
   - Hook path: `git config core.hooksPath .githooks`, run once per clone; it is not self-installing, and a detached HEAD or `git commit --no-verify` skips it (`D:/backup/CSIA/@PM/.claude/context/cluster-conventions.md` `### Hook carrier (L0 enforcement)`).
 
 **Repo-specific gate rules (evidence-based; full incident history: `docs/superpowers/decisions/2026-09-09-quality-gate-history.md`):**
