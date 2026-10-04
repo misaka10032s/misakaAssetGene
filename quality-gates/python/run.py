@@ -184,9 +184,11 @@ def commit() -> int:
             return rc
     if not TESTS_AT_COMMIT:
         return 0
-    setup_files = [rel for _, rel, cls in entries if cls == "setup"]
+    setup_files = [(status, rel) for status, rel, cls in entries if cls == "setup"]
     if setup_files:
-        print(f"[commit] {setup_files[0]} is test setup: the tests move to the end-of-task run", flush=True)
+        status, rel = setup_files[0]
+        what = "was deleted or renamed" if status in ("D", "R") else "is test setup"
+        print(f"[commit] {rel} {what}: the tests move to the end-of-task run", flush=True)
         return 0
     from related_tests import related_test_files  # only a package that runs tests at commit calls it
 

@@ -189,7 +189,8 @@ async function main() {
   if (!TESTS_AT_COMMIT) return 0
   const setupFile = entries.find((e) => e.cls === 'setup')
   if (setupFile) {
-    console.log(`[commit] ${setupFile.rel} is test setup: the tests move to the end-of-task run`)
+    const gone = setupFile.status === 'D' || setupFile.status === 'R'
+    console.log(`[commit] ${setupFile.rel} ${gone ? 'was deleted or renamed' : 'is test setup'}: the tests move to the end-of-task run`)
     return 0
   }
   const related = alive.filter((e) => e.cls === 'test' || e.cls === 'code')
