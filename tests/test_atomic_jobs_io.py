@@ -1,4 +1,4 @@
-"""Concurrency proof + unit tests for 待回答 #53 item 2 (2026-09-08 ruling).
+"""Interleaving proof + unit tests for 待回答 #53 item 2 (2026-09-08 ruling).
 
 The bug this fixes: ``TrainingService._write_jobs`` used to call
 ``jobs.json.write_text(...)`` directly, which truncates the destination file
@@ -22,24 +22,32 @@ Fix, both halves proven here:
 ``write_text``/plain-``json.loads`` pair to prove this suite is capable of
 catching the defect it guards against (cluster rule: a gate/test that has
 never been shown to fail is not a gate).
+
+Both proofs are a deterministic interleaving on ONE thread: a reader is called
+at the exact instant between the writer's two steps, so no thread, no timing
+and no attempt loop is involved and the outcome is the same on every run.
 """
 
 from __future__ import annotations
 
 import json
-import threading
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from core.models.schemas import Modality, TrainingJob, TrainingJobStatus
+from core.project import atomic_io
 from core.project.atomic_io import read_json_tolerant, write_json_atomic
 from core.training.service import TrainingService
 
 # ---------------------------------------------------------------------------
 # Shared payload helpers
 # ---------------------------------------------------------------------------
+
+# Fixed instant for every seeded record: no test here reads the real clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
 
 _JOB_COUNT = 24
 _STDERR_PADDING = "x" * 600  # pushes each job entry to a realistic size
@@ -56,7 +64,7 @@ def _build_realistic_jobs(*, revision: int) -> list[TrainingJob]:
     folded into a couple of fields so every write produces genuinely
     different bytes on disk, the same way real progress updates do.
     """
-    now = datetime.now(UTC)
+    now = FIXED_NOW
     jobs = []
     for idx, job_id in enumerate(_job_ids()):
         jobs.append(
@@ -120,117 +128,43 @@ def _read_jobs_unsafe_old(project_dir: Path) -> list[TrainingJob]:
     return [TrainingJob(**item) for item in payload.get("jobs", [])]
 
 
-def _hammer(
-    project_dir: Path,
-    *,
-    write_fn,
-    read_fn,
-    iterations: int,
-    reader_count: int,
-    join_timeout: float = 300.0,
-) -> tuple[int, int, list[BaseException]]:
-    """Run one writer thread (``iterations`` rewrites) concurrently with
-    ``reader_count`` reader threads that loop for the whole duration.
-
-    Returns ``(total_reads, corrupt_reads, unexpected_reader_exceptions)``.
-    ``corrupt_reads`` counts a decode/validation error caught *inside* the
-    reader loop (i.e. the read function raised); it does not count toward
-    ``unexpected_reader_exceptions``, which is reserved for anything else
-    going wrong (a bug in the test itself, not the race under test).
-
-    A writer-thread exception is captured and re-raised here (rather than
-    left as a background "unhandled thread exception" warning) — under the
-    FIXED write/read pair a write should never fail outright, so if one
-    does, that is itself a finding this test must surface as a failure, not
-    swallow. Both thread groups are also positively checked to have
-    actually finished within ``join_timeout``: silently returning with a
-    still-running background thread would let it keep touching
-    ``project_dir`` (or, worse, a monkeypatched module function) well into
-    whatever test runs next — exactly the kind of cross-test contamination
-    a fixed ``join(timeout=...)`` with no follow-up check invites.
-    """
-    stop_event = threading.Event()
-    counters_lock = threading.Lock()
-    counters = {"total": 0, "corrupt": 0}
-    unexpected: list[BaseException] = []
-    writer_errors: list[BaseException] = []
-    expected_ids = set(_job_ids())
-
-    def writer() -> None:
-        try:
-            for revision in range(iterations):
-                write_fn(project_dir, _build_realistic_jobs(revision=revision))
-        except BaseException as error:
-            writer_errors.append(error)
-        finally:
-            stop_event.set()
-
-    def reader() -> None:
-        while not stop_event.is_set():
-            try:
-                jobs = read_fn(project_dir)
-            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-                with counters_lock:
-                    counters["total"] += 1
-                    counters["corrupt"] += 1
-                continue
-            except BaseException as error:  # pragma: no cover - safety net
-                unexpected.append(error)
-                continue
-            with counters_lock:
-                counters["total"] += 1
-            if jobs and ({job.id for job in jobs} != expected_ids or len(jobs) != _JOB_COUNT):
-                unexpected.append(
-                    AssertionError(f"read returned an inconsistent job set: {[j.id for j in jobs]}")
-                )
-
-    writer_thread = threading.Thread(target=writer, name="jobs-writer")
-    reader_threads = [threading.Thread(target=reader, name=f"jobs-reader-{i}") for i in range(reader_count)]
-
-    writer_thread.start()
-    for thread in reader_threads:
-        thread.start()
-
-    writer_thread.join(timeout=join_timeout)
-    stop_event.set()  # belt-and-braces in case the writer raised before setting it
-    for thread in reader_threads:
-        thread.join(timeout=30)
-
-    still_running = [writer_thread, *reader_threads]
-    still_running = [t for t in still_running if t.is_alive()]
-    if still_running:
-        raise AssertionError(
-            f"{[t.name for t in still_running]} did not finish within the join timeout "
-            f"({join_timeout}s writer / 30s readers) — aborting instead of letting a stray "
-            "background thread bleed into a later test"
-        )
-    if writer_errors:
-        raise writer_errors[0]
-
-    return counters["total"], counters["corrupt"], unexpected
-
-
 # ---------------------------------------------------------------------------
-# Main proof: the FIXED read/write pair never produces a corrupt read.
+# Main proof: the FIXED write never exposes a corrupt or inconsistent document.
 # ---------------------------------------------------------------------------
 
 class TestAtomicJobsIOFixProof:
-    def test_concurrent_readers_never_see_a_corrupt_or_inconsistent_read(self, tmp_path: Path) -> None:
+    def test_reader_between_temp_write_and_replace_sees_the_whole_previous_document(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         service = TrainingService(project_manager=None)  # type: ignore[arg-type]
         project_dir = tmp_path / "proj-fixed"
         project_dir.mkdir()
+        # The previous, complete document (revision 1) is already on disk.
+        service._write_jobs(project_dir, _build_realistic_jobs(revision=1))
 
-        total_reads, corrupt_reads, unexpected = _hammer(
-            project_dir,
-            write_fn=service._write_jobs,
-            read_fn=service._read_jobs,
-            iterations=2000,
-            reader_count=4,
-        )
+        real_replace = os.replace
+        seen_by_reader: list[list[TrainingJob]] = []
 
-        assert not unexpected, f"reader thread(s) hit unexpected condition(s): {unexpected[:5]}"
-        assert corrupt_reads == 0, f"{corrupt_reads} corrupt read(s) out of {total_reads} — atomic write/read failed"
-        assert total_reads > 0, "readers never got a chance to run"
+        def reader_runs_just_before_the_replace(src: object, dst: object) -> None:
+            # The new document exists only as the temp file; the destination
+            # must still be the whole previous document.  The strict reader
+            # (no retry, no fallback) raises on any partial document.
+            seen_by_reader.append(_read_jobs_unsafe_old(project_dir))
+            real_replace(src, dst)
+
+        monkeypatch.setattr(atomic_io.os, "replace", reader_runs_just_before_the_replace)
+
+        service._write_jobs(project_dir, _build_realistic_jobs(revision=2))
+
+        assert len(seen_by_reader) == 1, "the write must replace the destination exactly once"
+        previous = seen_by_reader[0]
+        assert len(previous) == _JOB_COUNT
+        assert {job.id for job in previous} == set(_job_ids())
+        assert all("(rev 1)" in job.title for job in previous), "reader must see the whole OLD document"
+
+        after = service._read_jobs(project_dir)
+        assert len(after) == _JOB_COUNT
+        assert all("(rev 2)" in job.title for job in after), "after the replace the whole NEW document is read"
 
         leftover_tmp = list(_jobs_path_for(project_dir).parent.glob("*.tmp"))
         assert leftover_tmp == [], f"temp file(s) left behind after the run: {leftover_tmp}"
@@ -242,49 +176,45 @@ class TestAtomicJobsIOFixProof:
 # ---------------------------------------------------------------------------
 
 class TestAtomicJobsIOControlOldBehaviorCanFail:
-    def test_old_write_text_can_produce_corrupt_reads(self, tmp_path: Path) -> None:
-        """Runs the pre-fix write/read pair under the same concurrency shape,
-        for up to 5 attempts with a smaller iteration count (kept small so a
-        failing-to-reproduce environment doesn't blow the test budget).
+    def test_old_write_text_exposes_a_partial_document_to_a_reader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pre-fix write_text()/json.loads() pair, interleaved
+        deterministically: ``Path.write_text`` is replaced by a wrapper that
+        writes the first half of the text, calls the strict reader, then writes
+        the rest.  The reader's parse fails with ``json.JSONDecodeError`` —
+        exactly once, on every run — which is the defect the atomic write
+        removes."""
+        project_dir = tmp_path / "proj-unsafe"
+        project_dir.mkdir()
+        _write_jobs_unsafe_old(project_dir, _build_realistic_jobs(revision=1))
 
-        Filesystem/OS write-buffering behavior means this race is not
-        guaranteed to manifest on every machine — if none of the 5 attempts
-        catches a corrupt read, this test is DOCUMENTATION-ONLY (its name
-        says so) and is skipped with the measured attempt-by-attempt counts
-        rather than reported as a false failure of the real fix above.
-        """
-        attempts_corrupt_counts: list[int] = []
-        for attempt in range(5):
-            project_dir = tmp_path / f"proj-unsafe-{attempt}"
-            project_dir.mkdir()
-            _total_reads, corrupt_reads, unexpected = _hammer(
-                project_dir,
-                write_fn=_write_jobs_unsafe_old,
-                read_fn=_read_jobs_unsafe_old,
-                iterations=500,
-                reader_count=4,
-            )
-            assert not unexpected, f"reader thread(s) hit unexpected condition(s): {unexpected[:5]}"
-            attempts_corrupt_counts.append(corrupt_reads)
-            if corrupt_reads > 0:
-                break
+        reader_outcomes: list[object] = []
 
-        total_corrupt = sum(attempts_corrupt_counts)
-        if total_corrupt == 0:
-            pytest.skip(
-                "documentation-only: the pre-fix write_text()/json.loads() race did not "
-                f"manifest in any of {len(attempts_corrupt_counts)} attempt(s) "
-                f"(per-attempt corrupt-read counts: {attempts_corrupt_counts}) on this "
-                "machine's filesystem/OS write-buffering — this does not mean the race is "
-                "not real, only that this environment didn't hit the window. The fix proof "
-                "test above (TestAtomicJobsIOFixProof) is what actually gates the defect."
-            )
-        assert total_corrupt > 0
-        # Deliberate evidence line for the dispatch report (visible with pytest -s).
-        print(
-            f"[control] pre-fix code produced {total_corrupt} corrupt read(s) across "
-            f"{len(attempts_corrupt_counts)} attempt(s): {attempts_corrupt_counts}"
-        )
+        def write_text_with_reader_in_the_middle(
+            self: Path,
+            data: str,
+            encoding: str | None = None,
+            errors: str | None = None,
+            newline: str | None = None,
+        ) -> int:
+            half = len(data) // 2
+            with self.open("w", encoding=encoding) as handle:
+                handle.write(data[:half])
+                handle.flush()
+                try:
+                    reader_outcomes.append(_read_jobs_unsafe_old(project_dir))
+                except json.JSONDecodeError as error:
+                    reader_outcomes.append(error)
+                handle.write(data[half:])
+            return len(data)
+
+        monkeypatch.setattr(Path, "write_text", write_text_with_reader_in_the_middle)
+
+        _write_jobs_unsafe_old(project_dir, _build_realistic_jobs(revision=2))
+
+        assert len(reader_outcomes) == 1
+        assert isinstance(reader_outcomes[0], json.JSONDecodeError)
 
 
 # ---------------------------------------------------------------------------

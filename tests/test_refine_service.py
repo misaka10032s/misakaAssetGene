@@ -4,7 +4,7 @@ decision tree and parent-child lineage recording on produced assets (§5.11)."""
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -23,6 +23,9 @@ from core.models.schemas import (
     RefineStrategy,
 )
 from core.project.manager import ProjectManager
+
+# Fixed instant for every seeded record: no test here reads the real clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
 
 
 class _FakeWorker:
@@ -194,7 +197,7 @@ def _seed_asset_with_effective_prompt(
         path="assets/images/base.png",
         effective_prompt=effective_prompt,
         effective_negative=effective_negative,
-        created_at=datetime.now(UTC),
+        created_at=FIXED_NOW,
     )
     svc._write_assets(project_dir, [asset])
     return asset.id

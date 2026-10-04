@@ -9,9 +9,13 @@
 // this stack, so G6 only covers plain .ts logic modules — a real, reported scope gap, not an
 // oversight (same gap misaka_site2.0 documents). vitest.config.ts's own `test.exclude` already
 // keeps tmp/ and other scratch dirs out of the test run Stryker drives.
+import os from 'node:os'
+
 /** @type {import('@stryker-mutator/api/core').PartialStrykerOptions} */
 const config = {
   packageManager: 'npm',
+  // At most half of the machine's threads (cluster-conventions.md, Stryker concurrency).
+  concurrency: Math.max(1, Math.floor(os.availableParallelism() / 2)),
   testRunner: 'vitest',
   reporters: ['json', 'clear-text'],
   coverageAnalysis: 'perTest',

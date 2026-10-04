@@ -27,9 +27,10 @@ import shutil
 import sys
 import threading
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Generator
 
 from core.project.atomic_io import read_json_tolerant, write_json_atomic
@@ -175,8 +176,19 @@ def copy_external_asset(
     relative_asset_path: str,
     *,
     lock_timeout: float = 10.0,
+    path_flavor: type[PurePath] = Path,
+    resolve_path: Callable[[Path], Path] = Path.resolve,
 ) -> Path:
     """Copy source_path into dest_project_dir/_external/<source_project_id>/... under an exclusive lock.
+
+    ``path_flavor`` and ``resolve_path`` are replaceable operating-system
+    interfaces (defaults: the running platform's ``Path`` and ``Path.resolve``);
+    production callers pass neither.  ``path_flavor`` decides what counts as
+    absolute / drive-anchored in the lexical pre-validation (tests pass
+    ``PureWindowsPath`` to check drive-letter rejection on any platform);
+    ``resolve_path`` canonicalises the destination's parent in the
+    symlink-escape check (tests inject a resolver that reports a parent
+    outside ``_external/`` instead of planting a real symlink).
 
     Returns the destination path.
 
@@ -198,8 +210,8 @@ def copy_external_asset(
     """
     # --- Step 1: Lexical pre-validation (race-free) -------------------------
     # Reject absolute paths, drive-letter paths, and '..' components.
-    source_id_path = Path(source_project_id)
-    rel_path_obj = Path(relative_asset_path)
+    source_id_path = path_flavor(source_project_id)
+    rel_path_obj = path_flavor(relative_asset_path)
 
     if source_id_path.is_absolute() or source_id_path.anchor:
         raise ValueError(
@@ -246,8 +258,8 @@ def copy_external_asset(
         # --- Step 2: Symlink-safe containment (parent now exists, no race) ---
         # resolve() the existing parent to canonicalise any symlink chain,
         # then verify it is still inside external_root.
-        external_root_resolved = (dest_project_dir / "_external").resolve()
-        parent_resolved = dest_file.parent.resolve()
+        external_root_resolved = resolve_path(dest_project_dir / "_external")
+        parent_resolved = resolve_path(dest_file.parent)
         try:
             parent_resolved.relative_to(external_root_resolved)
         except ValueError:

@@ -32,6 +32,9 @@ from core.models.schemas import (
 from core.project.manager import ProjectManager
 from core.scheduler.vram import RuntimeState
 
+# Fixed instant for every seeded record: no test here reads the real clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+
 
 def _make_live_worker_snapshot() -> WorkerSnapshot:
     """Running standalone ComfyUI: reachable + live, NOT installed locally."""
@@ -116,7 +119,7 @@ def test_planned_job_ready_when_worker_live_not_installed(svc):
         ),
     )
 
-    now = datetime.now(timezone.utc)
+    now = FIXED_NOW
     job = service._build_job(project_id, "畫角色立繪", result, deliverable, now)
 
     assert job.status is GenerationJobStatus.READY, (

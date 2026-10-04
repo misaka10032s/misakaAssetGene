@@ -35,6 +35,9 @@ from core.models.schemas import (
 )
 from core.project.manager import ProjectManager
 
+# Fixed instant for every seeded record: no test here reads the real clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -318,7 +321,7 @@ def test_cycle_detection_does_not_infinite_loop(svc_ctx, tmp_path: Path) -> None
     assets_dir.mkdir(parents=True, exist_ok=True)
     index_path = assets_dir / "index.json"
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = FIXED_NOW.isoformat()
     # a → b → a  (cycle)
     assets = [
         {
@@ -391,7 +394,7 @@ def test_orphan_flag_set_when_parent_missing(svc_ctx, tmp_path: Path) -> None:
     assets_dir.mkdir(parents=True, exist_ok=True)
     index_path = assets_dir / "index.json"
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = FIXED_NOW.isoformat()
     assets = [
         {
             "id": "orphan-child",
@@ -523,7 +526,7 @@ def test_tree_node_cap_enforced(svc_ctx, tmp_path: Path) -> None:
     assets_dir.mkdir(parents=True, exist_ok=True)
     index_path = assets_dir / "index.json"
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = FIXED_NOW.isoformat()
     # Build cap + 1 independent root nodes (no parent chains needed to verify cap).
     assets = [
         {
@@ -576,7 +579,7 @@ def test_self_parent_cycle_detected_and_no_infinite_loop(svc_ctx, tmp_path: Path
     assets_dir.mkdir(parents=True, exist_ok=True)
     index_path = assets_dir / "index.json"
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = FIXED_NOW.isoformat()
     self_id = "self-loop-node"
     assets = [
         {

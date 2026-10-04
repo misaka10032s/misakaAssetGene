@@ -13,9 +13,12 @@ from core.generation.adapters import ace_step
 from core.generation.adapters.common import AdapterContext
 from core.models.schemas import GenerationJob, GenerationJobStatus, Modality
 
+# Fixed instant for every seeded record: no test here reads the real clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
+
 
 def _job(params: dict | None = None) -> GenerationJob:
-    now = datetime.now(UTC)
+    now = FIXED_NOW
     return GenerationJob(
         id="job1234abcd",
         project_id="proj1",

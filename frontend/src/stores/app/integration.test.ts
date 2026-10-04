@@ -154,7 +154,7 @@ describe("useIntegrationStore() — worker actions force-refresh the snapshot", 
 
   it("smokeWorker stores the result keyed by worker name and force-refreshes", async () => {
     const store = useIntegrationStore();
-    const smokeResult = { worker_name: "kohya-ss", ok: true, detail: "all good", checked_at: new Date().toISOString() };
+    const smokeResult = { worker_name: "kohya-ss", ok: true, detail: "all good", checked_at: "2026-01-15T12:00:00.000Z" };
     vi.spyOn(apiClient, "smokeWorker").mockResolvedValue(smokeResult);
     vi.spyOn(apiClient, "integration").mockResolvedValue(makeSnapshot());
 

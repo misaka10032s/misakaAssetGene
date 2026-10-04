@@ -22,7 +22,6 @@ GPT-SoVITS installation is NOT required and NOT involved.  See RESEARCH_LOG §10
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -58,9 +57,43 @@ from datetime import datetime, timezone
 
 _DEFAULT_PROJECT = "proj-001"
 
+# Fixed instant for every seeded record: no test here reads the real clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return FIXED_NOW
+
+
+class _RecordedThread:
+    """Stands in for the executor's worker thread: records the creation and
+    ``start()`` but never runs ``target``.  Tests drain the queue on the test
+    thread with ``TrainingExecutor.run_until_idle()`` instead."""
+
+    def __init__(self, *, target, name: str, daemon: bool) -> None:
+        self.target = target
+        self.name = name
+        self.daemon = daemon
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def is_alive(self) -> bool:
+        return self.started
+
+
+class _ThreadRecorder:
+    """``thread_factory`` for ``TrainingExecutor``: every thread it is asked
+    for is a ``_RecordedThread``; ``threads`` lists them in creation order."""
+
+    def __init__(self) -> None:
+        self.threads: list[_RecordedThread] = []
+
+    def __call__(self, **kwargs) -> _RecordedThread:
+        thread = _RecordedThread(**kwargs)
+        self.threads.append(thread)
+        return thread
 
 
 def _make_job(
@@ -134,11 +167,14 @@ def _make_executor(
     scheduler: ModelScheduler | None = None,
     runner: FakeRunner | None = None,
     project_id: str = _DEFAULT_PROJECT,
+    thread_factory: _ThreadRecorder | None = None,
 ) -> tuple[TrainingExecutor, dict[str, list[TrainingJob]]]:
     """Return an executor backed by a per-project in-memory job store.
 
     The store is keyed by project_id so the two-project isolation test can
-    verify that each project's jobs are persisted independently.
+    verify that each project's jobs are persisted independently.  The worker
+    thread is a ``_ThreadRecorder`` product: it never runs, so a test drives
+    the queue with ``ex.run_until_idle()``.
     """
     # One store dict maps project_id -> list[TrainingJob].
     stores: dict[str, list[TrainingJob]] = {project_id: list(jobs)}
@@ -156,40 +192,39 @@ def _make_executor(
         write_jobs=write_jobs,
         scheduler=sched,
         runner=fake,
+        thread_factory=thread_factory or _ThreadRecorder(),
     )
     return ex, stores
 
 
-def _wait_for_status(
+def _job_with_status(
     stores: dict[str, list[TrainingJob]],
     project_id: str,
     job_id: str,
     *statuses: TrainingJobStatus,
-    timeout: float = 5.0,
 ) -> TrainingJob:
-    """Poll store until the job reaches one of the expected statuses."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        for j in stores.get(project_id, []):
-            if j.id == job_id and j.status in statuses:
-                return j
-        time.sleep(0.02)
-    statuses_found = [j.status for j in stores.get(project_id, []) if j.id == job_id]
-    raise TimeoutError(
-        f"Job {job_id} (project {project_id}) did not reach {statuses} within {timeout}s; "
-        f"current statuses: {statuses_found}"
+    """Return the job from the store; fail when it is not in one of ``statuses`` now.
+
+    Nothing waits: the caller has already driven the executor with
+    ``run_until_idle()``, so the stored status is final for that step.
+    """
+    found = [j for j in stores.get(project_id, []) if j.id == job_id]
+    assert found, f"Job {job_id} (project {project_id}) is not in the store"
+    job = found[0]
+    assert job.status in statuses, (
+        f"Job {job_id} (project {project_id}) is {job.status}; expected one of {statuses}"
     )
+    return job
 
 
 # Convenience wrapper for single-project tests.
-def _wait(
+def _job(
     store: dict[str, list[TrainingJob]],
     job_id: str,
     *statuses: TrainingJobStatus,
-    timeout: float = 5.0,
     project_id: str = _DEFAULT_PROJECT,
 ) -> TrainingJob:
-    return _wait_for_status(store, project_id, job_id, *statuses, timeout=timeout)
+    return _job_with_status(store, project_id, job_id, *statuses)
 
 
 # ===========================================================================
@@ -365,38 +400,6 @@ class TestKohyaScriptPathSdScriptsSubdir:
         # script invocation path moves into the submodule.
         assert spec.cwd == kohya_dir
 
-    def test_lora_script_path_exists_on_real_installed_layout(self) -> None:
-        """Verifies against the ACTUAL kohya_ss v25.0.3 install on this
-        machine (workers/manifest.json 'installed': true, tag v25.0.3).
-        Skipped ONLY when that install is genuinely absent from disk on the
-        machine running the test -- never bent to pass otherwise.
-        """
-        this_repo_root = Path(__file__).resolve().parents[1]
-        # Repo-hygiene rule: `workers/` is untracked (third-party clones are
-        # never committed -- see .claude/CLAUDE.md `repo-hygiene.md`), so a
-        # dispatch running from `<repo>/.claude/worktree/<name>/` (the
-        # cluster's fixed worktree convention) never has its own copy; the
-        # real install lives in the main tree.
-        if this_repo_root.parent.name == "worktree" and this_repo_root.parent.parent.name == ".claude":
-            main_repo_root = this_repo_root.parent.parent.parent
-        else:
-            main_repo_root = this_repo_root
-
-        kohya_dir = main_repo_root / "workers" / "kohya-ss"
-        script_path = kohya_dir / "sd-scripts" / "train_network.py"
-
-        if not kohya_dir.exists():
-            pytest.skip(
-                f"kohya_ss is not installed at {kohya_dir} on this machine -- "
-                "skipping real-installed-layout check."
-            )
-
-        assert script_path.exists(), (
-            f"kohya_ss v25.0.3 is installed at {kohya_dir} but {script_path} "
-            "does not exist -- the sd-scripts submodule may be uninitialized "
-            "(git submodule update --init) or the install layout changed."
-        )
-
 
 class TestGptSovitsCommandConstruction:
     def test_zero_shot_has_no_s1_s2_args(self, tmp_path: Path) -> None:
@@ -522,17 +525,15 @@ class TestGptSovitsCommandConstruction:
 class TestFifoSingleConcurrency:
     def test_two_jobs_run_sequentially(self) -> None:
         """Verify that the second job only starts after the first completes."""
-        calls: list[str] = []
+        events: list[str] = []
 
         class SingleRunner:
             def run(self, args, cwd, *, on_progress=None):
-                calls.append("start")
-                if len(calls) == 1:
-                    # Block first job until second is queued.
-                    time.sleep(0.1)
+                events.append(f"start:{args[1]}")
                 result = RunResult(exit_code=0, stderr_tail="")
                 if on_progress:
                     on_progress(100, "done")
+                events.append(f"end:{args[1]}")
                 return result
 
             def cancel(self) -> None:
@@ -545,42 +546,57 @@ class TestFifoSingleConcurrency:
         ex.enqueue_with_command(_DEFAULT_PROJECT, "job-001", ["echo", "a"], Path("."))
         ex.enqueue_with_command(_DEFAULT_PROJECT, "job-002", ["echo", "b"], Path("."))
 
-        j1 = _wait(store, "job-001", TrainingJobStatus.COMPLETED)
-        j2 = _wait(store, "job-002", TrainingJobStatus.COMPLETED)
+        # The caller's enqueue did no worker-side work: nothing has run yet.
+        assert events == []
+
+        ex.run_until_idle()
+
+        j1 = _job(store, "job-001", TrainingJobStatus.COMPLETED)
+        j2 = _job(store, "job-002", TrainingJobStatus.COMPLETED)
 
         assert j1.status == TrainingJobStatus.COMPLETED
         assert j2.status == TrainingJobStatus.COMPLETED
+        # FIFO and one at a time: the first job ends before the second starts.
+        assert events == ["start:a", "end:a", "start:b", "end:b"]
 
     def test_jobs_run_one_at_a_time_never_concurrent(self) -> None:
         """Assert concurrency count never exceeds 1 during overlapping enqueues."""
         active_count = [0]
         max_active = [0]
-        lock = threading.Lock()
+        run_order: list[str] = []
 
         class ConcurrencyTracker:
             def run(self, args, cwd, *, on_progress=None):
-                with lock:
-                    active_count[0] += 1
-                    if active_count[0] > max_active[0]:
-                        max_active[0] = active_count[0]
-                time.sleep(0.05)
-                with lock:
-                    active_count[0] -= 1
+                run_order.append(args[1])
+                active_count[0] += 1
+                if active_count[0] > max_active[0]:
+                    max_active[0] = active_count[0]
+                active_count[0] -= 1
                 return RunResult(exit_code=0, stderr_tail="")
 
             def cancel(self) -> None:
                 pass
 
+        recorder = _ThreadRecorder()
         jobs = [_make_job(f"job-{i:03d}") for i in range(4)]
-        ex, store = _make_executor(jobs, runner=ConcurrencyTracker())  # type: ignore[arg-type]
+        ex, store = _make_executor(
+            jobs, runner=ConcurrencyTracker(), thread_factory=recorder  # type: ignore[arg-type]
+        )
 
         for j in jobs:
             ex.enqueue_with_command(_DEFAULT_PROJECT, j.id, ["echo", j.id], Path("."))
 
+        # The product's guarantee is ONE worker: four enqueues created one thread.
+        assert len(recorder.threads) == 1
+        assert run_order == [], "enqueue must not run any job on the caller's thread"
+
+        ex.run_until_idle()
+
         for j in jobs:
-            _wait(store, j.id, TrainingJobStatus.COMPLETED)
+            _job(store, j.id, TrainingJobStatus.COMPLETED)
 
         assert max_active[0] == 1, f"Max concurrent jobs was {max_active[0]}, expected 1"
+        assert run_order == [j.id for j in jobs], "jobs must run in FIFO order"
 
 
 # ===========================================================================
@@ -643,7 +659,8 @@ class TestHardExclusiveVramLock:
         job = _make_job("jlock-001")
         ex, store = _make_executor([job], scheduler=sched, runner=ObserverRunner())  # type: ignore[arg-type]
         ex.enqueue_with_command(_DEFAULT_PROJECT, "jlock-001", ["echo", "jlock-001"], Path("."))
-        _wait(store, "jlock-001", TrainingJobStatus.COMPLETED)
+        ex.run_until_idle()
+        _job(store, "jlock-001", TrainingJobStatus.COMPLETED)
 
         assert lock_states_during_run, "Runner was never called"
         assert lock_states_during_run[0] is True, (
@@ -655,7 +672,8 @@ class TestHardExclusiveVramLock:
         job = _make_job("jlock-002")
         ex, store = _make_executor([job], scheduler=sched)
         ex.enqueue_with_command(_DEFAULT_PROJECT, "jlock-002", ["echo", "jlock-002"], Path("."))
-        _wait(store, "jlock-002", TrainingJobStatus.COMPLETED)
+        ex.run_until_idle()
+        _job(store, "jlock-002", TrainingJobStatus.COMPLETED)
         assert sched.is_training_locked() is False
 
     def test_is_training_locked_false_after_job_fails(self) -> None:
@@ -664,7 +682,8 @@ class TestHardExclusiveVramLock:
         runner = FakeRunner(exit_code=1, stderr="training error")
         ex, store = _make_executor([job], scheduler=sched, runner=runner)
         ex.enqueue_with_command(_DEFAULT_PROJECT, "jlock-003", ["echo", "jlock-003"], Path("."))
-        _wait(store, "jlock-003", TrainingJobStatus.FAILED)
+        ex.run_until_idle()
+        _job(store, "jlock-003", TrainingJobStatus.FAILED)
         assert sched.is_training_locked() is False
 
     def test_training_refused_when_managed_model_active(self) -> None:
@@ -680,7 +699,8 @@ class TestHardExclusiveVramLock:
         job = _make_job("jevict-001")
         ex, store = _make_executor([job], scheduler=sched)
         ex.enqueue_with_command(_DEFAULT_PROJECT, "jevict-001", ["echo", "jevict-001"], Path("."))
-        failed = _wait(store, "jevict-001", TrainingJobStatus.FAILED)
+        ex.run_until_idle()
+        failed = _job(store, "jevict-001", TrainingJobStatus.FAILED)
 
         assert failed.status == TrainingJobStatus.FAILED
         assert failed.note is not None
@@ -695,58 +715,70 @@ class TestHardExclusiveVramLock:
 
         A model must not be able to slip into ACTIVE state in the gap
         between "is any managed model ACTIVE?" and the training lock
-        actually being taken. A hook on ``ModelScheduler._models`` forces a
-        concurrent generation-style ``acquire()`` to land exactly at the end
-        of that scan (the point right after the scan decided "nothing is
-        ACTIVE", mirroring real-world scheduling). The buggy executor read
-        ``scheduler._models`` directly (UNLOCKED) and then called
-        ``begin_training()`` as a completely separate step, so the racer's
-        ``acquire()`` landed cleanly in that gap and BOTH ended up true at
-        once: training running AND the racer's model ACTIVE. The fix must
-        perform the whole decision atomically under the scheduler's own
-        lock, so the racer instead blocks until the decision is finalized
-        and is refused.
+        actually being taken.  The buggy executor read ``scheduler._models``
+        directly (UNLOCKED) and then called ``begin_training()`` as a
+        completely separate step, so a concurrent ``acquire()`` could land in
+        that gap.  The fix performs the whole decision atomically under the
+        scheduler's own lock.
+
+        Observed without any second thread: the scheduler's lock is replaced
+        by a lock that records whether it is held and which hold ("span") it
+        is.  The ACTIVE scan and the moment the training lock is taken are
+        each recorded with that state; the test asserts both happen while the
+        lock is held, in the SAME span (no gap in which another caller could
+        take the lock).
         """
         from core.scheduler.vram import RuntimeState
 
-        sched = _make_scheduler(vram_mb=8000)
-        sched.register(ManagedModel(name="gen_race", vram_mb=4000, ram_mb=4000))
+        class _SpanLock:
+            """Re-entrant lock that knows whether it is held (``depth``) and
+            which hold it is (``span``, one number per outermost hold)."""
 
-        racer_done = threading.Event()
+            def __init__(self) -> None:
+                self._inner = threading.RLock()
+                self.depth = 0
+                self.span = 0
 
-        def _racer() -> None:
-            try:
-                sched.acquire("gen_race")
-            except SchedulerError:
-                pass
-            finally:
-                racer_done.set()
+            def acquire(self, blocking: bool = True) -> bool:
+                got = self._inner.acquire(blocking)
+                if got:
+                    if self.depth == 0:
+                        self.span += 1
+                    self.depth += 1
+                return got
 
-        class HookedDict(dict):
-            """Wraps ``ModelScheduler._models`` so that the scan performed by
-            the "is anything ACTIVE?" check triggers a concurrent acquire()
-            exactly once, right as the scan finishes iterating."""
+            def release(self) -> None:
+                self.depth -= 1
+                self._inner.release()
+
+            def __enter__(self) -> _SpanLock:
+                self.acquire()
+                return self
+
+            def __exit__(self, *exc_info: object) -> None:
+                self.release()
+
+        span_lock = _SpanLock()
+        observations: list[tuple[str, int, int]] = []
+
+        class _RecordingScheduler(ModelScheduler):
+            def __setattr__(self, name: str, value: object) -> None:
+                if name == "_training_lock_holder" and value is not None:
+                    observations.append(("lock_taken", span_lock.depth, span_lock.span))
+                super().__setattr__(name, value)
+
+        class _ScanRecordingDict(dict):
+            """Wraps ``ModelScheduler._models``; every scan of the ACTIVE
+            check goes through ``items()`` and is recorded."""
 
             def items(self):
-                real_items = list(dict.items(self))
+                observations.append(("scan", span_lock.depth, span_lock.span))
+                return dict.items(self)
 
-                def _iter():
-                    yield from real_items
-                    # Scan just finished deciding based on `real_items`
-                    # (nothing ACTIVE yet) — this is the exact TOCTOU
-                    # instant. Race a concurrent acquire() in right here.
-                    threading.Thread(target=_racer, daemon=True).start()
-                    # Bounded wait: under the OLD unlocked peek this
-                    # completes immediately (no lock held). Under the FIXED
-                    # atomic path this call happens *while* the scheduler's
-                    # own lock is held by the checking thread, so the racer
-                    # blocks and this wait legitimately times out — that
-                    # timeout is the fix working, not a flake.
-                    racer_done.wait(timeout=0.5)
-
-                return _iter()
-
-        sched._models = HookedDict(sched._models)  # type: ignore[assignment]
+        sched = _RecordingScheduler(SchedulerBudget(vram_budget_mb=8000, ram_budget_mb=32000))
+        sched.register(ManagedModel(name="gen_race", vram_mb=4000, ram_mb=4000))
+        sched._lock = span_lock  # type: ignore[assignment]
+        sched._models = _ScanRecordingDict(sched._models)  # type: ignore[assignment]
 
         observed_conflict: list[bool] = []
 
@@ -764,24 +796,29 @@ class TestHardExclusiveVramLock:
         job = _make_job("jrace-001")
         ex, store = _make_executor([job], scheduler=sched, runner=ObserverRunner())  # type: ignore[arg-type]
         ex.enqueue_with_command(_DEFAULT_PROJECT, "jrace-001", ["echo", "jrace-001"], Path("."))
+        ex.run_until_idle()
 
-        final = _wait(store, "jrace-001", TrainingJobStatus.COMPLETED, TrainingJobStatus.FAILED)
+        _job(store, "jrace-001", TrainingJobStatus.COMPLETED)
 
-        if final.status == TrainingJobStatus.FAILED:
-            # Correctly refused because the racer's model is (by then) ACTIVE.
-            assert "ACTIVE" in (final.note or ""), (
-                f"job failed but not for the ACTIVE-model reason: {final.note!r}"
-            )
-            assert not observed_conflict, "runner must never have executed if refused"
-        else:
-            # The runner DID execute — this must never coincide with the
-            # racer's model being simultaneously ACTIVE (the TOCTOU bug).
-            assert observed_conflict == [False], (
-                "TOCTOU: training ran while a model was simultaneously ACTIVE "
-                "— the check-then-lock race let a concurrent acquire() slip "
-                "through the gap between the ACTIVE-check and the lock."
-            )
-
+        scans = [o for o in observations if o[0] == "scan"]
+        taken = [o for o in observations if o[0] == "lock_taken"]
+        assert len(scans) == 1, f"expected exactly one ACTIVE scan; got {observations!r}"
+        assert len(taken) == 1, f"expected exactly one training-lock take; got {observations!r}"
+        _, scan_depth, scan_span = scans[0]
+        _, taken_depth, taken_span = taken[0]
+        assert scan_depth >= 1, (
+            "TOCTOU: the ACTIVE scan ran WITHOUT the scheduler's lock held"
+        )
+        assert taken_depth >= 1, (
+            "TOCTOU: the training lock was taken WITHOUT the scheduler's lock held"
+        )
+        assert scan_span == taken_span, (
+            "TOCTOU: the ACTIVE scan and the training-lock take were two separate "
+            "holds of the scheduler's lock — a concurrent acquire() can slip "
+            "through the gap between them."
+        )
+        # The runner executed with the lock held and no model ACTIVE.
+        assert observed_conflict == [False]
         assert sched.is_training_locked() is False
 
     def test_generation_service_blocks_when_training_locked(self) -> None:
@@ -877,7 +914,8 @@ class TestStatusTransitions:
         runner = FakeRunner(exit_code=0)
         ex, store = _make_executor([job], runner=runner)
         ex.enqueue_with_command(_DEFAULT_PROJECT, "jst-001", ["echo", "jst-001"], Path("."))
-        completed = _wait(store, "jst-001", TrainingJobStatus.COMPLETED)
+        ex.run_until_idle()
+        completed = _job(store, "jst-001", TrainingJobStatus.COMPLETED)
         assert completed.status == TrainingJobStatus.COMPLETED
         assert completed.exit_code == 0
 
@@ -886,7 +924,8 @@ class TestStatusTransitions:
         runner = FakeRunner(exit_code=1, stderr="Fatal error in training\nOOM\n")
         ex, store = _make_executor([job], runner=runner)
         ex.enqueue_with_command(_DEFAULT_PROJECT, "jst-002", ["echo", "jst-002"], Path("."))
-        failed = _wait(store, "jst-002", TrainingJobStatus.FAILED)
+        ex.run_until_idle()
+        failed = _job(store, "jst-002", TrainingJobStatus.FAILED)
         assert failed.status == TrainingJobStatus.FAILED
         assert failed.exit_code == 1
         assert failed.stderr_tail is not None
@@ -894,90 +933,73 @@ class TestStatusTransitions:
 
     def test_enqueue_transitions_job_to_queued(self) -> None:
         job = _make_job("jst-003", status=TrainingJobStatus.PLANNED)
-        barrier = threading.Event()
-
-        class SlowRunner:
-            def run(self, args, cwd, *, on_progress=None):
-                barrier.wait(timeout=5)
-                return RunResult(exit_code=0, stderr_tail="")
-
-            def cancel(self) -> None:
-                barrier.set()
-
-        ex, store = _make_executor([job], runner=SlowRunner())  # type: ignore[arg-type]
+        ex, store = _make_executor([job])
         ex.enqueue_with_command(_DEFAULT_PROJECT, "jst-003", ["echo", "jst-003"], Path("."))
-        deadline = time.monotonic() + 2.0
-        seen_queued = False
-        while time.monotonic() < deadline:
-            for j in store.get(_DEFAULT_PROJECT, []):
-                if j.id == "jst-003" and j.status == TrainingJobStatus.QUEUED:
-                    seen_queued = True
-                    break
-            if seen_queued:
-                break
-            time.sleep(0.01)
-        barrier.set()
-        _wait(store, "jst-003", TrainingJobStatus.COMPLETED)
+        # Right after enqueue, before the worker has run anything: QUEUED.
+        queued = _job(store, "jst-003", TrainingJobStatus.QUEUED)
+        assert queued.status == TrainingJobStatus.QUEUED
+        ex.run_until_idle()
+        _job(store, "jst-003", TrainingJobStatus.COMPLETED)
 
     def test_cancel_queued_job_transitions_to_failed(self) -> None:
         """Cancelling a job that is still QUEUED (not yet started) marks it FAILED."""
-        running_event = threading.Event()
-        unblock_event = threading.Event()
-
-        class BlockingRunner:
-            def run(self, args, cwd, *, on_progress=None):
-                running_event.set()
-                unblock_event.wait(timeout=10)
-                return RunResult(exit_code=0, stderr_tail="")
-
-            def cancel(self) -> None:
-                unblock_event.set()
-
+        runner = FakeRunner(exit_code=0)
         job1 = _make_job("jcancel-001")
         job2 = _make_job("jcancel-002")
-        ex, store = _make_executor([job1, job2], runner=BlockingRunner())  # type: ignore[arg-type]
+        ex, store = _make_executor([job1, job2], runner=runner)
 
         ex.enqueue_with_command(_DEFAULT_PROJECT, "jcancel-001", ["echo", "jcancel-001"], Path("."))
-        running_event.wait(timeout=5)
         ex.enqueue_with_command(_DEFAULT_PROJECT, "jcancel-002", ["echo", "jcancel-002"], Path("."))
+        # Neither job has started: both are QUEUED.
+        _job(store, "jcancel-001", TrainingJobStatus.QUEUED)
+        _job(store, "jcancel-002", TrainingJobStatus.QUEUED)
 
         cancelled = ex.cancel_job(_DEFAULT_PROJECT, "jcancel-002")
         assert cancelled is True
 
-        failed = _wait(store, "jcancel-002", TrainingJobStatus.FAILED)
+        failed = _job(store, "jcancel-002", TrainingJobStatus.FAILED)
         assert failed.status == TrainingJobStatus.FAILED
 
-        unblock_event.set()
-        _wait(store, "jcancel-001", TrainingJobStatus.COMPLETED)
+        ex.run_until_idle()
+        _job(store, "jcancel-001", TrainingJobStatus.COMPLETED)
+        # The cancelled job stays FAILED and its command never ran.
+        _job(store, "jcancel-002", TrainingJobStatus.FAILED)
+        assert [args for args, _cwd in runner.calls] == [["echo", "jcancel-001"]]
 
     def test_cancel_running_job_causes_failure(self) -> None:
         """Cancelling a RUNNING job causes it to transition to FAILED."""
-        running_event = threading.Event()
+        cancel_results: list[bool] = []
+        holder: dict[str, TrainingExecutor] = {}
 
         class CancellableRunner:
             def __init__(self) -> None:
-                self._cancel = threading.Event()
+                self.cancelled = False
 
             def run(self, args, cwd, *, on_progress=None):
-                running_event.set()
-                self._cancel.wait(timeout=10)
-                return RunResult(exit_code=-1, stderr_tail="Cancelled by user")
+                # The job is RUNNING right now: cancel it from inside the run.
+                cancel_results.append(
+                    holder["ex"].cancel_job(_DEFAULT_PROJECT, "jcancel-run-001")
+                )
+                if self.cancelled:
+                    return RunResult(exit_code=-1, stderr_tail="Cancelled by user")
+                return RunResult(exit_code=0, stderr_tail="")
 
             def cancel(self) -> None:
-                self._cancel.set()
+                self.cancelled = True
 
         cr = CancellableRunner()
         job = _make_job("jcancel-run-001")
         ex, store = _make_executor([job], runner=cr)  # type: ignore[arg-type]
+        holder["ex"] = ex
 
         ex.enqueue_with_command(_DEFAULT_PROJECT, "jcancel-run-001", ["echo", "run"], Path("."))
-        running_event.wait(timeout=5)
+        ex.run_until_idle()
 
-        cancelled = ex.cancel_job(_DEFAULT_PROJECT, "jcancel-run-001")
-        assert cancelled is True
+        assert cancel_results == [True]
+        assert cr.cancelled is True
 
-        result = _wait(store, "jcancel-run-001",
-                       TrainingJobStatus.FAILED, TrainingJobStatus.COMPLETED)
+        result = _job(store, "jcancel-run-001",
+                      TrainingJobStatus.FAILED, TrainingJobStatus.COMPLETED)
         assert result.status == TrainingJobStatus.FAILED
 
     def test_progress_updated_during_run(self) -> None:
@@ -986,7 +1008,8 @@ class TestStatusTransitions:
         runner = FakeRunner(exit_code=0)
         ex, store = _make_executor([job], runner=runner)
         ex.enqueue_with_command(_DEFAULT_PROJECT, "jprog-001", ["echo", "jprog-001"], Path("."))
-        completed = _wait(store, "jprog-001", TrainingJobStatus.COMPLETED)
+        ex.run_until_idle()
+        completed = _job(store, "jprog-001", TrainingJobStatus.COMPLETED)
         assert completed.progress == 100
 
     def test_cancel_nonexistent_job_returns_false(self) -> None:
@@ -1028,14 +1051,17 @@ class TestPerProjectJobIsolation:
             write_jobs=write_jobs,
             scheduler=sched,
             runner=FakeRunner(exit_code=0),
+            thread_factory=_ThreadRecorder(),
         )
 
         ex.enqueue_with_command(proj_a, "job-alpha-001", ["echo", "alpha"], Path("."))
-        _wait_for_status(stores, proj_a, "job-alpha-001", TrainingJobStatus.COMPLETED)
+        ex.run_until_idle()
+        _job_with_status(stores, proj_a, "job-alpha-001", TrainingJobStatus.COMPLETED)
 
-        # Only wait for beta after alpha finishes (FIFO — single executor).
+        # Beta is enqueued after alpha has finished (FIFO — single executor).
         ex.enqueue_with_command(proj_b, "job-beta-001", ["echo", "beta"], Path("."))
-        _wait_for_status(stores, proj_b, "job-beta-001", TrainingJobStatus.COMPLETED)
+        ex.run_until_idle()
+        _job_with_status(stores, proj_b, "job-beta-001", TrainingJobStatus.COMPLETED)
 
         # Verify that alpha's job is in alpha's store, not beta's, and vice-versa.
         alpha_ids = {j.id for j in stores[proj_a]}
@@ -1118,10 +1144,12 @@ class TestLiveCommandPath:
             asset_store_resolver=lambda pid: fake_store,
             project_dir_resolver=lambda pid: project_dir,
             workers_service=_FakeWorkersService(kohya_install_dir),
+            thread_factory=_ThreadRecorder(),
         )
 
         ex.enqueue(_DEFAULT_PROJECT, "live-job-001")
-        _wait_for_status(stores, _DEFAULT_PROJECT, "live-job-001", TrainingJobStatus.COMPLETED)
+        ex.run_until_idle()
+        _job_with_status(stores, _DEFAULT_PROJECT, "live-job-001", TrainingJobStatus.COMPLETED)
 
         # FakeRunner must have been called exactly once.
         assert len(fake_runner.calls) == 1, (
@@ -1225,9 +1253,11 @@ class TestKohyaWorkerDirResolution:
             asset_store_resolver=lambda pid: FakeAssetStore(),
             project_dir_resolver=lambda pid: project_dir,
             workers_service=workers_service,
+            thread_factory=_ThreadRecorder(),
         )
 
         ex.enqueue(_DEFAULT_PROJECT, "kohya-dir-job-001")
+        ex.run_until_idle()
         return stores, fake_runner
 
     def test_kohya_cwd_comes_from_workers_service_not_dataset_location(
@@ -1245,7 +1275,7 @@ class TestKohyaWorkerDirResolution:
             workers_service=_FakeWorkersService(real_install_dir),
             dataset_path="/data/kyuoka_dataset",
         )
-        job = _wait_for_status(
+        job = _job_with_status(
             stores, _DEFAULT_PROJECT, "kohya-dir-job-001", TrainingJobStatus.COMPLETED
         )
         assert job.status == TrainingJobStatus.COMPLETED
@@ -1271,7 +1301,7 @@ class TestKohyaWorkerDirResolution:
             tmp_path,
             workers_service=_FakeWorkersService(error=clear_error),
         )
-        job = _wait_for_status(
+        job = _job_with_status(
             stores, _DEFAULT_PROJECT, "kohya-dir-job-001", TrainingJobStatus.FAILED
         )
         assert job.status == TrainingJobStatus.FAILED
@@ -1287,7 +1317,7 @@ class TestKohyaWorkerDirResolution:
         back to guessing the kohya_ss directory -- it must fail the job with
         a clear, named reason instead."""
         stores, fake_runner = self._submit_kohya_job(tmp_path, workers_service=None)
-        job = _wait_for_status(
+        job = _job_with_status(
             stores, _DEFAULT_PROJECT, "kohya-dir-job-001", TrainingJobStatus.FAILED
         )
         assert job.status == TrainingJobStatus.FAILED

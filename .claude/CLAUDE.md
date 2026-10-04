@@ -60,26 +60,30 @@ uv sync --extra dev              # install/refresh the Python dev toolchain (.ve
 
 ## Code quality gates
 
-Hybrid repo — Vue/TS frontend (`frontend/`) and Python core (`core/`, `tests/`) each get their own gate family; config/thresholds/baselines live in normal tool locations (`package.json`, `pyproject.toml`, `quality-gates/`), never under `.claude/`; two tiers per stack: **L0** (seconds-level, hook-enforced) and **L1** (L0 + diff coverage [+ mutation on the JS/TS side]).
+Hybrid repo — Vue/TS frontend (`frontend/`) and Python core (`core/`, `tests/`) each get their own gate family; config/thresholds/baselines live in normal tool locations (`package.json`, `pyproject.toml`, `quality-gates/`), never under `.claude/`; test layers: at commit (the hook) only the **commit** level runs, within 10 seconds: each touched stack classes its staged files by path and runs lint on the staged files, the determinism check on the staged test, setup and gate files and the assertion check, with no test run; at the end of the task (before merge, once) the task's one full run: **L1** (`npm run gate:l1` and `.venv/Scripts/python.exe quality-gates/python/run.py l1`: L0 + diff coverage [+ mutation on the JS/TS side]), where **L0** is its whole-project first part (type-check, whole suite, import cycles).
 
 ```bash
 # JS/TS (frontend/) — from repo root
 npm run gate:g1   # eslint, diff-LINE-scoped (880 pre-existing warnings on the whole tree —
                    # see below; this gate only fails on NEW warnings/errors on changed lines)
 npm run gate:g2   # vue-tsc --project frontend/tsconfig.json --noEmit, baselined (0 pre-existing)
-npm run gate:g3   # vitest run + assertion-presence on new/changed test files
+npm run gate:g3   # vitest run + assertion-presence on new/changed test files + same-result check (whole test scope)
 npm run gate:g4   # madge import-cycle check, baselined (0 pre-existing cycles)
 npm run gate:g5   # vitest run --coverage + diff-coverage.mjs (>=60% of changed lines)
 npm run gate:g6   # Stryker mutation testing, scoped to the diff's changed line ranges
+npm run gate:commit # commit level, by the staged files' classes: eslint on the STAGED files' changed lines + determinism
+                   # on staged test, setup and gate files + assertion check on staged test files, at the same time; no test run, no type-check
 npm run gate:l0   # g1+g2+g3+g4 — exits 0 on the untouched tree (~11s)
-npm run gate:l1   # l0+g5+g6   — exits 0 on the untouched tree (14 test files)
+npm run gate:l1   # l0+g5+g6   — exits 0 on the untouched tree (15 test files)
 
 # Python (core/, tests/) — from repo root, using the repo's own uv-managed .venv
-.venv/Scripts/python quality-gates/python/run.py g1   # ruff check ., baselined (177 identities, 278 raw)
-.venv/Scripts/python quality-gates/python/run.py g2   # mypy core --strict, baselined (50 identities, 124 raw)
-.venv/Scripts/python quality-gates/python/run.py g3   # pytest -q + AST assertion-presence on new/changed tests
+.venv/Scripts/python quality-gates/python/run.py g1   # ruff check ., baselined (count: `quality-gates/python/ruff-baseline.json`)
+.venv/Scripts/python quality-gates/python/run.py g2   # mypy core --strict, baselined (count: `quality-gates/python/mypy-baseline.json`)
+.venv/Scripts/python quality-gates/python/run.py g3   # pytest -q + AST assertion-presence on new/changed tests + same-result check (whole test scope)
 .venv/Scripts/python quality-gates/python/run.py g4   # import-linter acyclic_siblings, baselined (2 pre-existing edges)
 .venv/Scripts/python quality-gates/python/run.py g5   # pytest --cov=core --cov-report=xml + diff-cover (>=60%)
+.venv/Scripts/python quality-gates/python/run.py commit # commit level, by the staged files' classes: ruff on the STAGED .py files + determinism
+                   # on staged test, setup and gate files + assertion check on staged test files; no test run, no mypy
 .venv/Scripts/python quality-gates/python/run.py l0   # g1+g2+g3+g4 — exits 0 on the untouched tree (~16s)
 .venv/Scripts/python quality-gates/python/run.py l1   # l0+g5        — exits 0 on the untouched tree (~33s)
 
@@ -92,7 +96,7 @@ npm run gate:g4:update-baseline
 .venv/Scripts/python quality-gates/python/run.py g4 --update-baseline
 ```
 
-- **Pre-commit hook** (`.githooks/pre-commit`) runs ONLY the L0 of whichever stack(s) the commit actually touches (staged-file-list based: `frontend/*` -> JS/TS `gate:l0`; `core/*`/`tests/*`/`scripts/*`/`pyproject.toml` -> Python `quality-gates/python/run.py l0`); hook path: `git config core.hooksPath .githooks`, run once per clone; it is not self-installing, and a detached HEAD or `git commit --no-verify` skips it (`D:/backup/CSIA/@PM/.claude/context/cluster-conventions.md` `### Hook carrier (L0 enforcement)`).
+- **Pre-commit hook** (`.githooks/pre-commit`) runs ONLY the commit level of whichever stack(s) the commit actually touches, the touched stacks at the same time (staged-file-list based, deletes included: `frontend/*` -> JS/TS `gate:commit`; `core/*`/`tests/*`/`scripts/*` -> Python `quality-gates/python/run.py commit`; a staged `quality-gates/` file, determinism canary, `requirements*.txt`, the hook, any `conftest.py`, `pytest.ini`, `pyproject.toml`, `vite.config.*`, `vitest.config.*` or `package.json` triggers both); hook path: `git config core.hooksPath .githooks`, run once per clone; it is not self-installing, and a detached HEAD or `git commit --no-verify` skips it (`D:/backup/CSIA/@PM/.claude/context/cluster-conventions.md` `### Hook carrier (commit-level enforcement)`).
 
 **Repo-specific gate rules (evidence-based; full incident history: `docs/superpowers/decisions/2026-09-09-quality-gate-history.md`):**
 
@@ -108,8 +112,9 @@ npm run gate:g4:update-baseline
 - **`--update-baseline` REFUSES to write (exit 1, baseline file unchanged) whenever a run has BOTH new AND resolved findings at once** — for G1 ruff, G2 mypy, and G4 import-linter alike, via the shared `quality-gates/python/lib/baseline.py`'s `report_and_decide()`; a new-only run (deliberately accepting debt) or a resolved-only run (a pure shrink) both proceed normally, naming every finding accepted or removed; a corrupt (non-JSON, or JSON-but-not-an-array) baseline file raises `baseline_lib.BaselineCorruptError` with a named `[G_] FAIL`, never a silent bypass.
 - **G6 diff mutation: none for Python — @PM cluster-conventions `## Code quality gates (ADR-030)`, "Python family: no G6 diff mutation".** The JS/TS side DOES carry G6 (Stryker, `stryker.config.mjs` at repo root) — scoped to `frontend/src/**/*.ts` only (no maintained Vue-SFC mutator, so `.vue` component script blocks are a real, reported scope gap, not an oversight).
 - **Scratch/generated dirs are explicitly excluded from every gate's scope**, never relying on a tool's default scan: `[tool.ruff] extend-exclude` and `[tool.mypy] exclude` in `pyproject.toml`; `vitest.config.ts`'s `test.exclude`; `eslint.config.mjs`'s `ignores`.
-- **G3 tests / G5 diff coverage on the JS/TS side exercise real tests** — 14 `.test.ts` files / 98 tests exist under `frontend/src/`; `vitest.config.ts` still sets `test.passWithNoTests: true` so an empty diff never false-reds, but `gate:g3`/`g5`/`g6` are exercising real pass/fail behavior.
+- **G3 tests / G5 diff coverage on the JS/TS side exercise real tests** — 15 `.test.ts` files exist under `frontend/src/` (the write guard's own `src/test-utils/repoWriteGuard.test.ts` included); `vitest.config.ts` still sets `test.passWithNoTests: true` so an empty diff never false-reds, but `gate:g3`/`g5`/`g6` are exercising real pass/fail behavior.
 - Identity keys for every baseline (never a bare count): JS `file:line:col:code` (G2 typecheck) or `file|ruleId|message` (G1 lint, diff-scoped so this rarely matters); Python `relative/file.py|CODE|message` (G1 ruff / G2 mypy, line number excluded so unrelated edits don't shift identities) and `importer -> imported` module pairs (G4 import-linter).
+- **`scripts/check_fidelity_loop_live.py`** is a manual check of the live Ollama + ComfyUI round trip, run by hand from the repo root only while both services run (`py -3.11 scripts/check_fidelity_loop_live.py`, its header); it is outside `tests/`, so pytest never collects it and no gate runs it.
 
 ## Dev mode and diagnostic standards
 

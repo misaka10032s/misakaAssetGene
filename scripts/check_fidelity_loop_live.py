@@ -1,8 +1,18 @@
+# MANUAL LIVE CHECK -- NOT A TEST.
+# Run by hand, from the repo root, only when a local Ollama (with the vision model)
+# and ComfyUI are running:
+#     py -3.11 scripts/check_fidelity_loop_live.py
+# It lives outside tests/ and is collected by no pytest pattern (pyproject.toml:
+# testpaths = ["tests"], default python_files test_*.py / *_test.py), so no gate and no
+# commit hook runs it.  Exit code: 0 = the live round trip passed, 1 = it failed
+# (assertion), 2 = the live services are not reachable (nothing was checked).
+# Moved unchanged (apart from the paths below and the entry point) from
+# tests/test_fidelity_loop_integration.py.
 """Integration test — real Ollama vision critique for the fidelity loop
 (spec §5.15 / C-spec.md §7 "整合(slow, skip-if-unavailable): 真 Ollama + 真
 ComfyUI 跑 1 輪").
 
-Skips (never fails a normal ``pytest -q`` run) unless BOTH live services
+Reports SKIPPED (exit code 2, nothing checked) unless BOTH live services
 answer:
 
 - Ollama's ``/api/tags`` is reachable AND lists
@@ -23,21 +33,24 @@ features to actually match against).
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import httpx
 import pytest
 
-from core.config import get_settings
-from core.consultant.fidelity import parse_character_checklist
-from core.llm import vision
-from core.network.state import NetworkState
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-pytestmark = pytest.mark.slow
+from core.config import get_settings  # noqa: E402
+from core.consultant.fidelity import parse_character_checklist  # noqa: E402
+from core.llm import vision  # noqa: E402
+from core.network.state import NetworkState  # noqa: E402
 
 _COMFYUI_HEALTH_URL = "http://127.0.0.1:8188/system_stats"
 _PROBE_TIMEOUT_SEC = 2.0
-_FIXTURE_PNG = Path(__file__).parent / "fixtures" / "fidelity_solid_64x64.png"
+_FIXTURE_PNG = _REPO_ROOT / "tests" / "fixtures" / "fidelity_solid_64x64.png"
 _FIXTURE_WIDTH = 64
 _FIXTURE_HEIGHT = 64
 
@@ -123,3 +136,21 @@ def test_real_round0_critique_returns_gated_results_for_every_check() -> None:
             x0, y0, x1, y1 = result.region_bbox
             assert x0 < x1
             assert y0 < y1
+
+
+def main() -> int:
+    reason = _skip_reason()
+    if reason is not None:
+        print(f"SKIPPED (nothing was checked): {reason}")
+        return 2
+    try:
+        test_real_round0_critique_returns_gated_results_for_every_check()
+    except AssertionError as error:
+        print(f"FAILED: {error!r}")
+        return 1
+    print("OK: live round-0 critique returned gated results for every check.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from zipfile import ZipFile, ZIP_DEFLATED
 
 import pytest
@@ -664,19 +664,29 @@ def test_copy_external_asset_rejects_drive_letter_rel_path(tmp_path: Path) -> No
 
     Windows-style absolute paths like 'C:\\Windows\\secret.txt' bypass the
     _external/ root.  The lexical guard must catch the anchor/drive component.
+    ``path_flavor=PureWindowsPath`` makes the lexical pre-validation judge the
+    path by Windows rules on every operating system, so the check does not
+    depend on which platform runs the test.
     """
-    import sys
-    if sys.platform != "win32":
-        pytest.skip("Drive-letter path test is Windows-specific")
     projects_root = tmp_path / "projects"
     dest_dir = _make_project(projects_root, "dest")
     source_file = tmp_path / "source.txt"
     source_file.write_bytes(b"payload")
 
-    with pytest.raises(ValueError, match="Security"):
+    # The message must name the drive/anchor rule itself: the later containment
+    # check also raises "Security", so matching only "Security" would not prove
+    # the lexical drive-letter guard ran.
+    with pytest.raises(ValueError, match=r"relative_asset_path .* no drive/anchor"):
         copy_external_asset(
-            source_file, dest_dir, "some-proj", r"C:\Windows\secret.txt"
+            source_file,
+            dest_dir,
+            "some-proj",
+            r"C:\Windows\secret.txt",
+            path_flavor=PureWindowsPath,
         )
+
+    # Rejected in the lexical step, before any file work.
+    assert not (dest_dir / "_external" / "some-proj").exists()
 
 
 def test_copy_external_asset_legitimate_path_still_works(tmp_path: Path) -> None:
@@ -702,17 +712,16 @@ def test_copy_external_asset_legitimate_path_still_works(tmp_path: Path) -> None
 
 
 def test_copy_external_asset_symlink_escape_blocked(tmp_path: Path) -> None:
-    """copy_external_asset must raise when the parent dir contains a symlink
-    pointing outside _external/ (symlink escape attack).
+    """copy_external_asset must raise when the parent dir resolves to a
+    location outside _external/ (symlink escape attack).
 
-    This test verifies that the post-mkdir parent-resolve check catches symlinks.
-    On Windows, symlink creation typically requires elevated privileges; if
-    os.symlink raises PermissionError or NotImplementedError the test is skipped
-    (the parent-resolve guard is still present in the code; the test cannot run
-    without symlink privilege).  The lexical pre-validation layer alone already
-    blocks '..' and absolute paths without needing symlinks.
+    This test verifies that the post-mkdir parent-resolve check catches it.
+    The operating system's symlink resolution is replaced by ``resolve_path``:
+    the injected resolver reports that the destination's parent
+    (``_external/src-proj/images``) resolves to a directory OUTSIDE
+    ``_external/``, exactly what a real symlink would make ``Path.resolve``
+    answer, so no symlink (and no symlink privilege) is needed.
     """
-    import sys
     projects_root = tmp_path / "projects"
     dest_dir = _make_project(projects_root, "dest")
     (dest_dir / "_external").mkdir(parents=True, exist_ok=True)
@@ -720,36 +729,37 @@ def test_copy_external_asset_symlink_escape_blocked(tmp_path: Path) -> None:
     # Create the real directory for source project under _external/
     (dest_dir / "_external" / "src-proj").mkdir(parents=True, exist_ok=True)
 
-    # Create a directory OUTSIDE _external/ to act as the escape target.
+    # A directory OUTSIDE _external/ to act as the escape target.
     outside_dir = tmp_path / "outside_escape"
     outside_dir.mkdir()
 
-    # Plant a symlink inside _external/src-proj/images -> outside_escape
-    symlink_parent = dest_dir / "_external" / "src-proj" / "images"
-    try:
-        symlink_parent.symlink_to(outside_dir)
-    except (PermissionError, NotImplementedError, OSError) as exc:
-        pytest.skip(
-            f"Symlink creation not available (likely requires elevated privileges): {exc}"
-        )
+    escaping_parent = dest_dir / "_external" / "src-proj" / "images"
+
+    def resolve_with_escape(path: Path) -> Path:
+        # "images" behaves as a symlink pointing at outside_dir.
+        if path == escaping_parent:
+            return outside_dir
+        return path.resolve()
 
     source_file = tmp_path / "payload.bin"
     source_file.write_bytes(b"secret-payload")
 
-    # Attempt to write through the symlink:
-    # "images/hero.png" — "images" is the symlink pointing outside _external/.
+    # Attempt to write through the "symlink":
+    # "images/hero.png" — "images" resolves to outside_escape.
     with pytest.raises(ValueError, match="Security"):
         copy_external_asset(
             source_file,
             dest_dir,
             "src-proj",
             "images/hero.png",
+            resolve_path=resolve_with_escape,
         )
 
-    # The file must NOT have been written outside _external/
+    # The file must NOT have been written outside _external/ (nor inside it).
     assert not (outside_dir / "hero.png").exists(), (
         "Symlink escape succeeded: file was written outside _external/"
     )
+    assert not (escaping_parent / "hero.png").exists()
 
 
 # ---------------------------------------------------------------------------

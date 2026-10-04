@@ -6,8 +6,10 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Protocol
 
 import httpx
 
@@ -30,7 +32,7 @@ class WorkersService:
             if time.monotonic() - cached_at <= 2.0:
                 return snapshots
         manifest = self._load_manifest()
-        snapshots: list[WorkerSnapshot] = []
+        snapshots = []
         health_cache: dict[str, bool] = {}
         for name, worker in manifest.get("workers", {}).items():
             snapshots.append(self._build_snapshot(name, worker, health_cache))
@@ -608,7 +610,13 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _STILL_ACTIVE = 259
 
 
-def _pid_alive(pid: int) -> bool:
+def _pid_alive(
+    pid: int,
+    *,
+    os_name: str | None = None,
+    win_api: "_WindowsProcessApi | None" = None,
+    kill: Callable[[int, int], None] | None = None,
+) -> bool:
     """Cross-platform, side-effect-free "is this pid alive" probe.
 
     ``os.kill(pid, 0)`` is NOT a safe liveness probe on Windows: ``sig=0`` is
@@ -632,23 +640,77 @@ def _pid_alive(pid: int) -> bool:
     keeps the standard ``os.kill(pid, 0)`` idiom, whose signal 0 has no
     special meaning there and is documented as a pure existence/permission
     check.
+
+    ``os_name``, ``win_api`` and ``kill`` are replaceable operating-system
+    interfaces (defaults: ``os.name``, the real ``kernel32`` calls, ``os.kill``);
+    production callers pass none of them.
     """
-    if os.name == "nt":
+    name = os.name if os_name is None else os_name
+    if name == "nt":
+        return _pid_alive_windows(pid, _Kernel32ProcessApi() if win_api is None else win_api)
+    return _pid_alive_posix(pid, os.kill if kill is None else kill)
+
+
+class _WindowsProcessApi(Protocol):
+    """The three Windows process calls ``_pid_alive_windows`` decides with.
+
+    The real implementation (``_Kernel32ProcessApi``) wraps ``kernel32``;
+    tests inject a fake so the decision logic runs on any operating system.
+    """
+
+    def open_process(self, pid: int) -> int:
+        """``OpenProcess`` with query-limited access; ``0`` when it fails."""
+        ...
+
+    def exit_code(self, handle: int) -> int | None:
+        """``GetExitCodeProcess``; ``None`` when the call fails."""
+        ...
+
+    def close(self, handle: int) -> None:
+        """``CloseHandle``."""
+        ...
+
+
+class _Kernel32ProcessApi:
+    """Real ``_WindowsProcessApi`` backed by ``ctypes.windll.kernel32``."""
+
+    def __init__(self) -> None:
         import ctypes
 
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not handle:
-            return False
-        try:
-            exit_code = ctypes.c_ulong()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return False
-            return exit_code.value == _STILL_ACTIVE
-        finally:
-            kernel32.CloseHandle(handle)
+        self._ctypes = ctypes
+        self._kernel32 = ctypes.windll.kernel32
+
+    def open_process(self, pid: int) -> int:
+        return int(self._kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid) or 0)
+
+    def exit_code(self, handle: int) -> int | None:
+        code = self._ctypes.c_ulong()
+        if not self._kernel32.GetExitCodeProcess(handle, self._ctypes.byref(code)):
+            return None
+        return int(code.value)
+
+    def close(self, handle: int) -> None:
+        self._kernel32.CloseHandle(handle)
+
+
+def _pid_alive_windows(pid: int, api: _WindowsProcessApi) -> bool:
+    """Windows branch: reads process state only, never sends a signal."""
+    handle = api.open_process(pid)
+    if not handle:
+        return False
     try:
-        os.kill(pid, 0)
+        code = api.exit_code(handle)
+        if code is None:
+            return False
+        return code == _STILL_ACTIVE
+    finally:
+        api.close(handle)
+
+
+def _pid_alive_posix(pid: int, kill: Callable[[int, int], None]) -> bool:
+    """POSIX branch: signal 0 is a pure existence/permission check."""
+    try:
+        kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:

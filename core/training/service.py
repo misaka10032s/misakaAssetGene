@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -162,7 +162,12 @@ class TrainingService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _validate_resume_checkpoint_path(project_dir: Path, raw_path: str | None) -> str | None:
+    def _validate_resume_checkpoint_path(
+        project_dir: Path,
+        raw_path: str | None,
+        *,
+        resolve_path: Callable[[Path], Path] = Path.resolve,
+    ) -> str | None:
         """Confine a client-supplied resume checkpoint path under the project's
         own training output directory before it is ever stored on a job or
         spliced into a subprocess argv (spec §7.3 resume; security — this
@@ -183,13 +188,18 @@ class TrainingService:
         Raises ``TrainingValidationError`` if the path does not resolve to an
         existing directory under ``<project_dir>/models``. Returns ``None``
         unchanged (no resume requested).
+
+        ``resolve_path`` is a replaceable operating-system interface (default
+        ``Path.resolve``); production callers pass none.  Tests inject a
+        resolver that reports a path outside ``models/`` instead of planting
+        a real symlink.
         """
         if raw_path is None or not raw_path.strip():
             return None
-        models_dir = (project_dir / "models").resolve()
+        models_dir = resolve_path(project_dir / "models")
         candidate = Path(raw_path)
         try:
-            resolved = candidate.resolve()
+            resolved = resolve_path(candidate)
             resolved.relative_to(models_dir)
         except (OSError, ValueError) as error:
             raise TrainingValidationError(

@@ -26,9 +26,12 @@ from core.models.schemas import (
 from core.project.manager import ProjectManager
 from core.training.service import TrainingService
 
+# Fixed instant for every seeded record: no test here reads the real clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+
 
 def _job(status: TrainingJobStatus, progress: int = 0, label: str | None = None) -> TrainingJob:
-    now = datetime.now(timezone.utc)
+    now = FIXED_NOW
     return TrainingJob(
         id="job1",
         project_id="proj",

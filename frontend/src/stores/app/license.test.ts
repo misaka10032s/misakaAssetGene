@@ -15,7 +15,7 @@ function makeReport(overrides: Partial<ProjectLicenseReport> = {}): ProjectLicen
   return {
     project_id: "p1",
     project_name: "Project One",
-    generated_at: new Date().toISOString(),
+    generated_at: "2026-01-15T12:00:00.000Z",
     entries: [],
     summary: {
       total_workers: 0,

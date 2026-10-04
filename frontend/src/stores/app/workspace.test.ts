@@ -23,7 +23,7 @@ import type { AssetRecord, ConsultantPlanRecord, GenerationJob } from "@/types/a
 import { GenerationJobStatus, MessageKey, Modality } from "@/types/enums";
 
 function makeJob(overrides: Partial<GenerationJob> = {}): GenerationJob {
-  const now = new Date().toISOString();
+  const now = "2026-01-15T12:00:00.000Z";
   return {
     id: "job-1",
     project_id: "p1",
@@ -59,7 +59,7 @@ function makeAsset(overrides: Partial<AssetRecord> = {}): AssetRecord {
     title: "Asset",
     path: "/assets/1.png",
     description: "",
-    created_at: new Date().toISOString(),
+    created_at: "2026-01-15T12:00:00.000Z",
     ...overrides,
   };
 }
@@ -72,7 +72,7 @@ function makePlan(overrides: Partial<ConsultantPlanRecord> = {}): ConsultantPlan
     summary: "",
     prompt: "",
     modalities: [Modality.IMAGE],
-    created_at: new Date().toISOString(),
+    created_at: "2026-01-15T12:00:00.000Z",
     ...overrides,
   };
 }

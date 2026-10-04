@@ -15,9 +15,12 @@ from core.generation.adapters import comfyui
 from core.generation.adapters.common import AdapterContext
 from core.models.schemas import GenerationJob, GenerationJobStatus, GenerationRecipe, Modality
 
+# Fixed instant for every seeded record: no test here reads the real clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+
 
 def _job(recipe: GenerationRecipe, params: dict | None = None) -> GenerationJob:
-    now = datetime.now(timezone.utc)
+    now = FIXED_NOW
     return GenerationJob(
         id="job1234abcd",
         project_id="proj1",

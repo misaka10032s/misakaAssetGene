@@ -30,6 +30,9 @@ from core.models.schemas import (
 from core.project.export import ProjectExportService
 from core.reporting.license import LicenseReportService, _resolve_attribution
 
+# Fixed instant for every seeded record: no test here reads the real clock.
+FIXED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc)
+
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -516,7 +519,7 @@ def test_license_report_endpoint_delivers_registry_nsfw(tmp_path: Path, monkeypa
     # Inject a job using worker "gpt-sovits" — manifest has no nsfw field for this worker,
     # so nsfw can only come from the registry entry "GPT-SoVITS" (nsfw: false).
     _, project_dir = manager.get_project(project_id)
-    now = datetime.now(timezone.utc)
+    now = FIXED_NOW
     job = GenerationJob(
         id="job-wiring-test",
         project_id=project_id,

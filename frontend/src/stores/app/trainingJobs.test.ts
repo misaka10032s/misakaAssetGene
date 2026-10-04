@@ -86,8 +86,8 @@ describe("useTrainingJobsStore().createProjectTrainingJob", () => {
           exit_code: null,
           stderr_tail: null,
           resume_checkpoint_path: null,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          created_at: "2026-01-15T12:00:00.000Z",
+          updated_at: "2026-01-15T12:00:00.000Z",
         },
       ],
     });
